@@ -73,6 +73,8 @@ const CREATE_AUTHORITY_SCHEMA = `
     residency TEXT NOT NULL CHECK(residency IN ('sleeping','resident')),
     metadata_revision INTEGER NOT NULL,
     timeline_revision INTEGER NOT NULL,
+    parent_session_id TEXT REFERENCES sessions(session_id),
+    fork_point_entry_id TEXT,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS command_receipts (
@@ -216,6 +218,10 @@ const sessionResidencyRowSchema = sessionSummarySchema.pick({ residency: true })
 const sessionAvailabilitySchema = z.enum(["available", "archived"]);
 const sessionRowSchema = sessionSummarySchema.extend({
   availability: sessionAvailabilitySchema,
+});
+const forkPointSchema = z.object({
+  entryId: z.string(), checkpoint: z.string(), entryOrder: z.number(),
+  finalized: z.coerce.boolean(), kind: z.string(),
 });
 const sessionAvailabilityStateSchema = sessionRowSchema.pick({
   availability: true,
@@ -420,6 +426,12 @@ export class AuthorityStore {
         "ALTER TABLE sessions ADD COLUMN availability TEXT NOT NULL DEFAULT 'available'",
       );
     }
+    if (!sessionColumns.some(column => column.name === "parent_session_id")) {
+      this.#db.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(session_id)");
+    }
+    if (!sessionColumns.some(column => column.name === "fork_point_entry_id")) {
+      this.#db.exec("ALTER TABLE sessions ADD COLUMN fork_point_entry_id TEXT");
+    }
     const timelineColumns = this.#db
       .prepare("PRAGMA table_info(timeline_entries)")
       .all();
@@ -518,6 +530,8 @@ export class AuthorityStore {
                 workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
                 timeline_revision AS timelineRevision
+                , parent_session_id AS parentSessionId,
+                fork_point_entry_id AS forkPointEntryId
          FROM sessions ORDER BY created_at`,
       )
       .all();
@@ -604,6 +618,74 @@ export class AuthorityStore {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** Atomically creates an inert child and copies only finalized durable history. */
+  forkSession(
+    parentSessionId: string,
+    forkPointEntryId: string,
+    projectId: string | null | undefined,
+    workspaceId: string | null | undefined,
+    childSessionId: string,
+    validatedCheckpoint: string,
+    now: number,
+  ): { session: SessionSummary; cursor: string } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const parent = this.loadSession(parentSessionId);
+      const point = forkPointSchema.optional().parse(this.#db.prepare(
+        `SELECT entry_id AS entryId, checkpoint, entry_order AS entryOrder,
+                finalized != 0 AS finalized, kind
+         FROM timeline_entries WHERE session_id = ? AND entry_id = ?`,
+      ).get(parentSessionId, forkPointEntryId));
+      if (!point || !point.finalized || point.kind !== "response" ||
+          point.checkpoint !== validatedCheckpoint) {
+        throw new Error("invalid-fork-point");
+      }
+      const targetProject = projectId === undefined ? parent.projectId : projectId;
+      const targetWorkspace = workspaceId === undefined ? parent.workspaceId : workspaceId;
+      this.validateScope(targetProject, targetWorkspace);
+      this.#db.prepare(
+        `INSERT INTO sessions
+         (session_id, project_id, workspace_id, name, retention, availability,
+          residency, metadata_revision, timeline_revision, created_at,
+          parent_session_id, fork_point_entry_id)
+         VALUES (?, ?, ?, 'Untitled Session', 'available', 'available', 'sleeping', 1, 1, ?, ?, ?)`,
+      ).run(childSessionId, targetProject, targetWorkspace, now, parentSessionId, forkPointEntryId);
+
+      const runRows = this.#db.prepare(
+        `SELECT run_id, session_order, prompt, state, created_at, completed_at
+         FROM runs WHERE session_id = ? AND state IN ('completed','failed','cancelled','interrupted')
+         AND run_id IN (SELECT run_id FROM timeline_entries WHERE session_id = ? AND entry_order <= ?)`,
+      ).all(parentSessionId, parentSessionId, point.entryOrder);
+      const runIds = new Map<string, string>();
+      for (const row of runRows) {
+        const id = `run_${randomUUID()}`; runIds.set(String(row.run_id), id);
+        this.#db.prepare(`INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, childSessionId, row.session_order, row.prompt, row.state, row.created_at, row.completed_at);
+      }
+      const entries = this.#db.prepare(
+        `SELECT * FROM timeline_entries WHERE session_id = ? AND entry_order <= ? ORDER BY entry_order`,
+      ).all(parentSessionId, point.entryOrder);
+      for (const row of entries) {
+        const mappedRun = runIds.get(String(row.run_id));
+        if (!mappedRun || !Boolean(row.finalized)) throw new Error("invalid-fork-point");
+        this.#db.prepare(
+          `INSERT INTO timeline_entries
+           (entry_id,session_id,run_id,entry_order,kind,text,checkpoint,blob_id,created_at,revision,finalized,tool_call_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        ).run(`entry_${randomUUID()}`, childSessionId, mappedRun, row.entry_order,
+          row.kind, row.text, row.checkpoint, row.blob_id, row.created_at,
+          row.revision, row.finalized, row.tool_call_id);
+      }
+      this.#db.prepare(`UPDATE sessions SET timeline_revision = ? WHERE session_id = ?`)
+        .run(entries.length + 1, childSessionId);
+      this.#db.prepare("UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1").run(now);
+      const session = this.loadSession(childSessionId);
+      const cursor = this.recordSynchronizationChange({ type: "session.forked", session });
+      this.#db.exec("COMMIT");
+      return { session, cursor };
+    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
   }
 
   changeSessionAvailability(
@@ -2197,7 +2279,9 @@ export class AuthorityStore {
         `SELECT session_id AS sessionId, name, project_id AS projectId,
                 workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision
+                timeline_revision AS timelineRevision,
+                parent_session_id AS parentSessionId,
+                fork_point_entry_id AS forkPointEntryId
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
@@ -2205,6 +2289,25 @@ export class AuthorityStore {
     return availability === "archived"
       ? { ...session, availability }
       : session;
+  }
+
+  checkpointAt(sessionId: string, entryId: string): string | undefined {
+    const row = this.#db.prepare(
+      `SELECT checkpoint FROM timeline_entries WHERE session_id=? AND entry_id=?
+       AND kind='response' AND finalized=1 AND checkpoint IS NOT NULL`,
+    ).get(sessionId, entryId);
+    return checkpointRowSchema.optional().parse(row)?.checkpoint;
+  }
+
+  private validateScope(projectId: string | null, workspaceId: string | null): void {
+    if (projectId && !this.#db.prepare("SELECT 1 FROM projects WHERE project_id=?").get(projectId)) {
+      throw new Error("unknown-project");
+    }
+    if (workspaceId) {
+      const workspace = this.#db.prepare("SELECT project_id FROM workspaces WHERE workspace_id=?").get(workspaceId);
+      if (!workspace) throw new Error("unknown-workspace");
+      if (!projectId || workspace.project_id !== projectId) throw new Error("workspace-project-mismatch");
+    }
   }
 
   private sessionHasActiveWork(sessionId: string): boolean {
