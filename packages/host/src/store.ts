@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { HostStatus } from "../../protocol/src/status.js";
 import type { HostAdapters } from "../../adapters/src/index.js";
 
-const CREATE_HOST_TABLE = `
+const CREATE_AUTHORITY_SCHEMA = `
   PRAGMA journal_mode=WAL;
   PRAGMA synchronous=FULL;
   CREATE TABLE IF NOT EXISTS host (
@@ -20,7 +20,7 @@ const CREATE_HOST_TABLE = `
     device_id TEXT PRIMARY KEY,
     public_key_jwk TEXT NOT NULL,
     paired_at INTEGER NOT NULL
-  )
+  );
 `;
 
 export class AuthorityStore {
@@ -29,7 +29,7 @@ export class AuthorityStore {
   constructor(path: string, adapters: HostAdapters) {
     mkdirSync(dirname(path), { recursive: true });
     this.#db = new DatabaseSync(path);
-    this.#db.exec(CREATE_HOST_TABLE);
+    this.#db.exec(CREATE_AUTHORITY_SCHEMA);
 
     const existingHost = this.#db
       .prepare("SELECT 1 FROM host WHERE singleton=1")
@@ -73,12 +73,20 @@ export class AuthorityStore {
   }
 
   addDevice(deviceId: string, publicKeyJwk: string, pairedAt: number): void {
-    this.#db.prepare("INSERT INTO devices VALUES (?, ?, ?)").run(deviceId, publicKeyJwk, pairedAt);
+    this.#db
+      .prepare(
+        "INSERT INTO devices (device_id, public_key_jwk, paired_at) VALUES (?, ?, ?)",
+      )
+      .run(deviceId, publicKeyJwk, pairedAt);
   }
 
   devicePublicKey(deviceId: string): string | undefined {
-    const row = this.#db.prepare("SELECT public_key_jwk FROM devices WHERE device_id=?").get(deviceId);
-    return row && typeof row.public_key_jwk === "string" ? row.public_key_jwk : undefined;
+    const row = this.#db
+      .prepare("SELECT public_key_jwk FROM devices WHERE device_id = ?")
+      .get(deviceId);
+    return row && typeof row.public_key_jwk === "string"
+      ? row.public_key_jwk
+      : undefined;
   }
 
   close(): void {

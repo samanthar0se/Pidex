@@ -10,6 +10,7 @@ import type { Clock } from "../../adapters/src/index.js";
 import type { AuthorityStore } from "./store.js";
 
 const PAIRING_LIFETIME_MS = 5 * 60_000;
+const AUTHENTICATION_CHALLENGE_LIFETIME_MS = 60_000;
 const SESSION_LIFETIME_MS = 10 * 60_000;
 const MAX_FAILURES = 5;
 
@@ -20,16 +21,43 @@ export interface PairingInstructions {
   authorityNotice: string;
 }
 
-interface PendingProof { id: string; key: KeyObject; publicKey: JsonWebKey; challenge: string; }
-interface ActivePairing { secret: string; expiresAt: number; failures: number; pending: Map<string, PendingProof>; }
-interface AuthChallenge { deviceId: string; challenge: string; expiresAt: number; }
+interface PendingProof {
+  id: string;
+  key: KeyObject;
+  publicKey: JsonWebKey;
+  challenge: string;
+}
+
+interface ActivePairing {
+  secret: string;
+  expiresAt: number;
+  failures: number;
+  pending: Map<string, PendingProof>;
+}
+
+interface AuthenticationChallenge {
+  deviceId: string;
+  challenge: string;
+  expiresAt: number;
+}
+
+interface ClientSession {
+  deviceId: string;
+  expiresAt: number;
+}
 
 export class PairingAuthority {
   #pairing?: ActivePairing;
-  readonly #authChallenges = new Map<string, AuthChallenge>();
-  readonly #sessions = new Map<string, { deviceId: string; expiresAt: number }>();
+  readonly #authenticationChallenges = new Map<
+    string,
+    AuthenticationChallenge
+  >();
+  readonly #sessions = new Map<string, ClientSession>();
 
-  constructor(private readonly clock: Clock, private readonly store: AuthorityStore) {}
+  constructor(
+    private readonly clock: Clock,
+    private readonly store: AuthorityStore,
+  ) {}
 
   create(canonicalOrigin: string): PairingInstructions {
     const secret = randomBytes(15).toString("base64url").toUpperCase();
@@ -39,22 +67,33 @@ export class PairingAuthority {
       secret,
       qrPayload: `${canonicalOrigin}/?pair=${encodeURIComponent(secret)}`,
       expiresAt,
-      authorityNotice: "This Device gains the complete Pidex surface and the signed-in Windows user's Pi machine authority.",
+      authorityNotice:
+        "This Device gains the complete Pidex surface and the signed-in Windows user's Pi machine authority.",
     };
   }
 
-  begin(secret: unknown, publicKey: unknown): { pairingId: string; challenge: string } {
+  begin(
+    secret: unknown,
+    publicKey: unknown,
+  ): { pairingId: string; challenge: string } {
     const pairing = this.validPairing(secret);
     let key: KeyObject;
+
     try {
-      if (!isP256PublicJwk(publicKey)) throw new Error();
+      if (!isP256PublicJwk(publicKey)) {
+        throw new Error();
+      }
       key = createPublicKey({ key: publicKey, format: "jwk" });
     } catch {
       this.fail(pairing);
       throw new PairingError(400, "malformed-public-key");
     }
+
     const proof: PendingProof = {
-      id: randomUUID(), key, publicKey, challenge: randomBytes(32).toString("base64url"),
+      id: randomUUID(),
+      key,
+      publicKey,
+      challenge: randomBytes(32).toString("base64url"),
     };
     pairing.pending.set(proof.id, proof);
     return { pairingId: proof.id, challenge: proof.challenge };
@@ -62,43 +101,81 @@ export class PairingAuthority {
 
   complete(pairingId: unknown, signature: unknown): { deviceId: string } {
     const pairing = this.currentPairing();
-    const proof = typeof pairingId === "string" ? pairing.pending.get(pairingId) : undefined;
+    const proof =
+      typeof pairingId === "string"
+        ? pairing.pending.get(pairingId)
+        : undefined;
     if (!proof || typeof signature !== "string") {
       this.fail(pairing);
       throw new PairingError(401, "invalid-pairing-proof");
     }
-    let valid = false;
-    try {
-      valid = verify("sha256", Buffer.from(proof.challenge), { key: proof.key, dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url"));
-    } catch { /* invalid signatures are ordinary bounded failures */ }
-    if (!valid) {
+
+    if (!hasValidSignature(proof.key, proof.challenge, signature)) {
       this.fail(pairing);
       throw new PairingError(401, "invalid-pairing-proof");
     }
+
     const deviceId = `device_${randomUUID()}`;
-    this.store.addDevice(deviceId, JSON.stringify(proof.publicKey), this.clock.now());
+    this.store.addDevice(
+      deviceId,
+      JSON.stringify(proof.publicKey),
+      this.clock.now(),
+    );
     this.#pairing = undefined;
     return { deviceId };
   }
 
-  beginAuthentication(deviceId: unknown): { authenticationId: string; challenge: string } {
-    if (typeof deviceId !== "string" || !this.store.devicePublicKey(deviceId)) throw new PairingError(401, "unknown-device");
+  beginAuthentication(
+    deviceId: unknown,
+  ): { authenticationId: string; challenge: string } {
+    if (
+      typeof deviceId !== "string" ||
+      !this.store.devicePublicKey(deviceId)
+    ) {
+      throw new PairingError(401, "unknown-device");
+    }
+
     const authenticationId = randomUUID();
-    const value = { deviceId, challenge: randomBytes(32).toString("base64url"), expiresAt: this.clock.now() + 60_000 };
-    this.#authChallenges.set(authenticationId, value);
-    return { authenticationId, challenge: value.challenge };
+    const authenticationChallenge: AuthenticationChallenge = {
+      deviceId,
+      challenge: randomBytes(32).toString("base64url"),
+      expiresAt: this.clock.now() + AUTHENTICATION_CHALLENGE_LIFETIME_MS,
+    };
+    this.#authenticationChallenges.set(
+      authenticationId,
+      authenticationChallenge,
+    );
+    return { authenticationId, challenge: authenticationChallenge.challenge };
   }
 
-  authenticate(authenticationId: unknown, signature: unknown): { session: string; expiresAt: number } {
-    const challenge = typeof authenticationId === "string" ? this.#authChallenges.get(authenticationId) : undefined;
-    if (!challenge || challenge.expiresAt <= this.clock.now() || typeof signature !== "string") throw new PairingError(401, "invalid-authentication-proof");
-    this.#authChallenges.delete(authenticationId as string);
-    const jwk = this.store.devicePublicKey(challenge.deviceId);
-    let valid = false;
-    try {
-      valid = !!jwk && verify("sha256", Buffer.from(challenge.challenge), { key: createPublicKey({ key: JSON.parse(jwk), format: "jwk" }), dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url"));
-    } catch { /* fail closed */ }
-    if (!valid) throw new PairingError(401, "invalid-authentication-proof");
+  authenticate(
+    authenticationId: unknown,
+    signature: unknown,
+  ): { session: string; expiresAt: number } {
+    const normalizedAuthenticationId =
+      typeof authenticationId === "string" ? authenticationId : undefined;
+    const challenge =
+      normalizedAuthenticationId === undefined
+        ? undefined
+        : this.#authenticationChallenges.get(normalizedAuthenticationId);
+    if (
+      normalizedAuthenticationId === undefined ||
+      !challenge ||
+      challenge.expiresAt <= this.clock.now() ||
+      typeof signature !== "string"
+    ) {
+      throw new PairingError(401, "invalid-authentication-proof");
+    }
+
+    this.#authenticationChallenges.delete(normalizedAuthenticationId);
+    const publicKeyJwk = this.store.devicePublicKey(challenge.deviceId);
+    if (
+      !publicKeyJwk ||
+      !hasValidStoredSignature(publicKeyJwk, challenge.challenge, signature)
+    ) {
+      throw new PairingError(401, "invalid-authentication-proof");
+    }
+
     const session = randomBytes(32).toString("base64url");
     const expiresAt = this.clock.now() + SESSION_LIFETIME_MS;
     this.#sessions.set(session, { deviceId: challenge.deviceId, expiresAt });
@@ -106,9 +183,15 @@ export class PairingAuthority {
   }
 
   acceptsSession(token: string | undefined): boolean {
-    if (!token) return false;
-    const value = this.#sessions.get(token);
-    if (!value || value.expiresAt <= this.clock.now()) { this.#sessions.delete(token); return false; }
+    if (!token) {
+      return false;
+    }
+
+    const session = this.#sessions.get(token);
+    if (!session || session.expiresAt <= this.clock.now()) {
+      this.#sessions.delete(token);
+      return false;
+    }
     return true;
   }
 
@@ -122,21 +205,85 @@ export class PairingAuthority {
     }
     return pairing;
   }
+
   private currentPairing(): ActivePairing {
-    const value = this.#pairing;
-    if (!value || value.expiresAt <= this.clock.now() || value.failures >= MAX_FAILURES) {
+    const pairing = this.#pairing;
+    if (
+      !pairing ||
+      pairing.expiresAt <= this.clock.now() ||
+      pairing.failures >= MAX_FAILURES
+    ) {
       this.#pairing = undefined;
       throw new PairingError(410, "pairing-unavailable");
     }
-    return value;
+    return pairing;
   }
-  private fail(pairing: ActivePairing): void { pairing.failures += 1; if (pairing.failures >= MAX_FAILURES) this.#pairing = undefined; }
+
+  private fail(pairing: ActivePairing): void {
+    pairing.failures += 1;
+    if (pairing.failures >= MAX_FAILURES) {
+      this.#pairing = undefined;
+    }
+  }
 }
 
-export class PairingError extends Error { constructor(readonly status: number, message: string) { super(message); } }
+export class PairingError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 function isP256PublicJwk(value: unknown): value is JsonWebKey {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const key = value as Record<string, unknown>;
-  return key.kty === "EC" && key.crv === "P-256" && typeof key.x === "string" && typeof key.y === "string" && key.d === undefined;
+  return (
+    key.kty === "EC" &&
+    key.crv === "P-256" &&
+    typeof key.x === "string" &&
+    typeof key.y === "string" &&
+    key.d === undefined
+  );
+}
+
+function hasValidStoredSignature(
+  publicKeyJwk: string,
+  challenge: string,
+  signature: string,
+): boolean {
+  try {
+    const publicKey: unknown = JSON.parse(publicKeyJwk);
+    if (!isP256PublicJwk(publicKey)) {
+      return false;
+    }
+    return hasValidSignature(
+      createPublicKey({ key: publicKey, format: "jwk" }),
+      challenge,
+      signature,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasValidSignature(
+  publicKey: KeyObject,
+  challenge: string,
+  signature: string,
+): boolean {
+  try {
+    return verify(
+      "sha256",
+      Buffer.from(challenge),
+      { key: publicKey, dsaEncoding: "ieee-p1363" },
+      Buffer.from(signature, "base64url"),
+    );
+  } catch {
+    return false;
+  }
 }

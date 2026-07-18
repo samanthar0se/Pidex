@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
 import { WebSocketServer } from "ws";
@@ -15,8 +16,12 @@ import {
   type ServerMessage,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
+import {
+  PairingAuthority,
+  PairingError,
+  type PairingInstructions,
+} from "./pairing.js";
 import { AuthorityStore } from "./store.js";
-import { PairingAuthority, PairingError, type PairingInstructions } from "./pairing.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
@@ -71,7 +76,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   );
   const warnings = configureFirewall(adapters.windows, firewallPort);
   const pairing = new PairingAuthority(adapters.clock, store);
-  let canonicalOrigin = "";
 
   const server = createServer(
     {
@@ -88,7 +92,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           .end();
         return;
       }
-
 
       if (request.method === "POST" && request.url?.startsWith("/pair/")) {
         await handlePairingRequest(request.url, request, response, pairing);
@@ -109,11 +112,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   server.on("upgrade", (request, socket, head) => {
     const upgradeUrl = new URL(request.url ?? "/", "https://pidex.invalid");
-    const session = upgradeUrl.pathname === "/control" ? upgradeUrl.searchParams.get("session") ?? undefined : undefined;
-    if (
-      upgradeUrl.pathname !== "/control" ||
-      !(pairing.acceptsSession(session) || hasValidAuthorization(request.headers.authorization, options.authorization, pairing))
-    ) {
+    const session = upgradeUrl.searchParams.get("session") ?? undefined;
+    const isAuthorizedControlRequest =
+      upgradeUrl.pathname === "/control" &&
+      (pairing.acceptsSession(session) ||
+        hasValidAuthorization(
+          request.headers.authorization,
+          options.authorization,
+          pairing,
+        ));
+
+    if (!isAuthorizedControlRequest) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -136,7 +145,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   await new Promise<void>((resolveStart, rejectStart) => {
     server.once("error", rejectStart);
-    server.listen(options.port ?? DEFAULT_PORT, options.bindAddress ?? "0.0.0.0", resolveStart);
+    server.listen(
+      options.port ?? DEFAULT_PORT,
+      options.bindAddress ?? "0.0.0.0",
+      resolveStart,
+    );
   });
 
   const address = server.address();
@@ -145,7 +158,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       ? address.port
       : (options.port ?? DEFAULT_PORT);
 
-  canonicalOrigin = `https://${hostname}:${port}`;
+  const canonicalOrigin = `https://${hostname}:${port}`;
   const fingerprint = createHash("sha256")
     .update(certificate.ca)
     .digest("hex");
@@ -226,8 +239,12 @@ function hasValidAuthorization(
   }
 
   const token = header.slice(7);
-  if (pairing.acceptsSession(token)) return true;
-  if (!expected) return false;
+  if (pairing.acceptsSession(token)) {
+    return true;
+  }
+  if (!expected) {
+    return false;
+  }
 
   const actual = Buffer.from(token);
   const wanted = Buffer.from(expected);
@@ -236,8 +253,8 @@ function hasValidAuthorization(
 
 async function handlePairingRequest(
   path: string,
-  request: import("node:http").IncomingMessage,
-  response: import("node:http").ServerResponse,
+  request: IncomingMessage,
+  response: ServerResponse,
   pairing: PairingAuthority,
 ): Promise<void> {
   try {
@@ -246,28 +263,69 @@ async function handlePairingRequest(
     for await (const chunk of request) {
       const part = Buffer.from(chunk);
       size += part.length;
-      if (size > 16_384) throw new PairingError(413, "request-too-large");
+      if (size > 16_384) {
+        throw new PairingError(413, "request-too-large");
+      }
       chunks.push(part);
     }
-    let body: Record<string, unknown>;
-    try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>; }
-    catch { throw new PairingError(400, "invalid-json"); }
 
-    const result = path === "/pair/challenge"
-      ? pairing.begin(body.secret, body.publicKey)
-      : path === "/pair/complete"
-        ? pairing.complete(body.pairingId, body.signature)
-        : path === "/pair/auth-challenge"
-          ? pairing.beginAuthentication(body.deviceId)
-          : path === "/pair/authenticate"
-            ? pairing.authenticate(body.authenticationId, body.signature)
-            : undefined;
-    if (!result) throw new PairingError(404, "not-found");
-    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    let body: unknown;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      throw new PairingError(400, "invalid-json");
+    }
+
+    const result = routePairingRequest(path, body, pairing);
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    });
     response.end(JSON.stringify(result));
   } catch (error) {
-    const failure = error instanceof PairingError ? error : new PairingError(400, "invalid-request");
-    response.writeHead(failure.status, { "content-type": "application/json", "cache-control": "no-store" });
+    const failure =
+      error instanceof PairingError
+        ? error
+        : new PairingError(400, "invalid-request");
+    response.writeHead(failure.status, {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    });
     response.end(JSON.stringify({ error: failure.message }));
   }
+}
+
+function routePairingRequest(
+  path: string,
+  body: unknown,
+  pairing: PairingAuthority,
+): object {
+  switch (path) {
+    case "/pair/challenge":
+      return pairing.begin(
+        pairingRequestField(body, "secret"),
+        pairingRequestField(body, "publicKey"),
+      );
+    case "/pair/complete":
+      return pairing.complete(
+        pairingRequestField(body, "pairingId"),
+        pairingRequestField(body, "signature"),
+      );
+    case "/pair/auth-challenge":
+      return pairing.beginAuthentication(pairingRequestField(body, "deviceId"));
+    case "/pair/authenticate":
+      return pairing.authenticate(
+        pairingRequestField(body, "authenticationId"),
+        pairingRequestField(body, "signature"),
+      );
+    default:
+      throw new PairingError(404, "not-found");
+  }
+}
+
+function pairingRequestField(body: unknown, field: string): unknown {
+  if (body === null || body === undefined) {
+    throw new PairingError(400, "invalid-request");
+  }
+  return Reflect.get(Object(body), field);
 }
