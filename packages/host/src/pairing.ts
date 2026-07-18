@@ -196,8 +196,7 @@ export class PairingAuthority {
       this.#sessions.delete(token);
       return undefined;
     }
-    // Recheck durable authority so revocation remains effective after restart
-    // and at every request boundary.
+    // A session cannot retain authority after its Device is revoked.
     if (!this.store.devicePublicKey(session.deviceId)) {
       this.#sessions.delete(token);
       return undefined;
@@ -206,15 +205,24 @@ export class PairingAuthority {
   }
 
   revoke(deviceId: unknown): string {
-    if (typeof deviceId !== "string" || !this.store.revokeDevice(deviceId, this.clock.now())) {
+    if (
+      typeof deviceId !== "string" ||
+      !this.store.revokeDevice(deviceId, this.clock.now())
+    ) {
       throw new PairingError(404, "unknown-device");
     }
-    for (const [id, challenge] of this.#authenticationChallenges) {
-      if (challenge.deviceId === deviceId) this.#authenticationChallenges.delete(id);
+
+    for (const [authenticationId, challenge] of this.#authenticationChallenges) {
+      if (challenge.deviceId === deviceId) {
+        this.#authenticationChallenges.delete(authenticationId);
+      }
     }
     for (const [token, session] of this.#sessions) {
-      if (session.deviceId === deviceId) this.#sessions.delete(token);
+      if (session.deviceId === deviceId) {
+        this.#sessions.delete(token);
+      }
     }
+
     return deviceId;
   }
 

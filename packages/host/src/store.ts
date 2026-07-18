@@ -104,8 +104,11 @@ export class AuthorityStore {
         this.#db.exec("ROLLBACK");
         return false;
       }
+
       this.#db
-        .prepare("INSERT INTO revoked_devices VALUES (?, ?, ?)")
+        .prepare(
+          "INSERT INTO revoked_devices (device_id, paired_at, revoked_at) VALUES (?, ?, ?)",
+        )
         .run(deviceId, row.paired_at, revokedAt);
       this.#db.prepare("DELETE FROM devices WHERE device_id = ?").run(deviceId);
       this.#db.exec("COMMIT");

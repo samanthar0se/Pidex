@@ -9,54 +9,112 @@ import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost, type StartedHost } from "../packages/host/src/host.js";
 
-async function post(origin: string, path: string, body: unknown): Promise<Record<string, unknown>> {
+interface PairedDevice {
+  deviceId: string;
+  privateKey: KeyObject;
+}
+
+function post(
+  origin: string,
+  path: string,
+  body: unknown,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const outgoing = request(new URL(path, origin), {
-      method: "POST", rejectUnauthorized: false,
-      headers: { "content-type": "application/json" },
-    }, response => {
-      let text = "";
-      response.on("data", chunk => text += chunk);
-      response.on("end", () => {
-        const value = JSON.parse(text) as Record<string, unknown>;
-        response.statusCode === 200 ? resolve(value) : reject(new Error(String(value.error)));
-      });
-    });
+    const outgoing = request(
+      new URL(path, origin),
+      {
+        method: "POST",
+        rejectUnauthorized: false,
+        headers: { "content-type": "application/json" },
+      },
+      response => {
+        let responseText = "";
+        response.on("data", chunk => {
+          responseText += chunk;
+        });
+        response.on("end", () => {
+          const responseBody = parseJsonObject(responseText);
+          if (response.statusCode === 200) {
+            resolve(responseBody);
+            return;
+          }
+          reject(new Error(String(responseBody.error)));
+        });
+      },
+    );
     outgoing.on("error", reject);
     outgoing.end(JSON.stringify(body));
   });
 }
 
-async function pair(host: StartedHost): Promise<{ deviceId: string; key: KeyObject }> {
-  const key = generateKeyPairSync("ec", { namedCurve: "P-256" });
+function parseJsonObject(text: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(text);
+  if (!isJsonObject(value)) {
+    throw new TypeError("Expected an object in the JSON response");
+  }
+  return value;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringField(value: Record<string, unknown>, field: string): string {
+  const fieldValue = value[field];
+  if (typeof fieldValue !== "string") {
+    throw new TypeError(`Expected response field ${field} to be a string`);
+  }
+  return fieldValue;
+}
+
+async function pairDevice(host: StartedHost): Promise<PairedDevice> {
+  const keyPair = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const instructions = host.createPairing();
   const challenge = await post(host.origin, "/pair/challenge", {
     secret: instructions.secret,
-    publicKey: key.publicKey.export({ format: "jwk" }),
+    publicKey: keyPair.publicKey.export({ format: "jwk" }),
   });
   const completed = await post(host.origin, "/pair/complete", {
-    pairingId: challenge.pairingId,
-    signature: proof(key.privateKey, String(challenge.challenge)),
+    pairingId: stringField(challenge, "pairingId"),
+    signature: signChallenge(
+      keyPair.privateKey,
+      stringField(challenge, "challenge"),
+    ),
   });
-  return { deviceId: String(completed.deviceId), key: key.privateKey };
+  return {
+    deviceId: stringField(completed, "deviceId"),
+    privateKey: keyPair.privateKey,
+  };
 }
 
-async function authenticate(host: StartedHost, device: { deviceId: string; key: KeyObject }): Promise<string> {
-  const challenge = await post(host.origin, "/pair/auth-challenge", { deviceId: device.deviceId });
+async function authenticateDevice(
+  host: StartedHost,
+  device: PairedDevice,
+): Promise<string> {
+  const challenge = await post(host.origin, "/pair/auth-challenge", {
+    deviceId: device.deviceId,
+  });
   const authenticated = await post(host.origin, "/pair/authenticate", {
-    authenticationId: challenge.authenticationId,
-    signature: proof(device.key, String(challenge.challenge)),
+    authenticationId: stringField(challenge, "authenticationId"),
+    signature: signChallenge(
+      device.privateKey,
+      stringField(challenge, "challenge"),
+    ),
   });
-  return String(authenticated.session);
+  return stringField(authenticated, "session");
 }
 
-function proof(key: KeyObject, challenge: string): string {
-  return sign("sha256", Buffer.from(challenge), { key, dsaEncoding: "ieee-p1363" }).toString("base64url");
+function signChallenge(key: KeyObject, challenge: string): string {
+  return sign("sha256", Buffer.from(challenge), {
+    key,
+    dsaEncoding: "ieee-p1363",
+  }).toString("base64url");
 }
 
-function connect(origin: string, session: string): Promise<WebSocket> {
+function connectClient(origin: string, session: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`${origin.replace("https:", "wss:")}/control?session=${session}`, { rejectUnauthorized: false });
+    const controlUrl = `${origin.replace("https:", "wss:")}/control?session=${session}`;
+    const socket = new WebSocket(controlUrl, { rejectUnauthorized: false });
     socket.once("message", () => resolve(socket));
     socket.once("error", reject);
   });
@@ -64,22 +122,34 @@ function connect(origin: string, session: string): Promise<WebSocket> {
 
 test("a paired Device revokes one identity and its live and stale Client sessions only", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-revoke-"));
-  const host = await startHost({ dataDir, port: 0, adapters: adaptersFor("deterministic") });
+  const host = await startHost({
+    dataDir,
+    port: 0,
+    adapters: adaptersFor("deterministic"),
+  });
   try {
-    const revoker = await pair(host);
-    const target = await pair(host);
-    const revokerSession = await authenticate(host, revoker);
-    const staleTargetSession = await authenticate(host, target);
+    const revoker = await pairDevice(host);
+    const target = await pairDevice(host);
+    const revokerSession = await authenticateDevice(host, revoker);
+    const staleTargetSession = await authenticateDevice(host, target);
     const [revokerClient, targetClient] = await Promise.all([
-      connect(host.origin, revokerSession), connect(host.origin, staleTargetSession),
+      connectClient(host.origin, revokerSession),
+      connectClient(host.origin, staleTargetSession),
     ]);
-    const targetClosed = new Promise<number>(resolve => targetClient.once("close", resolve));
-    revokerClient.send(JSON.stringify({ type: "device.revoke", deviceId: target.deviceId }));
+    const targetClosed = new Promise<number>(resolve => {
+      targetClient.once("close", code => resolve(code));
+    });
+    revokerClient.send(
+      JSON.stringify({ type: "device.revoke", deviceId: target.deviceId }),
+    );
     assert.equal(await targetClosed, 4003);
 
-    await assert.rejects(authenticate(host, target), /unknown-device/);
-    await assert.rejects(connect(host.origin, staleTargetSession));
-    const sibling = await connect(host.origin, await authenticate(host, revoker));
+    await assert.rejects(authenticateDevice(host, target), /unknown-device/);
+    await assert.rejects(connectClient(host.origin, staleTargetSession));
+    const sibling = await connectClient(
+      host.origin,
+      await authenticateDevice(host, revoker),
+    );
     sibling.close();
     revokerClient.close();
   } finally {

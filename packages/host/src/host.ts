@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 import {
   adaptersFor,
   executePidexFirewallOperation,
@@ -31,6 +31,11 @@ const RELEASE_ID = "pidex@0.1.0";
 interface PwaAsset {
   file: string;
   contentType: string;
+}
+
+interface DeviceRevokeMessage {
+  type: "device.revoke";
+  deviceId: string;
 }
 
 const PWA_ASSETS: Record<string, PwaAsset> = {
@@ -111,20 +116,20 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
-  const clientDevices = new Map<import("ws").WebSocket, string>();
+  const clientDeviceIds = new Map<WebSocket, string>();
 
   server.on("upgrade", (request, socket, head) => {
     const upgradeUrl = new URL(request.url ?? "/", "https://pidex.invalid");
-    const session = upgradeUrl.searchParams.get("session") ?? undefined;
-    const sessionDevice = pairing.sessionDevice(session);
-    const isLocalAdministrator =
-        hasValidAuthorization(
-          request.headers.authorization,
-          options.authorization,
-          pairing,
-        );
+    const sessionToken = upgradeUrl.searchParams.get("session") ?? undefined;
+    const sessionDeviceId = pairing.sessionDevice(sessionToken);
+    const hasValidBearerAuthorization = hasValidAuthorization(
+      request.headers.authorization,
+      options.authorization,
+      pairing,
+    );
     const isAuthorizedControlRequest =
-      upgradeUrl.pathname === "/control" && (sessionDevice !== undefined || isLocalAdministrator);
+      upgradeUrl.pathname === "/control" &&
+      (sessionDeviceId !== undefined || hasValidBearerAuthorization);
 
     if (!isAuthorizedControlRequest) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
@@ -133,17 +138,21 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     webSocketServer.handleUpgrade(request, socket, head, webSocket => {
-      if (sessionDevice) clientDevices.set(webSocket, sessionDevice);
+      if (sessionDeviceId !== undefined) {
+        clientDeviceIds.set(webSocket, sessionDeviceId);
+      }
       webSocketServer.emit("connection", webSocket, request);
     });
   });
 
   webSocketServer.on("connection", webSocket => {
-    webSocket.once("close", () => clientDevices.delete(webSocket));
+    webSocket.once("close", () => clientDeviceIds.delete(webSocket));
     webSocket.on("message", bytes => {
       try {
         const message: unknown = JSON.parse(bytes.toString());
-        if (isRevokeMessage(message)) revokeDevice(message.deviceId);
+        if (isRevokeMessage(message)) {
+          revokeDevice(message.deviceId);
+        }
       } catch {
         // Invalid and unknown commands have no authority or side effects.
       }
@@ -191,8 +200,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function revokeDevice(deviceId: string): void {
     pairing.revoke(deviceId);
-    for (const [client, connectedDeviceId] of clientDevices) {
-      if (connectedDeviceId === deviceId) client.close(4003, "device-revoked");
+    for (const [client, connectedDeviceId] of clientDeviceIds) {
+      if (connectedDeviceId === deviceId) {
+        client.close(4003, "device-revoked");
+      }
     }
   }
 
@@ -222,10 +233,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   };
 }
 
-function isRevokeMessage(value: unknown): value is { type: "device.revoke"; deviceId: string } {
-  if (!value || typeof value !== "object") return false;
-  const message = value as Record<string, unknown>;
-  return message.type === "device.revoke" && typeof message.deviceId === "string";
+function isRevokeMessage(value: unknown): value is DeviceRevokeMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  return (
+    "type" in value &&
+    value.type === "device.revoke" &&
+    "deviceId" in value &&
+    typeof value.deviceId === "string"
+  );
 }
 
 function configureFirewall(
