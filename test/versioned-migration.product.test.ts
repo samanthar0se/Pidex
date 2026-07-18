@@ -48,7 +48,9 @@ test("authority migration validates a new generation before atomic activation an
       release: "new",
       schema: 2,
       supportedPriorSchemas: [1],
-      createProtectedRecoverySnapshot: () => { protectedBoundaryCreated = true; },
+      createProtectedRecoverySnapshot: () => {
+        protectedBoundaryCreated = true;
+      },
       migrate: db =>
         db.exec(
           "ALTER TABLE facts ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
