@@ -4,7 +4,7 @@
 
 **Blocked by:** 23 — Archive and restore Sessions safely; 35 — Protect accepted work under storage pressure; 37 — Create and manage online recovery snapshots
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Starting backup creates a durable maintenance operation, stops new product mutations, and drains accepted work toward quiescence for at most 15 minutes.
 - [ ] Backup offers no force path; timeout/failure aborts, cleans/quarantines staging, and resumes normal acceptance without silently stopping work.

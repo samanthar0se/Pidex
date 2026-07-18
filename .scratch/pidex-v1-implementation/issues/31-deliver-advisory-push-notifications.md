@@ -4,7 +4,7 @@
 
 **Blocked by:** 19 — Resolve Interaction races, deadlines, and redaction; 26 — Recover from daemon or Host loss; 30 — Preserve drafts and update the service worker safely
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Each Device can explicitly enable/disable Web Push and configure notification categories without changing Host authority.
 - [ ] Default eligible events are newly open Interactions, every Run terminal outcome, held work after Failed/Interrupted predecessors, and Pi warning/error notifications.
