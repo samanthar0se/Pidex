@@ -120,3 +120,36 @@ test("startup supervisor reports readiness without scheduling a retry", async ()
   assert.deepEqual(state, { state: "ready", attempts: 1 });
   assert.deepEqual(visibleStatus, state);
 });
+
+test("launcher contains the daemon before readiness and closes its Job after repeated failure", async () => {
+  const events: string[] = [];
+  const state = await superviseStartup({
+    acquireUserLock: async () => true,
+    createDaemonSupervisionJob: async () => ({
+      assignDaemon: async () => {
+        events.push("assigned");
+      },
+      close: () => {
+        events.push("closed");
+      },
+    }),
+    startRelease: async (_deadline, supervisionJob) => {
+      assert.ok(supervisionJob);
+      events.push("started");
+      throw new Error("crashed");
+    },
+    sleep: async () => {},
+  });
+
+  assert.equal(state.state, "circuit-open");
+  assert.deepEqual(events, [
+    "assigned",
+    "started",
+    "started",
+    "started",
+    "started",
+    "started",
+    "started",
+    "closed",
+  ]);
+});

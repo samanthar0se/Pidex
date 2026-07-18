@@ -211,6 +211,9 @@ const submitOutcomeSchema = z.discriminatedUnion("kind", [
 ]);
 const nextRunOrderSchema = z.object({ nextOrder: z.number() });
 const activeRunReferenceSchema = z.object({ runId: z.string() });
+const authorityIntegrityCheckSchema = z.object({
+  integrity_check: z.literal("ok"),
+});
 const timelineEntryReferenceSchema = z.object({ entryId: z.string() });
 const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
@@ -1494,13 +1497,17 @@ export class AuthorityStore {
   }
 
   reconcileAcceptedRuns(now: number): void {
+    this.assertAuthorityIntegrity();
+
+    const affectedSessionIds = new Set<string>();
     for (const { runId } of this.executingRuns()) {
-      const accepted = this.loadRun(runId);
-      if (accepted.state === "cancelling") {
+      const run = this.loadRun(runId);
+      affectedSessionIds.add(run.sessionId);
+      if (run.state === "cancelling") {
         this.settleRun(
           runId,
-          "cancelled",
-          "Accepted cancellation reconciled after the worker stopped. Partial output and committed side effects were not rolled back.",
+          "interrupted",
+          "Host recovery interrupted an unproved cancellation. Partial output and committed side effects were preserved.",
           null,
           now,
         );
@@ -1525,12 +1532,25 @@ export class AuthorityStore {
       this.settleRun(
         runId,
         "interrupted",
-        "Worker recovery interrupted execution because normal completion could not be proved. Partial output and committed side effects were preserved.",
+        "Host recovery interrupted execution because normal completion could not be proved. Partial output and committed side effects were preserved.",
         null,
         now,
       );
     }
-    this.#db.prepare("UPDATE runs SET state = 'held' WHERE state = 'queued'").run();
+
+    const holdQueuedRuns = this.#db.prepare(
+      "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
+    );
+    for (const sessionId of affectedSessionIds) {
+      holdQueuedRuns.run(sessionId);
+    }
+  }
+
+  private assertAuthorityIntegrity(): void {
+    const result = this.#db.prepare("PRAGMA integrity_check").get();
+    if (!authorityIntegrityCheckSchema.safeParse(result).success) {
+      throw new Error("authority-integrity-check-failed");
+    }
   }
 
   /** Holds continuation and removes runtime-owned authority after worker loss. */
