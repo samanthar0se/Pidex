@@ -4,7 +4,7 @@
 
 **Blocked by:** 16 — Queue durable follow-up Runs; 17 — Steer exact executing Runs; 19 — Resolve Interaction races, deadlines, and redaction
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Stop targets exact Session, executing Run, observed state/revision, and worker generation; a target that already ended is rejected as stale.
 - [ ] Accepted Stop moves the Run through visible cancellation and cancels every undelivered steering event and queued/held follow-up Run in the Session.
