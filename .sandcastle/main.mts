@@ -23,6 +23,8 @@
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
@@ -41,20 +43,36 @@ const planSchema = z.object({
 
 const AGENT_MODEL = "openai-codex/gpt-5.6-sol";
 
-const createDockerSandbox = () =>
-  docker({
+const containerDependencyRoot = resolve(
+  ".sandcastle/container-node-modules",
+);
+
+const createDockerSandbox = (dependencyScope: string) => {
+  const dependencyDirectory = resolve(
+    containerDependencyRoot,
+    dependencyScope.replace(/[^a-zA-Z0-9._-]/g, "-"),
+  );
+  mkdirSync(dependencyDirectory, { recursive: true });
+
+  return docker({
     mounts: [
       {
         hostPath: "~/.pi/agent/auth.json",
         sandboxPath: "~/.pi/agent/auth.json",
         readonly: false,
       },
+      {
+        hostPath: dependencyDirectory.replace(/\\/g, "/"),
+        sandboxPath: "/home/agent/workspace/node_modules",
+        readonly: false,
+      },
     ],
   });
+};
 
 // Maximum number of plan→execute→merge cycles before stopping.
 // Raise this if your backlog is large; lower it for a quick smoke-test run.
-const MAX_ITERATIONS = 10;
+const MAX_ITERATIONS = 50;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
 // npm install ensures the sandbox always has fresh dependencies.
@@ -80,7 +98,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   const plan = await sandcastle.run({
     hooks,
-    sandbox: createDockerSandbox(),
+    sandbox: createDockerSandbox("planner"),
     name: "planner",
     // One iteration is enough: the planner just needs to read and reason,
     // not write code. (Structured output requires maxIterations: 1.)
@@ -122,7 +140,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     issues.map(async (issue) => {
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
-        sandbox: createDockerSandbox(),
+        sandbox: createDockerSandbox(issue.branch),
         hooks,
       });
 
@@ -213,7 +231,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   await sandcastle.run({
     hooks,
-    sandbox: createDockerSandbox(),
+    sandbox: createDockerSandbox("merger"),
     name: "merger",
     maxIterations: 1,
     agent: sandcastle.pi(AGENT_MODEL, { thinking: "high" }),

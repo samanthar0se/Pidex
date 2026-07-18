@@ -1,3 +1,4 @@
 .env
+container-node-modules/
 logs/
 worktrees/
