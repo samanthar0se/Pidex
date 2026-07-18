@@ -4,7 +4,7 @@
 
 **Blocked by:** 31 — Deliver advisory Push notifications; 43 — Stop, shut down, and uninstall safely; 44 — Prove module and future-workspace seams; 45 — Harden product and release security
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Blocking browser coverage includes current and previous Edge/Chrome on supported Windows, Chrome on supported Android, and Safari browser plus installed PWA on supported iOS/iPadOS.
 - [ ] Core Session creation, discovery, Timeline, runtime controls, queues, steering, Interactions, Stop, lifecycle, Fork, reconnect, offline, update-required, and revocation workflows pass on each required browser mode.
