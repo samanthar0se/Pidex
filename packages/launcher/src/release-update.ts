@@ -14,6 +14,9 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 
+const DEFAULT_QUIESCENCE_TIMEOUT_MS = 15 * 60_000;
+const QUIESCENCE_POLL_INTERVAL_MS = 100;
+
 const fileSchema = z.object({
   path: z.string().min(1),
   size: z.number().int().nonnegative(),
@@ -47,64 +50,72 @@ export interface StagedRelease {
 
 /** Verifies and publishes release bytes without ever making staging bytes runnable. */
 export class SignedReleaseStore {
-  constructor(readonly root: string, readonly pinnedSigningRoot: string | Buffer) {}
+  constructor(
+    readonly root: string,
+    readonly pinnedSigningRoot: string | Buffer,
+  ) {}
 
-  stage(packageDirectory: string, metadata: Buffer, signature: Buffer): StagedRelease {
+  stage(
+    packageDirectory: string,
+    metadata: Buffer,
+    signature: Buffer,
+  ): StagedRelease {
     if (!verify(null, metadata, this.pinnedSigningRoot, signature)) {
       throw new ReleaseUpdateError("signature-invalid");
     }
-    let manifest: ReleaseManifest;
-    try {
-      manifest = releaseManifestSchema.parse(JSON.parse(metadata.toString("utf8")));
-    } catch (cause) {
-      throw new ReleaseUpdateError("metadata-invalid", String(cause));
-    }
+
+    const manifest = parseReleaseManifest(metadata);
     if (manifest.daemonGeneration !== manifest.workerGeneration) {
       throw new ReleaseUpdateError("mixed-generation");
     }
-    const names = new Set<string>();
-    for (const file of manifest.files) {
-      if (!safeRelative(file.path) || names.has(file.path)) {
-        throw new ReleaseUpdateError("metadata-invalid");
-      }
-      names.add(file.path);
-      const source = join(packageDirectory, file.path);
-      if (!existsSync(source) || !statSync(source).isFile()) {
-        throw new ReleaseUpdateError("package-incomplete");
-      }
-      const bytes = readFileSync(source);
-      if (bytes.length !== file.size || digest(bytes) !== file.sha256) {
-        throw new ReleaseUpdateError("package-corrupt");
-      }
-    }
 
-    const releases = join(this.root, "releases");
-    const destination = join(releases, safeId(manifest.releaseId));
-    if (existsSync(destination)) {
+    validateReleaseFiles(packageDirectory, manifest);
+
+    const releasesDirectory = join(this.root, "releases");
+    const releaseDirectory = join(
+      releasesDirectory,
+      validateReleaseId(manifest.releaseId),
+    );
+    if (existsSync(releaseDirectory)) {
       throw new ReleaseUpdateError("release-immutable");
     }
-    const staging = join(this.root, ".release-staging", randomUUID());
+
+    const stagingDirectory = join(
+      this.root,
+      ".release-staging",
+      randomUUID(),
+    );
     try {
       for (const file of manifest.files) {
-        const target = join(staging, file.path);
+        const target = join(stagingDirectory, file.path);
         mkdirSync(dirname(target), { recursive: true });
         copyFileSync(join(packageDirectory, file.path), target);
         chmodSync(target, 0o444);
       }
-      writeFileSync(join(staging, "release.json"), metadata, { flag: "wx", mode: 0o444 });
-      writeFileSync(join(staging, "release.sig"), signature, { flag: "wx", mode: 0o444 });
+
+      writeFileSync(join(stagingDirectory, "release.json"), metadata, {
+        flag: "wx",
+        mode: 0o444,
+      });
+      writeFileSync(join(stagingDirectory, "release.sig"), signature, {
+        flag: "wx",
+        mode: 0o444,
+      });
+
       // Recheck copied bytes so a changing download cannot win the copy race.
       for (const file of manifest.files) {
-        if (digest(readFileSync(join(staging, file.path))) !== file.sha256) {
+        const stagedBytes = readFileSync(join(stagingDirectory, file.path));
+        if (sha256(stagedBytes) !== file.sha256) {
           throw new ReleaseUpdateError("package-corrupt");
         }
       }
-      mkdirSync(releases, { recursive: true });
-      renameSync(staging, destination);
-      makeDirectoriesReadOnly(destination);
-      return { state: "ready", manifest, directory: destination };
+
+      mkdirSync(releasesDirectory, { recursive: true });
+      renameSync(stagingDirectory, releaseDirectory);
+      setPublishedDirectoryPermissions(releaseDirectory);
+      return { state: "ready", manifest, directory: releaseDirectory };
     } catch (cause) {
-      rmSync(staging, { recursive: true, force: true });
+      rmSync(stagingDirectory, { recursive: true, force: true });
       throw cause;
     }
   }
@@ -124,68 +135,146 @@ export interface ActivationHooks {
   now?(): number;
 }
 
-/** Coordinates the Host-wide authority boundary; the pointer is the final commit. */
-export async function activateSignedRelease(options: {
+export interface ActivateSignedReleaseOptions {
   root: string;
   release: StagedRelease;
   hooks: ActivationHooks;
   force?: boolean;
   timeoutMs?: number;
-}): Promise<void> {
+}
+
+/** Coordinates the Host-wide authority boundary; the pointer is the final commit. */
+export async function activateSignedRelease(
+  options: ActivateSignedReleaseOptions,
+): Promise<void> {
   const { hooks } = options;
-  const timeout = options.timeoutMs ?? 15 * 60_000;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_QUIESCENCE_TIMEOUT_MS;
   const now = hooks.now ?? Date.now;
-  const sleep = hooks.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
-  const oldPointer = pointer(options.root);
+  const sleep =
+    hooks.sleep ??
+    (milliseconds =>
+      new Promise(resolve => setTimeout(resolve, milliseconds)));
+  const previousReleaseId = readActiveRelease(options.root);
+
   await hooks.stopAcceptingMutations();
   let rollbackData: (() => Promise<void> | void) | undefined;
   try {
-    if (options.force) await hooks.stopAffectedSessions();
-    const deadline = now() + timeout;
-    while (!(await hooks.isQuiescent())) {
-      if (now() >= deadline) throw new ReleaseUpdateError("quiescence-timeout");
-      await sleep(Math.min(100, Math.max(1, deadline - now())));
+    if (options.force) {
+      await hooks.stopAffectedSessions();
     }
+
+    const deadline = now() + timeoutMs;
+    while (!(await hooks.isQuiescent())) {
+      if (now() >= deadline) {
+        throw new ReleaseUpdateError("quiescence-timeout");
+      }
+      await sleep(
+        Math.min(
+          QUIESCENCE_POLL_INTERVAL_MS,
+          Math.max(1, deadline - now()),
+        ),
+      );
+    }
+
     await hooks.flushAndStopWorkers();
     rollbackData = await hooks.activateData(options.release.manifest);
     await hooks.startMatchingRelease(options.release);
-    writePointer(options.root, options.release.manifest.releaseId);
+    writeActiveRelease(options.root, options.release.manifest.releaseId);
   } catch (cause) {
     if (await hooks.hasAcceptedNewMutations()) {
-      throw new ReleaseUpdateError("managed-restore-required", String(cause));
+      throw new ReleaseUpdateError(
+        "managed-restore-required",
+        String(cause),
+      );
     }
     await rollbackData?.();
-    if (oldPointer !== null) writePointer(options.root, oldPointer);
+    if (previousReleaseId !== null) {
+      writeActiveRelease(options.root, previousReleaseId);
+    }
     throw cause;
   } finally {
     await hooks.resumeAcceptingMutations();
   }
 }
 
-function safeRelative(path: string): boolean {
-  return path !== "." && !path.startsWith("/") && !path.split(/[\\/]/).includes("..") && resolve("/x", path).startsWith(`/x${sep}`);
+function parseReleaseManifest(metadata: Buffer): ReleaseManifest {
+  try {
+    return releaseManifestSchema.parse(
+      JSON.parse(metadata.toString("utf8")),
+    );
+  } catch (cause) {
+    throw new ReleaseUpdateError("metadata-invalid", String(cause));
+  }
 }
-function safeId(id: string): string {
-  if (basename(id) !== id || id === "." || id === "..") throw new ReleaseUpdateError("metadata-invalid");
+
+function validateReleaseFiles(
+  packageDirectory: string,
+  manifest: ReleaseManifest,
+): void {
+  const filePaths = new Set<string>();
+  for (const file of manifest.files) {
+    if (!isSafeRelativePath(file.path) || filePaths.has(file.path)) {
+      throw new ReleaseUpdateError("metadata-invalid");
+    }
+    filePaths.add(file.path);
+
+    const source = join(packageDirectory, file.path);
+    if (!existsSync(source) || !statSync(source).isFile()) {
+      throw new ReleaseUpdateError("package-incomplete");
+    }
+
+    const bytes = readFileSync(source);
+    if (bytes.length !== file.size || sha256(bytes) !== file.sha256) {
+      throw new ReleaseUpdateError("package-corrupt");
+    }
+  }
+}
+
+function isSafeRelativePath(path: string): boolean {
+  if (path === "." || path.startsWith("/")) {
+    return false;
+  }
+  if (path.split(/[\\/]/).includes("..")) {
+    return false;
+  }
+  return resolve("/x", path).startsWith(`/x${sep}`);
+}
+
+function validateReleaseId(id: string): string {
+  if (basename(id) !== id || id === "." || id === "..") {
+    throw new ReleaseUpdateError("metadata-invalid");
+  }
   return id;
 }
-function digest(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
-function makeDirectoriesReadOnly(root: string): void {
+
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function setPublishedDirectoryPermissions(root: string): void {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (entry.isDirectory()) makeDirectoriesReadOnly(join(root, entry.name));
+    if (entry.isDirectory()) {
+      setPublishedDirectoryPermissions(join(root, entry.name));
+    }
   }
+
   // Keep directories owner-writable for managed release removal; files are
   // read-only and the store refuses replacement of a published release id.
   chmodSync(root, 0o755);
 }
-function pointer(root: string): string | null {
+
+function readActiveRelease(root: string): string | null {
   const path = join(root, "active-release");
-  return existsSync(path) ? readFileSync(path, "utf8").trim() : null;
+  if (!existsSync(path)) {
+    return null;
+  }
+  return readFileSync(path, "utf8").trim();
 }
-function writePointer(root: string, release: string): void {
+
+function writeActiveRelease(root: string, releaseId: string): void {
   mkdirSync(root, { recursive: true });
   const target = join(root, "active-release");
-  const staged = `${target}.${randomUUID()}.stage`;
-  writeFileSync(staged, release, { flag: "wx" });
-  renameSync(staged, target);
+  const stagedPointer = `${target}.${randomUUID()}.stage`;
+  writeFileSync(stagedPointer, releaseId, { flag: "wx" });
+  renameSync(stagedPointer, target);
 }
