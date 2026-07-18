@@ -53,7 +53,7 @@ export class PiSessionWorker {
         throw new Error("missing-required-worker-capability");
       }
 
-      return executionResultSchema.parse(
+      const result = executionResultSchema.parse(
         await this.#pi.execute({
           sessionId: this.#sessionId,
           prompt,
@@ -61,6 +61,17 @@ export class PiSessionWorker {
           resourceLoader: "public",
         }),
       );
+      if (!this.#pi.flushCheckpoint) {
+        throw new Error("checkpoint-flush-unavailable");
+      }
+      const durableCheckpoint = await this.#pi.flushCheckpoint(
+        this.#sessionId,
+        result.checkpoint,
+      );
+      if (durableCheckpoint !== result.checkpoint) {
+        throw new Error("checkpoint-evidence-mismatch");
+      }
+      return result;
     } finally {
       this.#running = false;
     }

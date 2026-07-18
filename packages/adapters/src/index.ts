@@ -30,6 +30,8 @@ export interface PiAdapter {
   /** Pidex's public SDK seam. Implementations must use Pi's resource loader. */
   probe?(request: PiProbeRequest): Promise<PiProbeResult>;
   execute?(request: PiExecuteRequest): Promise<PiExecuteResult>;
+  /** Flushes the private Pi artifact and proves the returned checkpoint is stable. */
+  flushCheckpoint?(sessionId: string, checkpoint: string): Promise<string>;
 }
 
 export interface NetworkAdapter {
@@ -168,6 +170,7 @@ function deterministicPiAdapter(): PiAdapter {
       text: `Deterministic Pi response: ${request.prompt}`,
       checkpoint: `checkpoint:${request.sessionId}`,
     }),
+    flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
   };
 }
 

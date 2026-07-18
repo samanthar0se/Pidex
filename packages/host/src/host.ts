@@ -145,6 +145,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     adapters,
     options.initialCatalog,
   );
+  // An executing tail surviving daemon loss has no proof of normal completion.
+  // Settle it conservatively and never dispatch it again to discover the result.
+  store.reconcileAcceptedRuns(adapters.clock.now());
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
@@ -673,8 +676,21 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           sendServerMessage(socket, message);
         }
       })
-      .catch(() => {
-        // Issue 11 settles abnormal Run outcomes.
+      .catch(error => {
+        try {
+          const failed = store.settleRun(
+            runId,
+            "failed",
+            `Pi execution failed: ${error instanceof Error ? error.message : "runtime-error"}`,
+            null,
+            adapters.clock.now(),
+          );
+          for (const socket of admittedClients) {
+            sendServerMessage(socket, { type: "run.completed", ...failed });
+          }
+        } catch {
+          // Host loss is reconciled as Interrupted from the accepted durable row.
+        }
       });
   }
 

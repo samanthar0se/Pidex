@@ -107,7 +107,7 @@ export const runRecordSchema = z.object({
   sessionId: z.string(),
   sessionOrder: z.number(),
   prompt: z.string(),
-  state: z.enum(["accepted", "completed"]),
+  state: z.enum(["accepted", "completed", "failed", "cancelled", "interrupted"]),
 });
 
 export const acceptedRunSchema = runRecordSchema.extend({
@@ -118,17 +118,23 @@ export const completedRunSchema = runRecordSchema.extend({
   state: z.literal("completed"),
 });
 
+export const terminalRunSchema = runRecordSchema.extend({
+  state: z.enum(["completed", "failed", "cancelled", "interrupted"]),
+});
+
 export const timelineEntrySchema = z.object({
   entryId: z.string(),
   runId: z.string(),
   order: z.number(),
-  kind: z.enum(["prompt", "response"]),
+  kind: z.enum(["prompt", "response", "outcome"]),
   text: z.string(),
+  blobId: z.string().nullable().optional(),
 });
 
 export type RunRecord = z.infer<typeof runRecordSchema>;
 export type AcceptedRun = z.infer<typeof acceptedRunSchema>;
 export type CompletedRun = z.infer<typeof completedRunSchema>;
+export type TerminalRun = z.infer<typeof terminalRunSchema>;
 export type TimelineEntry = z.infer<typeof timelineEntrySchema>;
 
 export const synchronizationScopeSchema = z.discriminatedUnion("kind", [
@@ -231,7 +237,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("run.completed"),
-    run: completedRunSchema,
+    run: terminalRunSchema,
     timeline: z.array(timelineEntrySchema),
   }),
 ]).and(optionalEnvelopeSchema);

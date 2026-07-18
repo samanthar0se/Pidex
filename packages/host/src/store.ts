@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { HostAdapters } from "../../adapters/src/index.js";
 import {
   acceptedRunSchema,
   completedRunSchema,
+  terminalRunSchema,
   hostChangeSchema,
   projectSummarySchema,
   runRecordSchema,
@@ -15,6 +16,7 @@ import {
   workspaceSummarySchema,
   type AcceptedRun,
   type CompletedRun,
+  type TerminalRun,
   type HostChange,
   type HostStatus,
   type ProjectSummary,
@@ -84,7 +86,7 @@ const CREATE_AUTHORITY_SCHEMA = `
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     session_order INTEGER NOT NULL,
     prompt TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('accepted','completed')),
+    state TEXT NOT NULL CHECK(state IN ('accepted','completed','failed','cancelled','interrupted')),
     created_at INTEGER NOT NULL,
     completed_at INTEGER,
     UNIQUE(session_id, session_order)
@@ -97,6 +99,7 @@ const CREATE_AUTHORITY_SCHEMA = `
     kind TEXT NOT NULL,
     text TEXT NOT NULL,
     checkpoint TEXT,
+    blob_id TEXT,
     created_at INTEGER NOT NULL,
     UNIQUE(session_id, entry_order)
   );
@@ -188,8 +191,10 @@ interface SynchronizationChange {
 
 export class AuthorityStore {
   readonly #db: DatabaseSync;
+  readonly #dataDir: string;
 
   constructor(path: string, adapters: HostAdapters, catalog: InitialCatalog = {}) {
+    this.#dataDir = dirname(path);
     mkdirSync(dirname(path), { recursive: true });
     this.#db = new DatabaseSync(path);
     this.#db.exec(CREATE_AUTHORITY_SCHEMA);
@@ -198,6 +203,10 @@ export class AuthorityStore {
       this.#db.exec(
         "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",
       );
+    }
+    const timelineColumns = this.#db.prepare("PRAGMA table_info(timeline_entries)").all();
+    if (!timelineColumns.some(column => column.name === "blob_id")) {
+      this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN blob_id TEXT");
     }
 
     const existingHost = this.#db
@@ -526,6 +535,66 @@ export class AuthorityStore {
     checkpoint: string,
     now: number,
   ): { run: CompletedRun; timeline: TimelineEntry[] } {
+    this.stageCompletionEvidence(runId, text, checkpoint);
+    const result = this.settleRun(runId, "completed", text, checkpoint, now) as {
+      run: CompletedRun;
+      timeline: TimelineEntry[];
+    };
+    this.removeCompletionEvidence(runId);
+    return result;
+  }
+
+  stageCompletionEvidence(runId: string, text: string, checkpoint: string): void {
+    const directory = join(this.#dataDir, "settlements");
+    mkdirSync(directory, { recursive: true });
+    const body = JSON.stringify({ runId, text, checkpoint });
+    const evidence = JSON.stringify({ body, digest: createHash("sha256").update(body).digest("hex") });
+    const staged = join(directory, `${runId}.${randomUUID()}.stage`);
+    const destination = join(directory, `${runId}.json`);
+    writeFileSync(staged, evidence, { flag: "wx" });
+    const fd = openSync(staged, "r");
+    fsyncSync(fd);
+    closeSync(fd);
+    renameSync(staged, destination);
+    const directoryFd = openSync(directory, "r");
+    fsyncSync(directoryFd);
+    closeSync(directoryFd);
+  }
+
+  reconcileAcceptedRuns(now: number): void {
+    for (const { runId } of this.acceptedRuns()) {
+      const path = join(this.#dataDir, "settlements", `${runId}.json`);
+      if (existsSync(path)) {
+        try {
+          const evidence = JSON.parse(readFileSync(path, "utf8")) as { body: string; digest: string };
+          if (createHash("sha256").update(evidence.body).digest("hex") !== evidence.digest) throw new Error("bad-evidence");
+          const value = JSON.parse(evidence.body) as { runId: string; text: string; checkpoint: string };
+          if (value.runId !== runId || !value.checkpoint) throw new Error("bad-evidence");
+          this.settleRun(runId, "completed", value.text, value.checkpoint, now);
+          this.removeCompletionEvidence(runId);
+          continue;
+        } catch {
+          // Corrupt or incomplete proof cannot establish normal completion.
+        }
+      }
+      this.settleRun(runId, "interrupted", "Execution was interrupted; normal completion could not be proved.", null, now);
+    }
+  }
+
+  private removeCompletionEvidence(runId: string): void {
+    const path = join(this.#dataDir, "settlements", `${runId}.json`);
+    if (existsSync(path)) unlinkSync(path);
+  }
+
+  /** Publish immutable bytes first, then atomically reference them and settle once. */
+  settleRun(
+    runId: string,
+    outcome: TerminalRun["state"],
+    text: string,
+    checkpoint: string | null,
+    now: number,
+  ): { run: TerminalRun; timeline: TimelineEntry[] } {
+    const blobId = this.publishBlob(Buffer.from(text));
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       const row = this.#db
@@ -548,24 +617,26 @@ export class AuthorityStore {
         .prepare(
           `INSERT INTO timeline_entries
            (entry_id, session_id, run_id, entry_order, kind, text,
-            checkpoint, created_at)
-           VALUES (?, ?, ?, ?, 'response', ?, ?, ?)`,
+            checkpoint, blob_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           `entry_${randomUUID()}`,
           acceptedRun.sessionId,
           runId,
           acceptedRun.sessionOrder * 2,
+          outcome === "completed" ? "response" : "outcome",
           text,
           checkpoint,
+          blobId,
           now,
         );
       this.#db
         .prepare(
-          `UPDATE runs SET state = 'completed', completed_at = ?
-           WHERE run_id = ?`,
+          `UPDATE runs SET state = ?, completed_at = ?
+           WHERE run_id = ? AND state = 'accepted'`,
         )
-        .run(now, runId);
+        .run(outcome, now, runId);
       this.#db
         .prepare(
           `UPDATE sessions
@@ -573,9 +644,12 @@ export class AuthorityStore {
            WHERE session_id = ?`,
         )
         .run(acceptedRun.sessionId);
-      const completedRun = completedRunSchema.parse({
+      this.#db.prepare(
+        "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
+      ).run(now);
+      const completedRun = terminalRunSchema.parse({
         ...acceptedRun,
-        state: "completed",
+        state: outcome,
       });
       const completion = {
         run: completedRun,
@@ -593,13 +667,41 @@ export class AuthorityStore {
     const rows = this.#db
       .prepare(
         `SELECT entry_id AS entryId, run_id AS runId,
-                entry_order AS 'order', kind, text
+                entry_order AS 'order', kind, text, blob_id AS blobId
          FROM timeline_entries
          WHERE session_id = ?
          ORDER BY entry_order`,
       )
       .all(sessionId);
     return timelineEntrySchema.array().parse(rows);
+  }
+
+  acceptedRuns(): Array<{ runId: string }> {
+    return this.#db.prepare("SELECT run_id AS runId FROM runs WHERE state = 'accepted'").all() as Array<{ runId: string }>;
+  }
+
+  private publishBlob(bytes: Buffer): string {
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const blobId = `sha256:${digest}`;
+    const directory = join(this.#dataDir, "blobs");
+    const destination = join(directory, digest);
+    mkdirSync(directory, { recursive: true });
+    if (!existsSync(destination)) {
+      const staged = `${destination}.${randomUUID()}.stage`;
+      writeFileSync(staged, bytes, { flag: "wx" });
+      const fd = openSync(staged, "r");
+      fsyncSync(fd);
+      closeSync(fd);
+      if (createHash("sha256").update(readFileSync(staged)).digest("hex") !== digest) {
+        unlinkSync(staged);
+        throw new Error("blob-verification-failed");
+      }
+      renameSync(staged, destination);
+      const directoryFd = openSync(directory, "r");
+      fsyncSync(directoryFd);
+      closeSync(directoryFd);
+    }
+    return blobId;
   }
 
   private loadSession(sessionId: string): SessionSummary {

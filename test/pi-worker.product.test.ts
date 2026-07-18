@@ -19,6 +19,7 @@ test("a Pi worker rejects a readiness response without every required capability
       didExecute = true;
       return { text: "unreachable", checkpoint: "unreachable" };
     },
+    flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
   };
 
   const worker = new PiSessionWorker("session-1", pi);
@@ -42,6 +43,7 @@ test("a Pi worker rejects a mismatched protocol generation before execution", as
       didExecute = true;
       return { text: "unreachable", checkpoint: "unreachable" };
     },
+    flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
   };
 
   const worker = new PiSessionWorker("session-1", pi);
@@ -51,4 +53,29 @@ test("a Pi worker rejects a mismatched protocol generation before execution", as
     return true;
   });
   assert.equal(didExecute, false);
+});
+
+test("a Pi worker returns completion only after durable checkpoint flush", async () => {
+  const events: string[] = [];
+  const pi: PiAdapter = {
+    kind: "deterministic",
+    probe: async request => ({
+      ...request,
+      capabilities: ["run.execute", "checkpoint.durable"],
+    }),
+    execute: async () => {
+      events.push("execute");
+      return { text: "ok", checkpoint: "stable-1" };
+    },
+    flushCheckpoint: async (_sessionId, checkpoint) => {
+      events.push("flush");
+      return checkpoint;
+    },
+  };
+
+  assert.deepEqual(await new PiSessionWorker("session-1", pi).execute("go"), {
+    text: "ok",
+    checkpoint: "stable-1",
+  });
+  assert.deepEqual(events, ["execute", "flush"]);
 });
