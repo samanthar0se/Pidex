@@ -9,6 +9,7 @@ export const protocolCapabilities = [
   { id: "scope.session", version: 1 },
   { id: "session.create", version: 1 },
   { id: "session.rename", version: 1 },
+  { id: "run.submit", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -92,7 +93,7 @@ export const sessionSummarySchema = z.object({
   projectId: z.string().nullable(),
   workspaceId: z.string().nullable(),
   retention: z.literal("available"),
-  residency: z.literal("sleeping"),
+  residency: z.enum(["sleeping", "resident"]),
   metadataRevision: z.number(),
   timelineRevision: z.number(),
 });
@@ -197,6 +198,12 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     failedPrecondition: z.literal("metadataRevision").optional(),
     currentMetadataRevision: z.number().optional(),
     reconciliationCursor: z.string().optional(),
+    runId: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("run.completed"),
+    run: z.object({ runId: z.string(), sessionId: z.string(), sessionOrder: z.number(), prompt: z.string(), state: z.literal("completed") }),
+    timeline: z.array(z.object({ entryId: z.string(), runId: z.string(), order: z.number(), kind: z.enum(["prompt", "response"]), text: z.string() })),
   }),
 ]).and(optionalEnvelopeSchema);
 

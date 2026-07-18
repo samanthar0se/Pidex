@@ -52,7 +52,7 @@ const CREATE_AUTHORITY_SCHEMA = `
     workspace_id TEXT REFERENCES workspaces(workspace_id),
     name TEXT NOT NULL DEFAULT 'Untitled Session',
     retention TEXT NOT NULL CHECK(retention='available'),
-    residency TEXT NOT NULL CHECK(residency='sleeping'),
+    residency TEXT NOT NULL CHECK(residency IN ('sleeping','resident')),
     metadata_revision INTEGER NOT NULL,
     timeline_revision INTEGER NOT NULL,
     created_at INTEGER NOT NULL
@@ -70,7 +70,29 @@ const CREATE_AUTHORITY_SCHEMA = `
     sequence INTEGER PRIMARY KEY,
     payload_json TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    session_order INTEGER NOT NULL, prompt TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('accepted','completed')),
+    created_at INTEGER NOT NULL, completed_at INTEGER,
+    UNIQUE(session_id, session_order)
+  );
+  CREATE TABLE IF NOT EXISTS timeline_entries (
+    entry_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL,
+    entry_order INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
+    checkpoint TEXT, created_at INTEGER NOT NULL,
+    UNIQUE(session_id, entry_order)
+  );
 `;
+
+export interface RunRecord { runId: string; sessionId: string; sessionOrder: number; prompt: string; state: "accepted" | "completed" }
+export interface TimelineEntry { entryId: string; runId: string; order: number; kind: "prompt" | "response"; text: string }
+export interface SubmitCommand { commandId: string; sessionId: string; prompt: string; requiredCapability: "run.submit" }
+export type SubmitResult =
+  | { kind: "accepted"; run: RunRecord; cursor: string; digest: string }
+  | { kind: "rejected"; error: "unknown-session"; cursor: string; digest: string }
+  | { kind: "replayed"; outcome: Exclude<SubmitResult, { kind: "replayed" | "command-id-conflict" }>; digest: string }
+  | { kind: "command-id-conflict" };
 
 export interface RenameCommand {
   commandId: string;
@@ -352,6 +374,54 @@ export class AuthorityStore {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  submitRun(deviceId: string, command: SubmitCommand, now: number): SubmitResult {
+    const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const receipt = this.#db.prepare(
+        "SELECT envelope_digest, outcome_json FROM command_receipts WHERE device_id=? AND command_id=?",
+      ).get(deviceId, command.commandId);
+      if (receipt) {
+        this.#db.exec("COMMIT");
+        if (receipt.envelope_digest !== digest) return { kind: "command-id-conflict" };
+        return { kind: "replayed", outcome: JSON.parse(String(receipt.outcome_json)), digest };
+      }
+      const exists = this.#db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(command.sessionId);
+      const cursor = this.status("").synchronization.cursor;
+      let outcome: Exclude<SubmitResult, { kind: "replayed" | "command-id-conflict" }>;
+      if (!exists) {
+        outcome = { kind: "rejected", error: "unknown-session", cursor, digest };
+      } else {
+        const orderRow = this.#db.prepare("SELECT COALESCE(MAX(session_order),0)+1 AS n FROM runs WHERE session_id=?").get(command.sessionId);
+        const run: RunRecord = { runId: `run_${randomUUID()}`, sessionId: command.sessionId, sessionOrder: Number(orderRow?.n), prompt: command.prompt, state: "accepted" };
+        this.#db.prepare("INSERT INTO runs VALUES (?, ?, ?, ?, 'accepted', ?, NULL)").run(run.runId, run.sessionId, run.sessionOrder, run.prompt, now);
+        this.#db.prepare("INSERT INTO timeline_entries VALUES (?, ?, ?, ?, 'prompt', ?, NULL, ?)").run(`entry_${randomUUID()}`, run.sessionId, run.runId, run.sessionOrder * 2 - 1, run.prompt, now);
+        this.#db.prepare("UPDATE sessions SET residency='resident', timeline_revision=timeline_revision+1 WHERE session_id=?").run(run.sessionId);
+        outcome = { kind: "accepted", run, cursor, digest };
+      }
+      this.#db.prepare("INSERT INTO command_receipts VALUES (?, ?, ?, ?, ?, ?)").run(deviceId, command.commandId, digest, JSON.stringify(outcome), cursor, now);
+      this.#db.exec("COMMIT");
+      return outcome;
+    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+  }
+
+  completeRun(runId: string, text: string, checkpoint: string, now: number): { run: RunRecord & { state: "completed" }; timeline: TimelineEntry[] } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.#db.prepare("SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder, prompt, state FROM runs WHERE run_id=?").get(runId) as unknown as RunRecord;
+      if (!row || row.state !== "accepted") throw new Error("run-not-accepted");
+      this.#db.prepare("INSERT INTO timeline_entries VALUES (?, ?, ?, ?, 'response', ?, ?, ?)").run(`entry_${randomUUID()}`, row.sessionId, runId, row.sessionOrder * 2, text, checkpoint, now);
+      this.#db.prepare("UPDATE runs SET state='completed', completed_at=? WHERE run_id=?").run(now, runId);
+      this.#db.prepare("UPDATE sessions SET timeline_revision=timeline_revision+1 WHERE session_id=?").run(row.sessionId);
+      this.#db.exec("COMMIT");
+      return { run: { ...row, state: "completed" }, timeline: this.timeline(row.sessionId) };
+    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+  }
+
+  timeline(sessionId: string): TimelineEntry[] {
+    return this.#db.prepare("SELECT entry_id AS entryId, run_id AS runId, entry_order AS 'order', kind, text FROM timeline_entries WHERE session_id=? ORDER BY entry_order").all(sessionId) as unknown as TimelineEntry[];
   }
 
   private loadSession(sessionId: string): SessionSummary {

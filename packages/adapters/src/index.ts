@@ -4,6 +4,18 @@ export interface Clock {
 
 export interface PiAdapter {
   readonly kind: "real" | "deterministic";
+  /** Pidex's public SDK seam. Implementations must use Pi's resource loader. */
+  probe?(request: { protocolGeneration: 1; sdkGeneration: string }): Promise<{
+    protocolGeneration: number;
+    sdkGeneration: string;
+    capabilities: string[];
+  }>;
+  execute?(request: {
+    sessionId: string;
+    prompt: string;
+    projectTrust: true;
+    resourceLoader: "public";
+  }): Promise<{ text: string; checkpoint: string }>;
 }
 
 export interface NetworkAdapter {
@@ -124,7 +136,19 @@ export function adaptersFor(mode: AdapterMode = "product"): HostAdapters {
     clock: {
       now: () => (deterministic ? 1_700_000_000_000 : Date.now()),
     },
-    pi: { kind: deterministic ? "deterministic" : "real" },
+    pi: deterministic
+      ? {
+          kind: "deterministic",
+          probe: async request => ({
+            ...request,
+            capabilities: ["run.execute", "checkpoint.durable"],
+          }),
+          execute: async request => ({
+            text: `Deterministic Pi response: ${request.prompt}`,
+            checkpoint: `checkpoint:${request.sessionId}`,
+          }),
+        }
+      : { kind: "real" },
     network: { beforeSend() {} },
     storage: { beforeCommit() {} },
     windows,

@@ -31,6 +31,7 @@ import {
   type InitialCatalog,
   type RenameOutcome,
 } from "./store.js";
+import { PiSessionWorker } from "./pi-worker.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
@@ -65,6 +66,7 @@ interface SessionRenameMessage {
   requiredCapability: "session.rename";
   observedMetadataRevision: number;
 }
+interface RunSubmitMessage { type: "run.submit"; commandId: string; sessionId: string; prompt: string; requiredCapability: "run.submit" }
 
 interface ScopeSetMessage {
   type: "scope.set";
@@ -185,6 +187,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const maxOutboundBytes =
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
+  const workers = new Map<string, PiSessionWorker>();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
     if (client.readyState !== client.OPEN) {
@@ -305,6 +308,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionCreate(webSocket, message);
         } else if (isSessionRenameMessage(message)) {
           handleSessionRename(webSocket, message);
+        } else if (isRunSubmitMessage(message)) {
+          handleRunSubmit(webSocket, message);
         } else if (isScopeSetMessage(message)) {
           synchronize(webSocket, message);
         }
@@ -601,6 +606,37 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
+  function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      adapters.storage.beforeCommit();
+      const result = store.submitRun(deviceId, command, adapters.clock.now());
+      if (result.kind === "command-id-conflict") {
+        sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "command-id-conflict" });
+        return;
+      }
+      const outcome = result.kind === "replayed" ? result.outcome : result;
+      sendServerMessage(client, {
+        type: "command.outcome", commandId: command.commandId,
+        outcome: outcome.kind === "accepted" ? "accepted" : "rejected",
+        error: outcome.kind === "rejected" ? outcome.error : undefined,
+        runId: outcome.kind === "accepted" ? outcome.run.runId : undefined,
+        receipt: { digest: outcome.digest, commitCursor: outcome.cursor },
+      });
+      if (outcome.kind === "accepted" && result.kind !== "replayed") {
+        const worker = workers.get(command.sessionId) ?? new PiSessionWorker(command.sessionId, adapters.pi);
+        workers.set(command.sessionId, worker);
+        void worker.execute(command.prompt).then(result => {
+          const completed = store.completeRun(outcome.run.runId, result.text, result.checkpoint, adapters.clock.now());
+          for (const socket of admittedClients) sendServerMessage(socket, { type: "run.completed", ...completed });
+        }).catch(() => { /* issue 11 settles abnormal outcomes */ });
+      }
+    } catch {
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "commit-failed" });
+    }
+  }
+
   return {
     origin: canonicalOrigin,
     createPairing: () => pairing.create(canonicalOrigin),
@@ -725,6 +761,15 @@ function isSessionRenameMessage(value: unknown): value is SessionRenameMessage {
     Number.isSafeInteger(value.observedMetadataRevision) &&
     value.observedMetadataRevision > 0
   );
+}
+
+function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "run.submit" && typeof item.commandId === "string" &&
+    typeof item.sessionId === "string" && typeof item.prompt === "string" &&
+    item.prompt.trim().length > 0 && item.prompt.length <= 100_000 &&
+    item.requiredCapability === "run.submit";
 }
 
 function renameOutcomeMessage(
