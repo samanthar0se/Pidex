@@ -82,19 +82,20 @@ const state = {
   draftFailures: new Map(),
 };
 
-const standalone = matchMedia("(display-mode: standalone)").matches ||
+const isStandalone = matchMedia("(display-mode: standalone)").matches ||
   navigator.standalone === true;
 const browserAssessment = assessBrowser(
   navigator.userAgent,
   browserSemantics(window),
-  standalone,
+  isStandalone,
 );
 if (!browserAssessment.supported) {
-  document.body.replaceChildren(Object.assign(document.createElement("main"), {
+  const stopScreen = Object.assign(document.createElement("main"), {
     id: "unsupported-browser",
     role: "alert",
     textContent: `Pidex cannot safely run in this browser (${browserAssessment.reason}). Use a supported current or previous Edge/Chrome on Windows, Chrome on Android, or Safari/PWA on iOS or iPadOS. No Host controls are available.`,
-  }));
+  });
+  document.body.replaceChildren(stopScreen);
   throw new Error(browserAssessment.reason);
 }
 

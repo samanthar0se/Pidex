@@ -13,23 +13,40 @@ export interface CapacityUse {
   availableMemoryBytes: number;
 }
 
+export interface CapacityFloor {
+  residentSessions: number;
+  executingRuns: number;
+}
+
+export type CapacityAssessment =
+  | { admitted: true }
+  | { admitted: false; reason: string };
+
+export interface HostCapacityOptions {
+  totalMemoryBytes: number;
+  osHeadroomBytes?: number;
+}
+
 /** Admission is pressure-based; tier floors are guarantees, not hard maxima. */
 export class HostCapacityAdmission {
-  readonly floor: { residentSessions: number; executingRuns: number };
-  readonly retainedSessionLimit = undefined;
+  readonly floor: CapacityFloor;
+  readonly retainedSessionLimit: undefined = undefined;
   readonly #osHeadroomBytes: number;
 
-  constructor(options: { totalMemoryBytes: number; osHeadroomBytes?: number }) {
+  constructor(options: HostCapacityOptions) {
     if (options.totalMemoryBytes < 8 * GIBIBYTE) {
       throw new Error("unsupported-host-memory: 8 GiB required");
     }
-    this.floor = options.totalMemoryBytes >= 16 * GIBIBYTE
-      ? { residentSessions: 8, executingRuns: 4 }
-      : { residentSessions: 4, executingRuns: 2 };
+
+    if (options.totalMemoryBytes >= 16 * GIBIBYTE) {
+      this.floor = { residentSessions: 8, executingRuns: 4 };
+    } else {
+      this.floor = { residentSessions: 4, executingRuns: 2 };
+    }
     this.#osHeadroomBytes = options.osHeadroomBytes ?? GIBIBYTE;
   }
 
-  assess(use: CapacityUse): { admitted: boolean; reason?: string } {
+  assess(use: CapacityUse): CapacityAssessment {
     if (use.availableMemoryBytes < this.#osHeadroomBytes) {
       return {
         admitted: false,
