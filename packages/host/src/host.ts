@@ -43,11 +43,11 @@ export interface StartedHost {
 export async function startHost(options: HostOptions): Promise<StartedHost> {
   const adapters = options.adapters ?? adaptersFor("product");
   const store = new AuthorityStore(join(options.dataDir, "authority.sqlite"), adapters);
-  const certificate = ensureCertificate(options.dataDir);
+  const certificate = ensureCertificate(options.dataDir, "localhost", adapters.windows);
   const server = createServer(
     {
-      key: readFileSync(certificate.key),
-      cert: readFileSync(certificate.cert),
+      key: certificate.key,
+      cert: certificate.cert,
     },
     (request, response) => {
       const asset = PWA_ASSETS[request.url ?? ""];
