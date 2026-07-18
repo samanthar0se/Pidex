@@ -4,7 +4,7 @@
 
 **Blocked by:** 12 — Stream live Session Timeline entries; 14 — Negotiate runtime controls
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Notifications, status, widgets, title, and editor-text injection use typed capability-negotiated worker messages distinct from response-bearing Interactions.
 - [ ] Status, widget, and title projections are scoped to the exact Session worker generation and disappear when cleared, replaced, or invalidated by worker loss.

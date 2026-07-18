@@ -4,7 +4,7 @@
 
 **Blocked by:** 12 — Stream live Session Timeline entries
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A Session scope snapshot contains metadata, current/queued Runs, unresolved Interactions, and a bounded recent Timeline window including the mutable tail.
 - [ ] Older finalized entries are reachable through stable cursor pagination with deterministic order and no gaps or duplicates.

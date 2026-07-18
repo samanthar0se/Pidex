@@ -4,7 +4,7 @@
 
 **Blocked by:** 11 — Settle every Run outcome durably
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A follow-up command creates a separate accepted queued Run with Host-assigned Session-local identity/order and durable receipt.
 - [ ] The daemon queue is authoritative; Pi's transient in-memory follow-up queue is not used as durable state.

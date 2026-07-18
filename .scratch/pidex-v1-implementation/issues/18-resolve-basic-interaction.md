@@ -4,7 +4,7 @@
 
 **Blocked by:** 12 — Stream live Session Timeline entries; 14 — Negotiate runtime controls
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The Host creates an immutable Interaction with Session, optional Run, worker generation/correlation, kind, bounded inert payload, optional provenance, state, and revision.
 - [ ] Only `select`, `confirm`, `input`, and `editor` are response-bearing Interaction kinds; Pidex infers no approval, permission, danger, or durable grant semantics.
