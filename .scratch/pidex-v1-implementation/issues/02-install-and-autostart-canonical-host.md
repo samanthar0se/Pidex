@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Bootstrap a runnable Host and product test seam
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A signed per-user installation bundles every required runtime, registers logon startup, and runs normal Host processes unelevated.
 - [ ] A stable launcher enforces one Host instance for the Windows user and starts an immutable versioned daemon release without a console window.
