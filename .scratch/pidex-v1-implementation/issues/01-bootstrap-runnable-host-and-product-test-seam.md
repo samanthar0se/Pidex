@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A developer command starts the real daemon with a real SQLite authority store and serves a minimal PWA plus CLI status surface.
 - [ ] The PWA and CLI independently report the same durable Host identity, release identity, readiness state, and synchronization basis.
