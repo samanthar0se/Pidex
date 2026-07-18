@@ -4,7 +4,7 @@
 
 **Blocked by:** 20 — Stop a Run cooperatively
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Every Session worker starts suspended, joins its own non-breakaway kill-on-close Windows Job, and resumes only after containment succeeds.
 - [ ] Worker descendants, shells, tools, extensions, grandchildren, and attempted detached processes remain inside the Session Job.
