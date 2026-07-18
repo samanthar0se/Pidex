@@ -1,9 +1,14 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
-import { createHash, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
-import { adaptersFor, executePidexFirewallOperation, type HostAdapters } from "../../adapters/src/index.js";
+import {
+  adaptersFor,
+  executePidexFirewallOperation,
+  type HostAdapters,
+  type WindowsPlatformAdapter,
+} from "../../adapters/src/index.js";
 import {
   protocolVersion,
   type HostStatus,
@@ -13,6 +18,8 @@ import { ensureCertificate } from "./certificate.js";
 import { AuthorityStore } from "./store.js";
 
 const DEFAULT_PORT = 7443;
+const DEFAULT_HOSTNAME = "localhost";
+const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
 
 interface PwaAsset {
@@ -47,19 +54,20 @@ export interface StartedHost {
 
 export async function startHost(options: HostOptions): Promise<StartedHost> {
   const adapters = options.adapters ?? adaptersFor("product");
-  const store = new AuthorityStore(join(options.dataDir, "authority.sqlite"), adapters);
-  const hostname = options.hostname ?? "localhost";
-  const firewallPort = options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const certificate = ensureCertificate(options.dataDir, hostname, adapters.windows);
-  executePidexFirewallOperation(adapters.windows, { operation: "ensure-private-rule", port: firewallPort });
-  const firewall = adapters.windows.inspectPidexFirewall(firewallPort);
-  const warnings: HostStatus["warnings"] = firewall.state === "healthy" ? [] : [{
-    severity: "high", code: "firewall-enforcement-degraded", detail: firewall.detail,
-  }];
-  if (warnings[0]) {
-    adapters.windows.writeCoarseEvent({ severity: "error", code: "PIDEX_FIREWALL_DEGRADED", detail: warnings[0].detail });
-    console.error(JSON.stringify({ severity: "high", code: warnings[0].code, detail: warnings[0].detail }));
-  }
+  const store = new AuthorityStore(
+    join(options.dataDir, "authority.sqlite"),
+    adapters,
+  );
+  const hostname = options.hostname ?? DEFAULT_HOSTNAME;
+  const firewallPort =
+    options.port && options.port > 0 ? options.port : DEFAULT_PORT;
+  const certificate = ensureCertificate(
+    options.dataDir,
+    hostname,
+    adapters.windows,
+  );
+  const warnings = configureFirewall(adapters.windows, firewallPort);
+
   const server = createServer(
     {
       key: certificate.key,
@@ -67,10 +75,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     },
     (request, response) => {
       const requestHost = request.headers.host?.split(":")[0];
-      if (hostname !== "localhost" && requestHost !== hostname) {
-        response.writeHead(421, { location: `https://${hostname}:${options.port ?? DEFAULT_PORT}` }).end();
+      if (hostname !== DEFAULT_HOSTNAME && requestHost !== hostname) {
+        response
+          .writeHead(421, {
+            location: `https://${hostname}:${options.port ?? DEFAULT_PORT}`,
+          })
+          .end();
         return;
       }
+
       const asset = PWA_ASSETS[request.url ?? ""];
       if (!asset) {
         response.writeHead(404).end();
@@ -84,7 +97,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const webSocketServer = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", (request, socket, head) => {
-    if (request.url !== "/control" || !authorized(request.headers.authorization, options.authorization)) {
+    if (
+      request.url !== "/control" ||
+      !hasValidAuthorization(
+        request.headers.authorization,
+        options.authorization,
+      )
+    ) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
@@ -112,16 +131,27 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   const address = server.address();
   const port =
-    typeof address === "object" && address
+    address && typeof address === "object"
       ? address.port
       : (options.port ?? DEFAULT_PORT);
 
   const canonicalOrigin = `https://${hostname}:${port}`;
+  const fingerprint = createHash("sha256")
+    .update(certificate.ca)
+    .digest("hex");
   const stopAdvertisement = adapters.windows.advertisePidex({
-    service: "_pidex._tcp.local", hostname, port,
+    service: "_pidex._tcp.local",
+    hostname,
+    port,
     interfaces: adapters.windows.privateInterfaces(),
-    txt: { location: canonicalOrigin, label: options.label ?? "Pidex Host", version: "1", fingerprint: createHash("sha256").update(certificate.ca).digest("hex") },
+    txt: {
+      location: canonicalOrigin,
+      label: options.label ?? DEFAULT_LABEL,
+      version: "1",
+      fingerprint,
+    },
   });
+
   return {
     origin: canonicalOrigin,
     status: () => store.status(RELEASE_ID, warnings),
@@ -146,8 +176,43 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   };
 }
 
-function authorized(header: string | undefined, expected: string | undefined): boolean {
-  if (!expected || !header?.startsWith("Bearer ")) return false;
+function configureFirewall(
+  windows: WindowsPlatformAdapter,
+  port: number,
+): HostStatus["warnings"] {
+  executePidexFirewallOperation(windows, {
+    operation: "ensure-private-rule",
+    port,
+  });
+
+  const firewall = windows.inspectPidexFirewall(port);
+  if (firewall.state === "healthy") {
+    return [];
+  }
+
+  const warning: HostStatus["warnings"][number] = {
+    severity: "high",
+    code: "firewall-enforcement-degraded",
+    detail: firewall.detail,
+  };
+  windows.writeCoarseEvent({
+    severity: "error",
+    code: "PIDEX_FIREWALL_DEGRADED",
+    detail: warning.detail,
+  });
+  console.error(JSON.stringify(warning));
+
+  return [warning];
+}
+
+function hasValidAuthorization(
+  header: string | undefined,
+  expected: string | undefined,
+): boolean {
+  if (!expected || !header?.startsWith("Bearer ")) {
+    return false;
+  }
+
   const actual = Buffer.from(header.slice(7));
   const wanted = Buffer.from(expected);
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);

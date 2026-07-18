@@ -13,7 +13,10 @@ import {
   type HostStatus,
 } from "../packages/protocol/src/status.js";
 
-function readPwaStatus(origin: string, authorization: string): Promise<HostStatus> {
+function readPwaStatus(
+  origin: string,
+  authorization: string,
+): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
     const controlOrigin = origin.replace("https:", "wss:");
     const controlSocket = new WebSocket(`${controlOrigin}/control`, {
@@ -91,7 +94,10 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
     });
 
     try {
-      assert.deepEqual(await readStatus(restartedHost.origin, authorization), initialStatus);
+      assert.deepEqual(
+        await readStatus(restartedHost.origin, authorization),
+        initialStatus,
+      );
     } finally {
       await restartedHost.close();
     }

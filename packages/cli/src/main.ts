@@ -4,12 +4,17 @@ import {
   type HostStatus,
 } from "../../protocol/src/status.js";
 
-export async function readStatus(origin: string, authorization?: string): Promise<HostStatus> {
+export async function readStatus(
+  origin: string,
+  authorization?: string,
+): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
     const controlOrigin = origin.replace(/^https:/, "wss:");
     const controlSocket = new WebSocket(`${controlOrigin}/control`, {
       rejectUnauthorized: false,
-      headers: authorization ? { authorization: `Bearer ${authorization}` } : undefined,
+      headers: authorization
+        ? { authorization: `Bearer ${authorization}` }
+        : undefined,
     });
 
     controlSocket.once("message", data => {

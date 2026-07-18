@@ -6,11 +6,13 @@ export const hostStatusSchema = z.object({
   hostId: z.string(),
   releaseId: z.string(),
   readiness: z.literal("ready"),
-  warnings: z.array(z.object({
-    severity: z.literal("high"),
-    code: z.literal("firewall-enforcement-degraded"),
-    detail: z.string(),
-  })),
+  warnings: z.array(
+    z.object({
+      severity: z.literal("high"),
+      code: z.literal("firewall-enforcement-degraded"),
+      detail: z.string(),
+    }),
+  ),
   synchronization: z.object({
     epoch: z.string(),
     sequence: z.number(),

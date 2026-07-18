@@ -37,7 +37,10 @@ export class AuthorityStore {
     }
   }
 
-  status(releaseId: string, warnings: HostStatus["warnings"] = []): HostStatus {
+  status(
+    releaseId: string,
+    warnings: HostStatus["warnings"] = [],
+  ): HostStatus {
     const row = this.#db
       .prepare("SELECT host_id, epoch, sequence FROM host WHERE singleton=1")
       .get();
