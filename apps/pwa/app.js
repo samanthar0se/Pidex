@@ -24,11 +24,11 @@ const supportedCapabilities = [
   "pi.runtime.cancel",
   "presentation.effects",
 ];
+const presentation = { generation: null, status: new Map(), widgets: new Map() };
 let admittedCapabilities = new Map();
 let controlSocket;
 let projection = { projects: [], workspaces: [], sessions: [] };
 let admitted = false;
-const presentation = { generation: null, status: new Map(), widgets: new Map() };
 
 function setControlEnabled(enabled) {
   newSessionButton.disabled = !enabled;
@@ -158,41 +158,86 @@ function renderStatus({ data }) {
       renderPresentationEffect(message);
       return;
     case "presentation.reset":
-      if (presentation.generation === message.workerGeneration) resetPresentation();
+      if (presentation.generation === message.workerGeneration) {
+        resetPresentation();
+      }
       return;
   }
 }
 
 function renderPresentationEffect(message) {
-  if (presentation.generation && presentation.generation !== message.workerGeneration) resetPresentation();
+  if (
+    presentation.generation &&
+    presentation.generation !== message.workerGeneration
+  ) {
+    resetPresentation();
+  }
   presentation.generation = message.workerGeneration;
+
   const effect = message.effect;
-  if (effect.type === "title") {
-    document.querySelector("#pi-title").textContent = effect.text || "";
-  } else if (effect.type === "status" || effect.type === "widget") {
-    const values = effect.type === "status" ? presentation.status : presentation.widgets;
-    if (effect.text === null) values.delete(effect.key); else values.set(effect.key, effect.text);
-    const target = document.querySelector(effect.type === "status" ? "#pi-status" : "#pi-widgets");
-    target.replaceChildren(...[...values].flatMap(createStatusEntry));
-  } else if (effect.type === "notification") {
-    const item = document.createElement("li");
-    item.textContent = `${effect.level}: ${effect.text}`;
-    document.querySelector("#pi-notifications").append(item);
-  } else if (effect.type === "editor-text") {
-    if (effect.disposition === "inject" && document.activeElement === runInput) {
-      runInput.value = effect.text;
-    } else {
+  switch (effect.type) {
+    case "title":
+      document.querySelector("#pi-title").textContent = effect.text || "";
+      return;
+    case "status":
+      renderKeyedPresentationEffect(
+        effect,
+        presentation.status,
+        "#pi-status",
+      );
+      return;
+    case "widget":
+      renderKeyedPresentationEffect(
+        effect,
+        presentation.widgets,
+        "#pi-widgets",
+      );
+      return;
+    case "notification": {
+      const item = document.createElement("li");
+      item.textContent = `${effect.level}: ${effect.text}`;
+      document.querySelector("#pi-notifications").append(item);
+      return;
+    }
+    case "editor-text": {
+      if (
+        effect.disposition === "inject" &&
+        document.activeElement === runInput
+      ) {
+        runInput.value = effect.text;
+        return;
+      }
+
       const suggestion = document.createElement("pre");
       suggestion.textContent = effect.text;
       document.querySelector("#pi-suggestions").append(suggestion);
+      return;
     }
   }
 }
 
+function renderKeyedPresentationEffect(effect, values, targetSelector) {
+  if (effect.text === null) {
+    values.delete(effect.key);
+  } else {
+    values.set(effect.key, effect.text);
+  }
+
+  document
+    .querySelector(targetSelector)
+    .replaceChildren(...[...values].flatMap(createStatusEntry));
+}
+
 function resetPresentation() {
   presentation.generation = null;
-  presentation.status.clear(); presentation.widgets.clear();
-  for (const selector of ["#pi-title", "#pi-status", "#pi-widgets", "#pi-notifications"]) {
+  presentation.status.clear();
+  presentation.widgets.clear();
+  for (const selector of [
+    "#pi-title",
+    "#pi-status",
+    "#pi-widgets",
+    "#pi-notifications",
+  ]) {
     document.querySelector(selector).replaceChildren();
   }
 }

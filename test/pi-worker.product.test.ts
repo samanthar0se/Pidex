@@ -149,20 +149,46 @@ test("presentation effects are capability-gated, bounded, and remain inert data"
     kind: "deterministic",
     probe: async request => ({
       ...request,
-      capabilities: ["run.execute", "checkpoint.durable", "model.select", "mode.select", "input.text",
-        "presentation.status", "presentation.title"],
+      capabilities: [
+        "run.execute",
+        "checkpoint.durable",
+        "model.select",
+        "mode.select",
+        "input.text",
+        "presentation.status",
+        "presentation.title",
+      ],
     }),
     execute: async request => {
-      request.onPresentationEffect?.({ type: "status", key: "build", text: "running" });
-      request.onPresentationEffect?.({ type: "status", key: "build", text: null });
-      request.onPresentationEffect?.({ type: "title", text: "<img src=x onerror=alert(1)>" });
-      request.onPresentationEffect?.({ type: "widget", key: "hidden", text: "unsupported" });
+      request.onPresentationEffect?.({
+        type: "status",
+        key: "build",
+        text: "running",
+      });
+      request.onPresentationEffect?.({
+        type: "status",
+        key: "build",
+        text: null,
+      });
+      request.onPresentationEffect?.({
+        type: "title",
+        text: "<img src=x onerror=alert(1)>",
+      });
+      request.onPresentationEffect?.({
+        type: "widget",
+        key: "hidden",
+        text: "unsupported",
+      });
       return { text: "ok", checkpoint: "cp-effects" };
     },
     flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
   };
 
-  await new PiSessionWorker("session-effects", pi).execute("go", undefined, effect => effects.push(effect));
+  await new PiSessionWorker("session-effects", pi).execute(
+    "go",
+    undefined,
+    effect => effects.push(effect),
+  );
   assert.deepEqual(effects, [
     { type: "status", key: "build", text: "running" },
     { type: "status", key: "build", text: null },

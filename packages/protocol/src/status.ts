@@ -196,6 +196,35 @@ export const hostChangeSchema = z.discriminatedUnion("type", [
 
 export type HostChange = z.infer<typeof hostChangeSchema>;
 
+const presentationEffectSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("notification"),
+    level: z.enum(["info", "warning", "error"]),
+    text: z.string(),
+  }),
+  z.object({
+    type: z.literal("status"),
+    key: z.string(),
+    text: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("widget"),
+    key: z.string(),
+    text: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("title"),
+    text: z.string().nullable(),
+  }),
+  z.object({
+    type: z.literal("editor-text"),
+    text: z.string(),
+    disposition: z.enum(["inject", "suggest"]),
+    viewId: z.string().optional(),
+    draftRevision: z.number().int().nonnegative().optional(),
+  }),
+]);
+
 export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.hello"),
@@ -277,16 +306,16 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     timeline: z.array(timelineEntrySchema),
   }),
   z.object({
-    type: z.literal("presentation.effect"), sessionId: z.string(),
-    workerGeneration: z.string(), effect: z.discriminatedUnion("type", [
-      z.object({ type: z.literal("notification"), level: z.enum(["info", "warning", "error"]), text: z.string() }),
-      z.object({ type: z.literal("status"), key: z.string(), text: z.string().nullable() }),
-      z.object({ type: z.literal("widget"), key: z.string(), text: z.string().nullable() }),
-      z.object({ type: z.literal("title"), text: z.string().nullable() }),
-      z.object({ type: z.literal("editor-text"), text: z.string(), disposition: z.enum(["inject", "suggest"]), viewId: z.string().optional(), draftRevision: z.number().int().nonnegative().optional() }),
-    ]),
+    type: z.literal("presentation.effect"),
+    sessionId: z.string(),
+    workerGeneration: z.string(),
+    effect: presentationEffectSchema,
   }),
-  z.object({ type: z.literal("presentation.reset"), sessionId: z.string(), workerGeneration: z.string() }),
+  z.object({
+    type: z.literal("presentation.reset"),
+    sessionId: z.string(),
+    workerGeneration: z.string(),
+  }),
   timelineChangeSchema.extend({
     type: z.literal("timeline.change"),
     sessionId: z.string(),
