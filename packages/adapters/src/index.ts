@@ -32,7 +32,16 @@ export interface PiExecuteRequest {
   resourceLoader: "public";
   /** Receives schema-shaped runtime facts; SDK objects never cross this seam. */
   onTimelineEvent?: (event: PiTimelineEvent) => void;
+  /** Receives bounded, data-only UI effects. They never become Pi responses. */
+  onPresentationEffect?: (effect: PiPresentationEffect) => void;
 }
+
+export type PiPresentationEffect =
+  | { type: "notification"; level: "info" | "warning" | "error"; text: string }
+  | { type: "status"; key: string; text: string | null }
+  | { type: "widget"; key: string; text: string | null }
+  | { type: "title"; text: string | null }
+  | { type: "editor-text"; text: string };
 
 export type PiTimelineEvent =
   | { type: "assistant.delta"; text: string }
@@ -202,6 +211,11 @@ function deterministicPiAdapter(): PiAdapter {
           constraints: { maximumBytes: 100_000 },
         },
         { id: "runtime.cancel", version: 1 },
+        { id: "presentation.notification", version: 1 },
+        { id: "presentation.status", version: 1 },
+        { id: "presentation.widget", version: 1 },
+        { id: "presentation.title", version: 1 },
+        { id: "presentation.editor-text", version: 1 },
       ],
     }),
     execute: async request => ({

@@ -10,6 +10,7 @@ export const protocolCapabilities = [
   { id: "session.create", version: 1 },
   { id: "session.rename", version: 1 },
   { id: "run.submit", version: 1 },
+  { id: "presentation.effects", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -275,6 +276,17 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     run: terminalRunSchema,
     timeline: z.array(timelineEntrySchema),
   }),
+  z.object({
+    type: z.literal("presentation.effect"), sessionId: z.string(),
+    workerGeneration: z.string(), effect: z.discriminatedUnion("type", [
+      z.object({ type: z.literal("notification"), level: z.enum(["info", "warning", "error"]), text: z.string() }),
+      z.object({ type: z.literal("status"), key: z.string(), text: z.string().nullable() }),
+      z.object({ type: z.literal("widget"), key: z.string(), text: z.string().nullable() }),
+      z.object({ type: z.literal("title"), text: z.string().nullable() }),
+      z.object({ type: z.literal("editor-text"), text: z.string(), disposition: z.enum(["inject", "suggest"]), viewId: z.string().optional(), draftRevision: z.number().int().nonnegative().optional() }),
+    ]),
+  }),
+  z.object({ type: z.literal("presentation.reset"), sessionId: z.string(), workerGeneration: z.string() }),
   timelineChangeSchema.extend({
     type: z.literal("timeline.change"),
     sessionId: z.string(),

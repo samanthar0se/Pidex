@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PiAdapter, PiTimelineEvent } from "../../adapters/src/index.js";
+import type { PiAdapter, PiPresentationEffect, PiTimelineEvent } from "../../adapters/src/index.js";
 
 export const WORKER_PROTOCOL_GENERATION = 1 as const;
 export const BUNDLED_PI_SDK_GENERATION = "pi-sdk@0.1.0";
@@ -52,6 +52,21 @@ const timelineEventSchema = z.discriminatedUnion("type", [
     })
     .strict(),
 ]);
+
+const boundedText = z.string().max(16_384);
+const effectSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("notification"), level: z.enum(["info", "warning", "error"]), text: boundedText }).strict(),
+  z.object({ type: z.literal("status"), key: z.string().min(1).max(200), text: boundedText.nullable() }).strict(),
+  z.object({ type: z.literal("widget"), key: z.string().min(1).max(200), text: boundedText.nullable() }).strict(),
+  z.object({ type: z.literal("title"), text: boundedText.nullable() }).strict(),
+  z.object({ type: z.literal("editor-text"), text: boundedText }).strict(),
+]);
+
+const EFFECT_CAPABILITY: Record<PiPresentationEffect["type"], string> = {
+  notification: "presentation.notification", status: "presentation.status",
+  widget: "presentation.widget", title: "presentation.title",
+  "editor-text": "presentation.editor-text",
+};
 
 type WorkerCapability = z.infer<typeof capabilitySchema>;
 type WorkerReadinessErrorCode =
@@ -108,6 +123,7 @@ export class PiSessionWorker {
   async execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
+    onPresentationEffect?: (effect: PiPresentationEffect) => void,
   ): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
@@ -115,7 +131,8 @@ export class PiSessionWorker {
 
     this.#running = true;
     try {
-      await PiSessionWorker.probe(this.#pi);
+      const capabilities = await PiSessionWorker.probe(this.#pi);
+      const capabilityIds = new Set(capabilities.map(item => item.id));
       const execute = this.#pi.execute;
       if (!execute) {
         throw new WorkerReadinessError("pi-sdk-unavailable");
@@ -130,6 +147,12 @@ export class PiSessionWorker {
           onTimelineEvent: event => {
             const timelineEvent = timelineEventSchema.parse(event);
             onTimelineEvent?.(timelineEvent);
+          },
+          onPresentationEffect: effect => {
+            const parsed = effectSchema.parse(effect);
+            if (capabilityIds.has(EFFECT_CAPABILITY[parsed.type])) {
+              onPresentationEffect?.(parsed);
+            }
           },
         }),
       );
