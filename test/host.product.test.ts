@@ -77,10 +77,8 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
       ]);
       assert.deepEqual(pwaStatus, cliStatus);
       assert.equal(cliStatus.readiness, "ready");
-      assert.match(
-        cliStatus.synchronization.cursor,
-        new RegExp(`^${cliStatus.hostId}:`),
-      );
+      assert.match(cliStatus.synchronization.cursor, /^sync_[A-Za-z0-9_-]+$/);
+      assert.doesNotMatch(cliStatus.synchronization.cursor, new RegExp(cliStatus.hostId));
       initialStatus = cliStatus;
     } finally {
       await initialHost.close();

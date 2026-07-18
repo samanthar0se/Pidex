@@ -64,6 +64,10 @@ const CREATE_AUTHORITY_SCHEMA = `
     committed_at INTEGER NOT NULL,
     PRIMARY KEY(device_id, command_id)
   );
+  CREATE TABLE IF NOT EXISTS synchronization_changes (
+    sequence INTEGER PRIMARY KEY,
+    payload_json TEXT NOT NULL
+  );
 `;
 
 export interface RenameCommand {
@@ -224,6 +228,10 @@ export class AuthorityStore {
            WHERE singleton = 1`,
         )
         .run(now);
+      const sequence = this.currentSequence();
+      this.#db.prepare(
+        "INSERT INTO synchronization_changes VALUES (?, ?)",
+      ).run(sequence, JSON.stringify({ type: "session.created", session }));
       const status = this.status("");
       this.#db.exec("COMMIT");
       return { session, cursor: status.synchronization.cursor };
@@ -292,9 +300,16 @@ export class AuthorityStore {
              WHERE singleton = 1`,
           )
           .run(now);
+        const session = this.loadSession(command.sessionId);
+        this.#db.prepare(
+          "INSERT INTO synchronization_changes VALUES (?, ?)",
+        ).run(
+          this.currentSequence(),
+          JSON.stringify({ type: "session.renamed", session }),
+        );
         outcome = {
           kind: "accepted",
-          session: this.loadSession(command.sessionId),
+          session,
           cursor: this.status("").synchronization.cursor,
           digest,
         };
@@ -360,9 +375,42 @@ export class AuthorityStore {
       synchronization: {
         epoch: row.epoch,
         sequence: row.sequence,
-        cursor: `${row.host_id}:${row.epoch}:${row.sequence}`,
+        cursor: encodeCursor(row.host_id, row.epoch, row.sequence),
       },
     };
+  }
+
+  cursorBasis(cursor: string):
+    | { compatible: true; sequence: number }
+    | { compatible: false; reason: "host-mismatch" | "epoch-mismatch" | "history-unavailable" } {
+    const decoded = decodeCursor(cursor);
+    const status = this.status("");
+    if (!decoded || decoded.hostId !== status.hostId) return { compatible: false, reason: "host-mismatch" };
+    if (decoded.epoch !== status.synchronization.epoch) return { compatible: false, reason: "epoch-mismatch" };
+    if (decoded.sequence > status.synchronization.sequence) return { compatible: false, reason: "history-unavailable" };
+    const earliest = this.#db.prepare("SELECT MIN(sequence) AS sequence FROM synchronization_changes").get();
+    if (decoded.sequence < status.synchronization.sequence && earliest && typeof earliest.sequence === "number" && decoded.sequence < earliest.sequence - 1) {
+      return { compatible: false, reason: "history-unavailable" };
+    }
+    return { compatible: true, sequence: decoded.sequence };
+  }
+
+  changesAfter(sequence: number): Array<{ cursor: string; change: unknown }> {
+    const status = this.status("");
+    return this.#db.prepare("SELECT sequence, payload_json FROM synchronization_changes WHERE sequence > ? ORDER BY sequence").all(sequence).map(row => ({
+      cursor: encodeCursor(status.hostId, status.synchronization.epoch, Number(row.sequence)),
+      change: JSON.parse(String(row.payload_json)),
+    }));
+  }
+
+  rotateSynchronizationEpoch(now: number): void {
+    this.#db.prepare("UPDATE host SET epoch = ?, sequence = sequence + 1, committed_at = ? WHERE singleton = 1").run(randomUUID(), now);
+    this.#db.prepare("DELETE FROM synchronization_changes").run();
+  }
+
+  private currentSequence(): number {
+    const row = this.#db.prepare("SELECT sequence FROM host WHERE singleton = 1").get();
+    return Number(row?.sequence);
   }
 
   addDevice(deviceId: string, publicKeyJwk: string, pairedAt: number): void {
@@ -410,6 +458,20 @@ export class AuthorityStore {
   close(): void {
     this.#db.close();
   }
+}
+
+function encodeCursor(hostId: string, epoch: string, sequence: number): string {
+  return `sync_${Buffer.from(JSON.stringify({ hostId, epoch, sequence })).toString("base64url")}`;
+}
+
+function decodeCursor(cursor: string): { hostId: string; epoch: string; sequence: number } | undefined {
+  try {
+    const value: unknown = JSON.parse(Buffer.from(cursor.slice(5), "base64url").toString());
+    if (!cursor.startsWith("sync_") || !value || typeof value !== "object") return undefined;
+    const record = value as Record<string, unknown>;
+    if (typeof record.hostId !== "string" || typeof record.epoch !== "string" || !Number.isSafeInteger(record.sequence) || Number(record.sequence) < 1) return undefined;
+    return { hostId: record.hostId, epoch: record.epoch, sequence: Number(record.sequence) };
+  } catch { return undefined; }
 }
 
 function renameCommandDigest(command: RenameCommand): string {

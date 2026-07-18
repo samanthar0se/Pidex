@@ -48,6 +48,19 @@ export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 export type WorkspaceSummary = z.infer<typeof workspaceSummarySchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
+export const synchronizationScopeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("host") }),
+  z.object({ kind: z.literal("session"), sessionId: z.string() }),
+]);
+
+const synchronizationBarrierSchema = z.object({
+  scope: synchronizationScopeSchema,
+  cursor: z.string(),
+  resourceRevisions: z.record(z.string(), z.number()),
+  protocolBasis: z.literal(protocolVersion),
+  capabilities: z.array(z.string()),
+});
+
 export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.snapshot"),
@@ -72,6 +85,31 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
         }),
       ]),
     ),
+  }),
+  z.object({
+    type: z.literal("scope.reset"),
+    reason: z.enum([
+      "new-scope",
+      "host-mismatch",
+      "epoch-mismatch",
+      "protocol-mismatch",
+      "history-unavailable",
+      "revision-mismatch",
+    ]),
+    barrier: synchronizationBarrierSchema,
+    snapshot: z.union([
+      z.object({
+        projects: z.array(projectSummarySchema),
+        workspaces: z.array(workspaceSummarySchema),
+        sessions: z.array(sessionSummarySchema),
+      }),
+      z.object({ session: sessionSummarySchema }),
+    ]),
+  }),
+  z.object({
+    type: z.literal("scope.current"),
+    scope: synchronizationScopeSchema,
+    cursor: z.string(),
   }),
   z.object({
     type: z.literal("command.outcome"),

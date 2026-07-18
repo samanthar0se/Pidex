@@ -59,6 +59,14 @@ interface SessionRenameMessage {
   observedMetadataRevision: number;
 }
 
+interface ScopeSetMessage {
+  type: "scope.set";
+  sessionIds: string[];
+  cursor?: string;
+  resourceRevisions?: Record<string, number>;
+  protocolVersion: string;
+}
+
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
   "/app.js": { file: "app.js", contentType: "text/javascript" },
@@ -86,6 +94,8 @@ export interface StartedHost {
   status(): HostStatus;
   /** Host-local administration bypasses Device authentication. */
   revokeDevice(deviceId: string): void;
+  /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
+  rotateSynchronizationEpoch(): void;
   close(): Promise<void>;
 }
 
@@ -185,6 +195,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionCreate(webSocket, message);
         } else if (isSessionRenameMessage(message)) {
           handleSessionRename(webSocket, message);
+        } else if (isScopeSetMessage(message)) {
+          synchronize(webSocket, message);
         }
       } catch {
         // Invalid and unknown commands have no authority or side effects.
@@ -199,6 +211,62 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     };
     webSocket.send(JSON.stringify(message));
   });
+
+  function synchronize(client: WebSocket, request: ScopeSetMessage): void {
+    const projection = store.projection();
+    const status = store.status(RELEASE_ID, warnings);
+    const basis = request.cursor ? store.cursorBasis(request.cursor) : undefined;
+    const protocolCompatible = request.protocolVersion === protocolVersion;
+    const revisionCompatible = Object.entries(request.resourceRevisions ?? {}).every(([sessionId, expected]) => {
+      const session = projection.sessions.find(item => item.sessionId === sessionId);
+      return session?.metadataRevision === expected;
+    });
+
+    if (basis?.compatible && protocolCompatible && revisionCompatible) {
+      for (const item of store.changesAfter(basis.sequence)) {
+        const message: ServerMessage = {
+          type: "host.change-set",
+          cursor: item.cursor,
+          changes: [item.change] as Extract<ServerMessage, { type: "host.change-set" }>["changes"],
+        };
+        client.send(JSON.stringify(message));
+      }
+      client.send(JSON.stringify({ type: "scope.current", scope: { kind: "host" }, cursor: status.synchronization.cursor } satisfies ServerMessage));
+    } else {
+      const reason = !protocolCompatible
+        ? "protocol-mismatch"
+        : !revisionCompatible
+          ? "revision-mismatch"
+          : basis && !basis.compatible
+            ? basis.reason
+            : "new-scope";
+      client.send(JSON.stringify({
+        type: "scope.reset",
+        reason,
+        barrier: {
+          scope: { kind: "host" }, cursor: status.synchronization.cursor,
+          resourceRevisions: Object.fromEntries(projection.sessions.map(session => [session.sessionId, session.metadataRevision])),
+          protocolBasis: protocolVersion,
+          capabilities: ["session.create", "session.rename", "scope.session"],
+        },
+        snapshot: projection,
+      } satisfies ServerMessage));
+    }
+
+    for (const sessionId of request.sessionIds) {
+      const session = projection.sessions.find(item => item.sessionId === sessionId);
+      if (!session) continue;
+      client.send(JSON.stringify({
+        type: "scope.reset", reason: "new-scope",
+        barrier: {
+          scope: { kind: "session", sessionId }, cursor: status.synchronization.cursor,
+          resourceRevisions: { metadata: session.metadataRevision, timeline: session.timelineRevision },
+          protocolBasis: protocolVersion, capabilities: ["session.rename"],
+        },
+        snapshot: { session },
+      } satisfies ServerMessage));
+    }
+  }
 
   await new Promise<void>((resolveStart, rejectStart) => {
     server.once("error", rejectStart);
@@ -338,6 +406,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     createPairing: () => pairing.create(canonicalOrigin),
     status: () => store.status(RELEASE_ID, warnings),
     revokeDevice,
+    rotateSynchronizationEpoch: () => store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
       stopAdvertisement();
       for (const webSocket of webSocketServer.clients) {
@@ -357,6 +426,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       store.close();
     },
   };
+}
+
+function isScopeSetMessage(value: unknown): value is ScopeSetMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "scope.set" && typeof item.protocolVersion === "string" &&
+    Array.isArray(item.sessionIds) && item.sessionIds.every(id => typeof id === "string") &&
+    (item.cursor === undefined || typeof item.cursor === "string") &&
+    (item.resourceRevisions === undefined || (typeof item.resourceRevisions === "object" && item.resourceRevisions !== null));
 }
 
 function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
