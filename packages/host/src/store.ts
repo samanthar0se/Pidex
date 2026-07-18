@@ -88,7 +88,7 @@ const CREATE_AUTHORITY_SCHEMA = `
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     session_order INTEGER NOT NULL,
     prompt TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('accepted','completed','failed','cancelled','interrupted')),
+    state TEXT NOT NULL CHECK(state IN ('queued','executing','held','completed','failed','cancelled','interrupted')),
     created_at INTEGER NOT NULL,
     completed_at INTEGER,
     UNIQUE(session_id, session_order)
@@ -114,7 +114,7 @@ export interface SubmitCommand {
   commandId: string;
   sessionId: string;
   prompt: string;
-  requiredCapability: "run.submit";
+  requiredCapability: "run.submit" | "run.follow-up";
 }
 
 const submitOutcomeSchema = z.discriminatedUnion("kind", [
@@ -126,7 +126,7 @@ const submitOutcomeSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("rejected"),
-    error: z.literal("unknown-session"),
+    error: z.enum(["unknown-session", "session-busy", "no-executing-run"]),
     cursor: z.string(),
     digest: z.string(),
   }),
@@ -240,6 +240,22 @@ export class AuthorityStore {
       this.#db.exec(
         "ALTER TABLE timeline_entries ADD COLUMN tool_call_id TEXT",
       );
+    }
+    const runSql = String(this.#db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'").get()?.sql ?? "");
+    if (runSql.includes("'accepted'")) {
+      this.#db.exec(`
+        ALTER TABLE runs RENAME TO runs_legacy;
+        CREATE TABLE runs (
+          run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id),
+          session_order INTEGER NOT NULL, prompt TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('queued','executing','held','completed','failed','cancelled','interrupted')),
+          created_at INTEGER NOT NULL, completed_at INTEGER,
+          UNIQUE(session_id, session_order));
+        INSERT INTO runs SELECT run_id, session_id, session_order, prompt,
+          CASE state WHEN 'accepted' THEN 'executing' ELSE state END, created_at, completed_at
+          FROM runs_legacy;
+        DROP TABLE runs_legacy;
+      `);
     }
 
     const existingHost = this.#db
@@ -491,6 +507,16 @@ export class AuthorityStore {
       if (!sessionExists) {
         outcome = { kind: "rejected", error: "unknown-session", cursor, digest };
       } else {
+        const active = this.#db.prepare(
+          `SELECT state FROM runs WHERE session_id = ? AND state IN ('queued','executing','held') LIMIT 1`,
+        ).get(command.sessionId);
+        const followUp = command.requiredCapability === "run.follow-up";
+        if ((!followUp && active) || (followUp && !active)) {
+          outcome = { kind: "rejected", error: followUp ? "no-executing-run" : "session-busy", cursor, digest };
+          this.insertRunReceipt(deviceId, command.commandId, digest, outcome, cursor, now);
+          this.#db.exec("COMMIT");
+          return outcome;
+        }
         const orderRow = this.#db
           .prepare(
             `SELECT COALESCE(MAX(session_order), 0) + 1 AS nextOrder
@@ -503,16 +529,16 @@ export class AuthorityStore {
           sessionId: command.sessionId,
           sessionOrder,
           prompt: command.prompt,
-          state: "accepted",
+          state: followUp ? "queued" : "executing",
         };
         this.#db
           .prepare(
             `INSERT INTO runs
              (run_id, session_id, session_order, prompt, state, created_at,
               completed_at)
-             VALUES (?, ?, ?, ?, 'accepted', ?, NULL)`,
+             VALUES (?, ?, ?, ?, ?, ?, NULL)`,
           )
-          .run(run.runId, run.sessionId, run.sessionOrder, run.prompt, now);
+          .run(run.runId, run.sessionId, run.sessionOrder, run.prompt, run.state, now);
         this.#db
           .prepare(
             `INSERT INTO timeline_entries
@@ -588,7 +614,7 @@ export class AuthorityStore {
   }
 
   reconcileAcceptedRuns(now: number): void {
-    for (const { runId } of this.acceptedRuns()) {
+    for (const { runId } of this.executingRuns()) {
       try {
         const evidence = this.#runArtifacts.readCompletionEvidence(runId);
         if (evidence) {
@@ -613,6 +639,7 @@ export class AuthorityStore {
         now,
       );
     }
+    this.#db.prepare("UPDATE runs SET state = 'held' WHERE state = 'queued'").run();
   }
 
   /** Publish immutable bytes first, then atomically reference them and settle once. */
@@ -638,7 +665,7 @@ export class AuthorityStore {
       }
 
       const acceptedRun = runRecordSchema.parse(row);
-      if (acceptedRun.state !== "accepted") {
+      if (acceptedRun.state !== "executing") {
         throw new Error("run-not-accepted");
       }
 
@@ -663,7 +690,7 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `UPDATE runs SET state = ?, completed_at = ?
-           WHERE run_id = ? AND state = 'accepted'`,
+           WHERE run_id = ? AND state = 'executing'`,
         )
         .run(outcome, now, runId);
       this.#db
@@ -792,9 +819,68 @@ export class AuthorityStore {
 
   acceptedRuns(): Array<{ runId: string }> {
     const rows = this.#db
-      .prepare("SELECT run_id AS runId FROM runs WHERE state = 'accepted'")
+      .prepare("SELECT run_id AS runId FROM runs WHERE state IN ('queued','executing','held')")
       .all();
     return acceptedRunReferenceSchema.array().parse(rows);
+  }
+
+  executingRuns(): Array<{ runId: string }> {
+    return acceptedRunReferenceSchema.array().parse(this.#db
+      .prepare("SELECT run_id AS runId FROM runs WHERE state = 'executing'").all());
+  }
+
+  runs(sessionId: string): import("../../protocol/src/status.js").RunRecord[] {
+    return runRecordSchema.array().parse(this.#db.prepare(
+      `SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder,
+              prompt, state FROM runs WHERE session_id = ? ORDER BY session_order`,
+    ).all(sessionId));
+  }
+
+  dispatchNext(sessionId: string): import("../../protocol/src/status.js").RunRecord | undefined {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const executing = this.#db.prepare("SELECT 1 FROM runs WHERE session_id=? AND state='executing'").get(sessionId);
+      if (executing) throw new Error("session-busy");
+      const row = this.#db.prepare(
+        `SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder, prompt, state
+         FROM runs WHERE session_id=? AND state='queued' ORDER BY session_order LIMIT 1`,
+      ).get(sessionId);
+      if (!row) { this.#db.exec("COMMIT"); return undefined; }
+      const run = runRecordSchema.parse(row);
+      this.#db.prepare("UPDATE runs SET state='executing' WHERE run_id=? AND state='queued'").run(run.runId);
+      this.#db.exec("COMMIT");
+      return { ...run, state: "executing" };
+    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+  }
+
+  holdQueued(sessionId: string): void {
+    this.#db.prepare("UPDATE runs SET state='held' WHERE session_id=? AND state='queued'").run(sessionId);
+  }
+
+  releaseRun(runId: string): import("../../protocol/src/status.js").RunRecord {
+    const row = runRecordSchema.parse(this.#db.prepare(
+      `SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder, prompt, state FROM runs WHERE run_id=?`,
+    ).get(runId));
+    if (row.state !== "held") throw new Error("run-not-held");
+    if (this.#db.prepare("SELECT 1 FROM runs WHERE session_id=? AND state='executing'").get(row.sessionId)) throw new Error("session-busy");
+    const earlier = this.#db.prepare("SELECT 1 FROM runs WHERE session_id=? AND session_order<? AND state IN ('queued','held')").get(row.sessionId, row.sessionOrder);
+    if (earlier) throw new Error("run-out-of-order");
+    this.#db.prepare("UPDATE runs SET state=CASE WHEN run_id=? THEN 'executing' ELSE 'queued' END WHERE session_id=? AND state='held'").run(runId, row.sessionId);
+    return { ...row, state: "executing" };
+  }
+
+  cancelQueuedRun(runId: string, now: number): import("../../protocol/src/status.js").RunRecord {
+    const row = runRecordSchema.parse(this.#db.prepare(
+      `SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder, prompt, state FROM runs WHERE run_id=?`,
+    ).get(runId));
+    if (row.state !== "queued" && row.state !== "held") throw new Error("run-not-cancellable");
+    this.#db.prepare("UPDATE runs SET state='cancelled', completed_at=? WHERE run_id=?").run(now, runId);
+    return { ...row, state: "cancelled" };
+  }
+
+  private insertRunReceipt(deviceId: string, commandId: string, digest: string, outcome: SubmitOutcome, cursor: string, now: number): void {
+    this.#db.prepare(`INSERT INTO command_receipts (device_id, command_id, envelope_digest, outcome_json, commit_cursor, committed_at) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(deviceId, commandId, digest, JSON.stringify(outcome), cursor, now);
   }
 
   private appendAssistantDelta(

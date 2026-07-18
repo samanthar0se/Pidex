@@ -10,6 +10,8 @@ const sessionsNav = document.querySelector("#sessions");
 const runModelSelect = document.querySelector("#run-model");
 const runModeSelect = document.querySelector("#run-mode");
 const runInput = document.querySelector("#run-input");
+const submitRunButton = document.querySelector("#submit-run");
+const followUpButton = document.querySelector("#follow-up");
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -18,6 +20,9 @@ const supportedCapabilities = [
   "session.create",
   "session.rename",
   "run.submit",
+  "run.follow-up",
+  "run.release",
+  "run.cancel",
   "pi.model.select",
   "pi.mode.select",
   "pi.input.text",
@@ -62,6 +67,18 @@ projectSelect.addEventListener("change", () => {
     ...workspaceOptions,
   );
 });
+submitRunButton.addEventListener("click", () => sendRun("run.submit"));
+followUpButton.addEventListener("click", () => sendRun("run.follow-up"));
+
+function sendRun(type) {
+  const sessionId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
+  if (!sessionId || !runInput.value.trim()) return;
+  controlSocket.send(JSON.stringify({
+    type, commandId: crypto.randomUUID(), sessionId,
+    prompt: runInput.value, requiredCapability: type,
+  }));
+  runInput.value = "";
+}
 
 // Remove the one-time secret from browser history before doing any other work.
 if (pairingSecret) {
@@ -171,6 +188,9 @@ function renderRuntimeControls() {
     }
   }
   runInput.disabled = !admittedCapabilities.has("pi.input.text");
+  const onSession = /^\/sessions\/[^/]+$/.test(location.pathname);
+  submitRunButton.disabled = !onSession || !admittedCapabilities.has("run.submit");
+  followUpButton.disabled = !onSession || !admittedCapabilities.has("run.follow-up");
 }
 
 function sendClientHello(hostId) {

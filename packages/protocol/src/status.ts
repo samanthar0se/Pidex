@@ -10,6 +10,9 @@ export const protocolCapabilities = [
   { id: "session.create", version: 1 },
   { id: "session.rename", version: 1 },
   { id: "run.submit", version: 1 },
+  { id: "run.follow-up", version: 1 },
+  { id: "run.release", version: 1 },
+  { id: "run.cancel", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -120,11 +123,14 @@ export const runRecordSchema = z.object({
   sessionId: z.string(),
   sessionOrder: z.number(),
   prompt: z.string(),
-  state: z.union([z.literal("accepted"), terminalRunStateSchema]),
+  state: z.union([
+    z.enum(["queued", "executing", "held"]),
+    terminalRunStateSchema,
+  ]),
 });
 
 export const acceptedRunSchema = runRecordSchema.extend({
-  state: z.literal("accepted"),
+  state: z.enum(["queued", "executing", "held"]),
 });
 
 export const completedRunSchema = runRecordSchema.extend({
@@ -251,6 +257,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
       z.object({
         session: sessionSummarySchema,
         timeline: z.array(timelineEntrySchema).optional(),
+        runs: z.array(runRecordSchema).optional(),
       }),
     ]),
   }),

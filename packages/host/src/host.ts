@@ -81,7 +81,7 @@ interface CapabilityBasisRequirement {
 }
 
 interface RunSubmitMessage extends SubmitCommand {
-  type: "run.submit";
+  type: "run.submit" | "run.follow-up";
   requiredCapabilityBasis?: CapabilityBasisRequirement[];
 }
 
@@ -91,6 +91,12 @@ interface ScopeSetMessage {
   cursor?: string;
   resourceRevisions?: Record<string, number>;
   protocolVersion: string;
+}
+
+interface RunQueueActionMessage {
+  type: "run.release" | "run.cancel";
+  commandId: string;
+  runId: string;
 }
 
 type ScopeResetReason = Extract<
@@ -345,6 +351,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionRename(webSocket, message);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
+        } else if (isRunQueueActionMessage(message)) {
+          handleRunQueueAction(webSocket, message);
         } else if (isScopeSetMessage(message)) {
           synchronize(webSocket, message);
         }
@@ -528,7 +536,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           protocolBasis: protocolVersion,
           capabilities: ["session.rename"],
         },
-        snapshot: { session, timeline: store.timeline(sessionId) },
+        snapshot: { session, timeline: store.timeline(sessionId), runs: store.runs(sessionId) },
       });
     }
   }
@@ -712,16 +720,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             entry: promptEntry,
           });
         }
-        const worker =
-          workers.get(command.sessionId) ??
-          new PiSessionWorker(command.sessionId, adapters.pi);
-        workers.set(command.sessionId, worker);
-        dispatchAcceptedRun(
-          worker,
-          command.sessionId,
-          outcome.run.runId,
-          command.prompt,
-        );
+        if (outcome.run.state === "executing") dispatchRun(outcome.run);
       }
     } catch {
       sendServerMessage(client, {
@@ -731,6 +730,25 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         error: "commit-failed",
       });
     }
+  }
+
+  function handleRunQueueAction(client: WebSocket, command: RunQueueActionMessage): void {
+    try {
+      adapters.storage.beforeCommit();
+      const run = command.type === "run.release"
+        ? store.releaseRun(command.runId)
+        : store.cancelQueuedRun(command.runId, adapters.clock.now());
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted", runId: run.runId });
+      if (run.state === "executing") dispatchRun(run);
+    } catch (error) {
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: error instanceof Error ? error.message : "queue-action-failed" });
+    }
+  }
+
+  function dispatchRun(run: import("../../protocol/src/status.js").RunRecord): void {
+    const worker = workers.get(run.sessionId) ?? new PiSessionWorker(run.sessionId, adapters.pi);
+    workers.set(run.sessionId, worker);
+    dispatchAcceptedRun(worker, run.sessionId, run.runId, run.prompt);
   }
 
   function dispatchAcceptedRun(
@@ -767,6 +785,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         for (const socket of admittedClients) {
           sendServerMessage(socket, message);
         }
+        const next = store.dispatchNext(sessionId);
+        if (next) dispatchRun(next);
       })
       .catch(error => {
         try {
@@ -782,6 +802,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           for (const socket of admittedClients) {
             sendServerMessage(socket, { type: "run.completed", ...failed });
           }
+          store.holdQueued(sessionId);
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
@@ -952,17 +973,24 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
 
   const item = value as Record<string, unknown>;
   return (
-    item.type === "run.submit" &&
+    (item.type === "run.submit" || item.type === "run.follow-up") &&
     typeof item.commandId === "string" &&
     typeof item.sessionId === "string" &&
     typeof item.prompt === "string" &&
     item.prompt.trim().length > 0 &&
     item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
-    item.requiredCapability === "run.submit" &&
+    item.requiredCapability === item.type &&
     (item.requiredCapabilityBasis === undefined ||
       (Array.isArray(item.requiredCapabilityBasis) &&
         item.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
   );
+}
+
+function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (item.type === "run.release" || item.type === "run.cancel") &&
+    typeof item.commandId === "string" && typeof item.runId === "string";
 }
 
 function isCapabilityBasisRequirement(
