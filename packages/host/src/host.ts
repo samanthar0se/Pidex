@@ -57,6 +57,8 @@ const MAX_RUN_PROMPT_LENGTH = 100_000;
 const MAX_INTERACTION_RESPONSE_BYTES = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
+const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
+const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -199,8 +201,9 @@ export interface HostOptions {
   initialCatalog?: InitialCatalog;
   /** Per-Client delivery bound; exceeding it disconnects only that Client. */
   maxOutboundBytes?: number;
-  /** Test seam; production contract is ten seconds plus five seconds. */
+  /** Time allowed for cooperative cancellation before force-stopping a run. */
   cooperativeStopTimeoutMs?: number;
+  /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
 }
 
@@ -298,11 +301,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const scopedSessionIdsByClient = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
+  const cooperativeStopTimeoutMs =
+    options.cooperativeStopTimeoutMs ?? DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS;
+  const forcedReconciliationTimeoutMs =
+    options.forcedReconciliationTimeoutMs ??
+    DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS;
   const deliveries = new Map<WebSocket, ClientDelivery>();
   const workers = new Map<string, PiSessionWorker>();
   const sessionJobs = new Map<string, SessionJob>();
-  const stopTimers = new Map<string, NodeJS.Timeout[]>();
-  const forceEnforcedRuns = new Set<string>();
+  const forcedStopTimers = new Map<string, NodeJS.Timeout>();
+  const forceEnforcedRunIds = new Set<string>();
   const workerGenerations = new Map<string, string>();
   const viewsByClient = new Map<WebSocket, Map<string, ViewIdentity>>();
   const presentationContextByRun = new Map<string, RunPresentationContext>();
@@ -1000,7 +1008,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         // Accepted intent still escalates when cooperative cancellation is
         // unavailable or the worker IPC has already stopped responding.
       }
-      scheduleForcedStop(command.sessionId, command.runId, command.workerGeneration);
+      scheduleForcedStop(
+        command.sessionId,
+        command.runId,
+        command.workerGeneration,
+      );
     } catch (error) {
       sendServerMessage(client, {
         type: "command.outcome",
@@ -1011,9 +1023,21 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  function clearStopTimers(runId: string): void {
-    for (const timer of stopTimers.get(runId) ?? []) clearTimeout(timer);
-    stopTimers.delete(runId);
+  function clearForcedStopTimer(runId: string): void {
+    const timer = forcedStopTimers.get(runId);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    forcedStopTimers.delete(runId);
+  }
+
+  function setForcedStopTimer(
+    runId: string,
+    callback: () => void,
+    timeoutMs: number,
+  ): void {
+    clearForcedStopTimer(runId);
+    forcedStopTimers.set(runId, setTimeout(callback, timeoutMs));
   }
 
   function scheduleForcedStop(
@@ -1021,29 +1045,61 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     runId: string,
     workerGeneration: string,
   ): void {
-    const cooperativeTimer = setTimeout(() => {
-      const run = store.runs(sessionId).find(item => item.runId === runId);
-      if (run?.state !== "cancelling") return clearStopTimers(runId);
-      // A Job is per Session: closing it cannot affect daemon or siblings.
-      forceEnforcedRuns.add(runId);
-      sessionJobs.get(sessionId)?.terminate();
-      sessionJobs.get(sessionId)?.close();
-      sessionJobs.delete(sessionId);
-      const reconciliationTimer = setTimeout(() => {
-        const current = store.runs(sessionId).find(item => item.runId === runId);
-        if (current?.state !== "cancelling") return clearStopTimers(runId);
-        const cancelled = store.settleRun(
-          runId, "cancelled", FORCED_CANCELLATION_DETAIL, null,
-          adapters.clock.now(),
-        );
-        presentationContextByRun.delete(runId);
-        invalidateWorkerGeneration(sessionId, workerGeneration);
-        publishRunCompletion(sessionId, cancelled.run);
-        clearStopTimers(runId);
-      }, options.forcedReconciliationTimeoutMs ?? 5_000);
-      stopTimers.set(runId, [reconciliationTimer]);
-    }, options.cooperativeStopTimeoutMs ?? 10_000);
-    stopTimers.set(runId, [cooperativeTimer]);
+    setForcedStopTimer(
+      runId,
+      () => enforceForcedStop(sessionId, runId, workerGeneration),
+      cooperativeStopTimeoutMs,
+    );
+  }
+
+  function enforceForcedStop(
+    sessionId: string,
+    runId: string,
+    workerGeneration: string,
+  ): void {
+    const run = store.runs(sessionId).find(item => item.runId === runId);
+    if (run?.state !== "cancelling") {
+      clearForcedStopTimer(runId);
+      return;
+    }
+
+    // A Job is per Session: closing it cannot affect daemon or siblings.
+    forceEnforcedRunIds.add(runId);
+    const sessionJob = sessionJobs.get(sessionId);
+    sessionJob?.terminate();
+    sessionJob?.close();
+    sessionJobs.delete(sessionId);
+
+    setForcedStopTimer(
+      runId,
+      () => reconcileForcedStop(sessionId, runId, workerGeneration),
+      forcedReconciliationTimeoutMs,
+    );
+  }
+
+  function reconcileForcedStop(
+    sessionId: string,
+    runId: string,
+    workerGeneration: string,
+  ): void {
+    const run = store.runs(sessionId).find(item => item.runId === runId);
+    if (run?.state !== "cancelling") {
+      clearForcedStopTimer(runId);
+      return;
+    }
+
+    const cancelled = store.settleRun(
+      runId,
+      "cancelled",
+      FORCED_CANCELLATION_DETAIL,
+      null,
+      adapters.clock.now(),
+    );
+    forceEnforcedRunIds.delete(runId);
+    presentationContextByRun.delete(runId);
+    invalidateWorkerGeneration(sessionId, workerGeneration);
+    publishRunCompletion(sessionId, cancelled.run);
+    clearForcedStopTimer(runId);
   }
 
   function dispatchRun(run: RunRecord): void {
@@ -1113,7 +1169,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           waitForInteractionResolution(run.sessionId, run.runId, request),
       )
       .then(executionResult => {
-        clearStopTimers(run.runId);
+        clearForcedStopTimer(run.runId);
         const finalAssistant = store.finalizeAssistant(
           run.sessionId,
           run.runId,
@@ -1141,6 +1197,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             adapters.clock.now(),
           );
         }
+        forceEnforcedRunIds.delete(run.runId);
         presentationContextByRun.delete(run.runId);
         publishRunCompletion(run.sessionId, completed.run);
         const nextRun = store.dispatchNext(run.sessionId);
@@ -1149,7 +1206,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         }
       })
       .catch(error => {
-        clearStopTimers(run.runId);
+        clearForcedStopTimer(run.runId);
         store.markRunSteeringUnapplied(run.runId);
         try {
           const currentRun = store
@@ -1159,13 +1216,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             const cancelled = store.settleRun(
               run.runId,
               "cancelled",
-              forceEnforcedRuns.has(run.runId)
+              forceEnforcedRunIds.has(run.runId)
                 ? FORCED_CANCELLATION_DETAIL
                 : COOPERATIVE_CANCELLATION_DETAIL,
               null,
               adapters.clock.now(),
             );
-            forceEnforcedRuns.delete(run.runId);
+            forceEnforcedRunIds.delete(run.runId);
             if (!sessionJobs.has(run.sessionId)) {
               invalidateWorkerGeneration(run.sessionId, workerGeneration);
             }
@@ -1554,7 +1611,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         clearTimeout(timer);
       }
       interactionDeadlineTimers.clear();
-      for (const runId of stopTimers.keys()) clearStopTimers(runId);
+      for (const runId of forcedStopTimers.keys()) {
+        clearForcedStopTimer(runId);
+      }
       for (const job of sessionJobs.values()) job.close();
       sessionJobs.clear();
       for (const webSocket of webSocketServer.clients) {

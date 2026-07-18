@@ -124,7 +124,7 @@ export interface WindowsPlatformAdapter {
   writeCoarseEvent(event: CoarseWindowsEvent): void;
   /**
    * Creates a Session worker suspended, assigns it to a fresh non-breakaway
-   * kill-on-close Job, and resumes it only after assignment succeeds.  The
+   * kill-on-close Job, and resumes it only after assignment succeeds. The
    * native implementation must not return a handle for an uncontained worker.
    */
   createContainedSessionWorker(sessionId: string): SessionJob;
@@ -142,7 +142,7 @@ export class SessionContainmentError extends Error {
   readonly code = "session-containment-setup-failed" as const;
 
   constructor(detail: string, options?: ErrorOptions) {
-    super(`${detail}`, options);
+    super(detail, options);
     this.name = "SessionContainmentError";
   }
 }
