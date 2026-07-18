@@ -4,7 +4,7 @@
 
 **Blocked by:** 21 — Force-stop an uncooperative Session tree
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Reading, opening, selecting, replacing, reloading, or closing a Session View does not wake or sleep the Session.
 - [ ] An accepted Pi-requiring action demand-wakes an available sleeping Session and makes its worker ready within the release budget.
