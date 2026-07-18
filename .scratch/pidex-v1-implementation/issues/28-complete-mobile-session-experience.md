@@ -4,7 +4,7 @@
 
 **Blocked by:** 27 — Complete the desktop Session experience
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The desktop sidebar becomes a slide-over drawer containing the same New Session, Archived, scope groups, state cues, Host status, and settings.
 - [ ] Selecting a Session closes the drawer and replaces the one routable main View; browser history remains functional.
