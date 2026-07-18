@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Discover and expose the Host on the Private LAN; 36 — Detect and isolate corruption; 40 — Reidentify verified data without trust keys; 41 — Update and roll back signed releases
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The signed `pidex` CLI supports status, start, retry, pairing, revocation, origin/certificate/firewall inspection/repair, update, logs, backup/recovery, and support export.
 - [ ] `pidex doctor` checks launcher/daemon versions, circuit breaker, database/migrations, certificates/expiry, canonical resolution/port, Firewall/profile, mDNS, update staging, Jobs/workers, and storage health.
