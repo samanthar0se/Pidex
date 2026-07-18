@@ -34,8 +34,14 @@ export interface PushHint {
   body: string;
 }
 
-type PushTransport = (subscription: string, encrypted: Uint8Array) => Promise<void>;
+type PushTransport = (
+  subscription: string,
+  encrypted: Uint8Array,
+) => Promise<void>;
 const MAX_PAYLOAD_BYTES = 4096;
+const MAX_PREVIEW_LENGTH = 512;
+const GENERIC_TITLE = "Pidex needs attention";
+const GENERIC_BODY = "Open Pidex to reconcile current state.";
 const DEFAULT_CATEGORIES: Record<PushCategory, boolean> = {
   interaction: true,
   run: true,
@@ -58,72 +64,119 @@ export class AdvisoryPush {
   configure(deviceId: string, preferences: PushPreferences): void {
     const previous = this.#devices.get(deviceId);
     this.#devices.set(deviceId, {
-      preferences: { privacy: "rich", categories: DEFAULT_CATEGORIES, ...preferences },
+      preferences: {
+        privacy: "rich",
+        categories: DEFAULT_CATEGORIES,
+        ...preferences,
+      },
       delivered: previous?.delivered ?? new Set(),
       failures: previous?.failures ?? 0,
     });
   }
 
   async publish(fact: PushFact): Promise<number> {
-    if (fact.category === "routine") return 0;
-    const category = fact.category as PushCategory;
-    let deliveries = 0;
-    await Promise.all([...this.#devices.values()].map(async device => {
-      const p = device.preferences;
-      if (!p.enabled || p.permission === "denied" || !p.subscription ||
-          !p.encryptionKey || p.categories?.[category] === false ||
-          device.delivered.has(fact.eventId)) return;
+    if (fact.category === "routine") {
+      return 0;
+    }
 
-      const generic = p.privacy === "generic";
-      const hint: PushHint = {
-        version: 1,
-        eventId: fact.eventId,
-        hostId: fact.hostId,
-        occurredAt: fact.occurredAt,
-        category,
-        path: canonicalPath(fact.path),
-        title: generic ? "Pidex needs attention" : titleFor(category),
-        body: generic ? "Open Pidex to reconcile current state." : bounded(fact.preview, 512),
-      };
-      const encrypted = encryptPushHint(hint, p.encryptionKey);
-      if (encrypted.byteLength > MAX_PAYLOAD_BYTES) return;
-      try {
-        await this.send(p.subscription, encrypted);
-        device.delivered.add(fact.eventId);
-        deliveries++;
-      } catch {
-        // Push outage is advisory: do not retry, alter, or delay the Host fact.
-        device.failures++;
-      }
-    }));
-    return deliveries;
+    const category = fact.category;
+    const deliveryResults = await Promise.all(
+      [...this.#devices.values()].map(device =>
+        this.deliverToDevice(device, fact, category),
+      ),
+    );
+    return deliveryResults.filter(delivered => delivered).length;
   }
 
   deliveryFailures(deviceId: string): number {
     return this.#devices.get(deviceId)?.failures ?? 0;
   }
+
+  private async deliverToDevice(
+    device: DeviceDelivery,
+    fact: PushFact,
+    category: PushCategory,
+  ): Promise<boolean> {
+    const preferences = device.preferences;
+    if (
+      !preferences.enabled ||
+      preferences.permission === "denied" ||
+      !preferences.subscription ||
+      !preferences.encryptionKey ||
+      preferences.categories?.[category] === false ||
+      device.delivered.has(fact.eventId)
+    ) {
+      return false;
+    }
+
+    const useGenericText = preferences.privacy === "generic";
+    const hint: PushHint = {
+      version: 1,
+      eventId: fact.eventId,
+      hostId: fact.hostId,
+      occurredAt: fact.occurredAt,
+      category,
+      path: canonicalPath(fact.path),
+      title: useGenericText ? GENERIC_TITLE : titleFor(category),
+      body: useGenericText
+        ? GENERIC_BODY
+        : truncateWithEllipsis(fact.preview, MAX_PREVIEW_LENGTH),
+    };
+    const encrypted = encryptPushHint(hint, preferences.encryptionKey);
+    if (encrypted.byteLength > MAX_PAYLOAD_BYTES) {
+      return false;
+    }
+
+    try {
+      await this.send(preferences.subscription, encrypted);
+      device.delivered.add(fact.eventId);
+      return true;
+    } catch {
+      // Push outage is advisory: do not retry, alter, or delay the Host fact.
+      device.failures++;
+      return false;
+    }
+  }
 }
 
 export function encryptPushHint(hint: PushHint, key: Uint8Array): Uint8Array {
-  if (key.byteLength !== 32) throw Error("push encryption key must be 256 bits");
+  if (key.byteLength !== 32) {
+    throw Error("push encryption key must be 256 bits");
+  }
+
   const nonce = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, nonce);
-  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(hint)), cipher.final()]);
-  return Buffer.concat([Buffer.from([1]), nonce, cipher.getAuthTag(), ciphertext]);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(hint)),
+    cipher.final(),
+  ]);
+  return Buffer.concat([
+    Buffer.from([1]),
+    nonce,
+    cipher.getAuthTag(),
+    ciphertext,
+  ]);
 }
 
 export function decryptPushHint(payload: Uint8Array, key: Uint8Array): PushHint {
   const data = Buffer.from(payload);
-  if (data[0] !== 1) throw Error("unsupported push envelope");
+  if (data[0] !== 1) {
+    throw Error("unsupported push envelope");
+  }
+
   const decipher = createDecipheriv("aes-256-gcm", key, data.subarray(1, 13));
   decipher.setAuthTag(data.subarray(13, 29));
-  return JSON.parse(Buffer.concat([
-    decipher.update(data.subarray(29)), decipher.final(),
-  ]).toString()) as PushHint;
+  const plaintext = Buffer.concat([
+    decipher.update(data.subarray(29)),
+    decipher.final(),
+  ]);
+  return JSON.parse(plaintext.toString()) as PushHint;
 }
 
-function bounded(value: string, length: number): string {
-  return value.length <= length ? value : `${value.slice(0, length - 1)}…`;
+function truncateWithEllipsis(value: string, maxLength: number): string {
+  return value.length <= maxLength
+    ? value
+    : `${value.slice(0, maxLength - 1)}…`;
 }
 
 function canonicalPath(path: string): string {
@@ -131,6 +184,14 @@ function canonicalPath(path: string): string {
 }
 
 function titleFor(category: PushCategory): string {
-  return ({ interaction: "Interaction opened", run: "Run finished",
-    held: "Work held for review", piProblem: "Pi reported a problem" })[category];
+  switch (category) {
+    case "interaction":
+      return "Interaction opened";
+    case "run":
+      return "Run finished";
+    case "held":
+      return "Work held for review";
+    case "piProblem":
+      return "Pi reported a problem";
+  }
 }

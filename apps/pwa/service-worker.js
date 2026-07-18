@@ -3,6 +3,8 @@
 const SHELL_GENERATION = "sha256-0413678e-pidex-shell-v1";
 const SHELL_CACHE = `pidex-shell-${SHELL_GENERATION}`;
 const SHELL = ["/", "/index.html", "/app.js", "/manifest.webmanifest"];
+const PUSH_RECEIPT_DATABASE = "pidex-push-receipts";
+const PUSH_RECEIPT_STORE = "events";
 
 self.addEventListener("install", event => {
   event.waitUntil(cacheShell());
@@ -46,12 +48,28 @@ self.addEventListener("notificationclick", event => {
 });
 
 async function showAdvisoryHint(hint) {
-  if (hint.version !== 1 || !hint.eventId || await hasPushReceipt(hint.eventId)) return;
+  if (
+    hint.version !== 1 ||
+    !hint.eventId ||
+    await hasPushReceipt(hint.eventId)
+  ) {
+    return;
+  }
+
   await savePushReceipt(hint.eventId);
-  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of windows) client.postMessage({ type: "push-hint", eventId: hint.eventId });
+  const windowClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  for (const client of windowClients) {
+    client.postMessage({ type: "push-hint", eventId: hint.eventId });
+  }
+
   // A foreground Client renders the synchronized in-app fact; avoid a second surface.
-  if (windows.some(client => client.visibilityState === "visible")) return;
+  if (windowClients.some(client => client.visibilityState === "visible")) {
+    return;
+  }
+
   await self.registration.showNotification(hint.title || "Pidex update", {
     body: hint.body || "Open Pidex to reconcile current state.",
     tag: `${hint.hostId}:${hint.eventId}`,
@@ -60,36 +78,48 @@ async function showAdvisoryHint(hint) {
 }
 
 async function openAndReconcile(path) {
-  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  let client = windows.find(item => new URL(item.url).pathname === new URL(path, self.location.origin).pathname);
-  client = client || await self.clients.openWindow(path);
-  client?.postMessage({ type: "push-reconcile", path });
-  await client?.focus?.();
+  const windowClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  let targetClient = windowClients.find(
+    client =>
+      new URL(client.url).pathname ===
+      new URL(path, self.location.origin).pathname,
+  );
+  targetClient = targetClient || await self.clients.openWindow(path);
+  targetClient?.postMessage({ type: "push-reconcile", path });
+  await targetClient?.focus?.();
 }
 
-function pushReceiptDatabase() {
+function openPushReceiptDatabase() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open("pidex-push-receipts", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("events");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    const openRequest = indexedDB.open(PUSH_RECEIPT_DATABASE, 1);
+    openRequest.onupgradeneeded = () => {
+      openRequest.result.createObjectStore(PUSH_RECEIPT_STORE);
+    };
+    openRequest.onsuccess = () => resolve(openRequest.result);
+    openRequest.onerror = () => reject(openRequest.error);
   });
 }
 
 async function hasPushReceipt(eventId) {
-  const db = await pushReceiptDatabase();
+  const database = await openPushReceiptDatabase();
   return new Promise((resolve, reject) => {
-    const request = db.transaction("events").objectStore("events").get(eventId);
-    request.onsuccess = () => resolve(Boolean(request.result));
-    request.onerror = () => reject(request.error);
+    const readRequest = database
+      .transaction(PUSH_RECEIPT_STORE)
+      .objectStore(PUSH_RECEIPT_STORE)
+      .get(eventId);
+    readRequest.onsuccess = () => resolve(Boolean(readRequest.result));
+    readRequest.onerror = () => reject(readRequest.error);
   });
 }
 
 async function savePushReceipt(eventId) {
-  const db = await pushReceiptDatabase();
+  const database = await openPushReceiptDatabase();
   return new Promise((resolve, reject) => {
-    const transaction = db.transaction("events", "readwrite");
-    transaction.objectStore("events").put(Date.now(), eventId);
+    const transaction = database.transaction(PUSH_RECEIPT_STORE, "readwrite");
+    transaction.objectStore(PUSH_RECEIPT_STORE).put(Date.now(), eventId);
     transaction.oncomplete = resolve;
     transaction.onerror = () => reject(transaction.error);
   });

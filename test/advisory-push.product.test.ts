@@ -51,7 +51,9 @@ test("push is explicit, filtered, private, bounded, and advisory", async () => {
 });
 
 test("unsupported, denied, disabled, outage, and missed deadline never affect Host facts", async () => {
-  const push = new AdvisoryPush(async () => { throw Error("push service offline"); });
+  const push = new AdvisoryPush(async () => {
+    throw Error("push service offline");
+  });
   const key = randomBytes(32);
 
   assert.equal(await push.publish(interaction), 0); // unsupported/unconfigured
