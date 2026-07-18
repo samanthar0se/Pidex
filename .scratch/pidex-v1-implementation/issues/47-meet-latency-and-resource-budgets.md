@@ -4,7 +4,7 @@
 
 **Blocked by:** 46 — Pass the required browser and capacity matrix
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Under at most 50 ms RTT/1% loss, p95 cold/warm usable shell is at most 3s/1s and cached/uncached recent Session open is at most 300ms/2s.
 - [ ] p95 Host command outcome is at most 250ms, authoritative projection reconciliation 500ms, and live output display 250ms after Host receipt.
