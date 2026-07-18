@@ -1340,13 +1340,21 @@ export class AuthorityStore {
   }
 
   reconcileAcceptedRuns(now: number): void {
+    const integrity = this.#db.prepare("PRAGMA integrity_check").get() as
+      | { integrity_check?: unknown }
+      | undefined;
+    if (integrity?.integrity_check !== "ok") {
+      throw new Error("authority-integrity-check-failed");
+    }
+    const abnormalSessions = new Set<string>();
     for (const { runId } of this.executingRuns()) {
       const accepted = this.loadRun(runId);
+      abnormalSessions.add(accepted.sessionId);
       if (accepted.state === "cancelling") {
         this.settleRun(
           runId,
-          "cancelled",
-          "Accepted cancellation reconciled after the worker stopped. Partial output and committed side effects were not rolled back.",
+          "interrupted",
+          "Host recovery interrupted an unproved cancellation. Partial output and committed side effects were preserved.",
           null,
           now,
         );
@@ -1371,12 +1379,16 @@ export class AuthorityStore {
       this.settleRun(
         runId,
         "interrupted",
-        "Worker recovery interrupted execution because normal completion could not be proved. Partial output and committed side effects were preserved.",
+        "Host recovery interrupted execution because normal completion could not be proved. Partial output and committed side effects were preserved.",
         null,
         now,
       );
     }
-    this.#db.prepare("UPDATE runs SET state = 'held' WHERE state = 'queued'").run();
+    for (const sessionId of abnormalSessions) {
+      this.#db.prepare(
+        "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
+      ).run(sessionId);
+    }
   }
 
   /** Holds continuation and removes runtime-owned authority after worker loss. */

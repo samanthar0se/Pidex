@@ -7,9 +7,21 @@ export type StartupState =
 
 export interface SupervisorOperations {
   acquireUserLock(): Promise<boolean>;
-  startRelease(readinessDeadlineMs: number): Promise<void>;
+  startRelease(readinessDeadlineMs: number, supervision?: DaemonSupervisionJob): Promise<void>;
+  /**
+   * Creates the launcher's non-breakaway, kill-on-close Job. The release and
+   * every Session Job must be nested in it before the daemon is resumed.
+   */
+  createDaemonSupervisionJob?(): Promise<DaemonSupervisionJob>;
   sleep(ms: number): Promise<void>;
   reportStatus?(status: StartupState): Promise<void>;
+}
+
+export interface DaemonSupervisionJob {
+  /** Assigns a suspended daemon process; assignment failure must terminate it. */
+  assignDaemon(): Promise<void>;
+  /** Closing the launcher-owned handle tears down the daemon and worker tree. */
+  close(): void;
 }
 
 export async function superviseStartup(
@@ -18,6 +30,9 @@ export async function superviseStartup(
   if (!(await operations.acquireUserLock())) {
     throw new Error("Pidex Host is already running");
   }
+
+  const supervision = await operations.createDaemonSupervisionJob?.();
+  if (supervision) await supervision.assignDaemon();
 
   const totalAttempts = STARTUP_BACKOFF_MS.length + 1;
   let lastFailureCause = "Unknown startup failure";
@@ -28,7 +43,7 @@ export async function superviseStartup(
     attemptNumber += 1
   ) {
     try {
-      await operations.startRelease(READINESS_DEADLINE_MS);
+      await operations.startRelease(READINESS_DEADLINE_MS, supervision);
       const status: StartupState = {
         state: "ready",
         attempts: attemptNumber,
@@ -49,6 +64,7 @@ export async function superviseStartup(
     attempts: totalAttempts,
     cause: lastFailureCause,
   };
+  supervision?.close();
   await operations.reportStatus?.(status);
   return status;
 }
