@@ -7,6 +7,9 @@ const createSessionButton = document.querySelector("#create-session");
 const projectSelect = document.querySelector("#session-project");
 const workspaceSelect = document.querySelector("#session-workspace");
 const sessionsNav = document.querySelector("#sessions");
+const runModelSelect = document.querySelector("#run-model");
+const runModeSelect = document.querySelector("#run-mode");
+const runInput = document.querySelector("#run-input");
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -14,7 +17,13 @@ const supportedCapabilities = [
   "scope.session",
   "session.create",
   "session.rename",
+  "run.submit",
+  "pi.model.select",
+  "pi.mode.select",
+  "pi.input.text",
+  "pi.runtime.cancel",
 ];
+let admittedCapabilities = new Map();
 let controlSocket;
 let projection = { projects: [], workspaces: [], sessions: [] };
 let admitted = false;
@@ -124,6 +133,10 @@ function renderStatus({ data }) {
       return;
     case "protocol.admitted":
       admitted = true;
+      admittedCapabilities = new Map(
+        message.capabilities.map(item => [item.id, item]),
+      );
+      renderRuntimeControls();
       return;
     case "protocol.update-required":
       showControlUnavailable(`update required (${message.reason})`);
@@ -140,6 +153,24 @@ function renderStatus({ data }) {
       }
       return;
   }
+}
+
+function renderRuntimeControls() {
+  for (const [capabilityId, select] of [
+    ["pi.model.select", runModelSelect],
+    ["pi.mode.select", runModeSelect],
+  ]) {
+    const capability = admittedCapabilities.get(capabilityId);
+    select.hidden = !capability;
+    select.disabled = !capability;
+    if (capability) {
+      const options = capability.constraints.values.map(
+        value => new Option(value, value),
+      );
+      select.replaceChildren(...options);
+    }
+  }
+  runInput.disabled = !admittedCapabilities.has("pi.input.text");
 }
 
 function sendClientHello(hostId) {

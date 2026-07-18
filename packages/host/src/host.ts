@@ -43,6 +43,10 @@ const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_RUN_PROMPT_LENGTH = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
+const INTERNAL_WORKER_CAPABILITIES = new Set([
+  "run.execute",
+  "checkpoint.durable",
+]);
 
 interface PwaAsset {
   file: string;
@@ -70,8 +74,14 @@ interface SessionRenameMessage {
   observedMetadataRevision: number;
 }
 
+interface CapabilityBasisRequirement {
+  id: string;
+  version: number;
+}
+
 interface RunSubmitMessage extends SubmitCommand {
   type: "run.submit";
+  requiredCapabilityBasis?: CapabilityBasisRequirement[];
 }
 
 interface ScopeSetMessage {
@@ -140,6 +150,17 @@ export interface StartedHost {
 
 export async function startHost(options: HostOptions): Promise<StartedHost> {
   const adapters = options.adapters ?? adaptersFor("product");
+  // Refuse to advertise or accept authority until the exact worker generation
+  // has proved the daily-driver semantic baseline.
+  const workerCapabilities = await PiSessionWorker.probe(adapters.pi);
+  const runtimeCapabilities = workerCapabilities
+    .filter(capability => !INTERNAL_WORKER_CAPABILITIES.has(capability.id))
+    .map(capability => ({
+      id: `pi.${capability.id}`,
+      version: capability.version,
+      constraints: capability.constraints,
+    }));
+  const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
   const store = new AuthorityStore(
     join(options.dataDir, "authority.sqlite"),
     adapters,
@@ -193,6 +214,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const webSocketServer = new WebSocketServer({ noServer: true });
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
+  const admittedCapabilityBasisByClient = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
@@ -303,6 +325,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     webSocket.once("close", () => {
       clientDeviceIds.delete(webSocket);
       admittedClients.delete(webSocket);
+      admittedCapabilityBasisByClient.delete(webSocket);
       deliveries.delete(webSocket);
     });
     webSocket.on("message", bytes => {
@@ -330,7 +353,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       type: "host.hello",
       hostId: store.status(RELEASE_ID, warnings).hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
-      capabilities: [...protocolCapabilities],
+      capabilities: hostCapabilities,
     });
   });
 
@@ -349,7 +372,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       return;
     }
 
-    const admittedCapabilities = protocolCapabilities.filter(hostCapability =>
+    const admittedCapabilities = hostCapabilities.filter(hostCapability =>
       hello.capabilities.some(clientCapability =>
         clientCapability.id === hostCapability.id &&
         (clientCapability.minVersion ?? 1) <= hostCapability.version &&
@@ -367,6 +390,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     admittedClients.add(client);
+    admittedCapabilityBasisByClient.set(
+      client,
+      new Set(admittedCapabilities.map(capabilityBasisKey)),
+    );
     sendServerMessage(client, {
       type: "protocol.admitted",
       hostId: status.hostId,
@@ -621,6 +648,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       return;
     }
 
+    const admittedBasis = admittedCapabilityBasisByClient.get(client);
+    if (!supportsCapabilityBasis(admittedBasis, command.requiredCapabilityBasis)) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "required-capability-basis-unavailable",
+      });
+      return;
+    }
+
     try {
       adapters.storage.beforeCommit();
       const result = store.submitRun(deviceId, command, adapters.clock.now());
@@ -835,7 +873,34 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
     typeof item.prompt === "string" &&
     item.prompt.trim().length > 0 &&
     item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
-    item.requiredCapability === "run.submit"
+    item.requiredCapability === "run.submit" &&
+    (item.requiredCapabilityBasis === undefined ||
+      (Array.isArray(item.requiredCapabilityBasis) &&
+        item.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
+  );
+}
+
+function isCapabilityBasisRequirement(
+  value: unknown,
+): value is CapabilityBasisRequirement {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const item = value as Record<string, unknown>;
+  return typeof item.id === "string" && Number.isSafeInteger(item.version);
+}
+
+function capabilityBasisKey(requirement: CapabilityBasisRequirement): string {
+  return `${requirement.id}@${requirement.version}`;
+}
+
+function supportsCapabilityBasis(
+  admittedBasis: ReadonlySet<string> | undefined,
+  requiredBasis: readonly CapabilityBasisRequirement[] = [],
+): boolean {
+  return requiredBasis.every(
+    requirement => admittedBasis?.has(capabilityBasisKey(requirement)) === true,
   );
 }
 
