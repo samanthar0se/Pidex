@@ -1,1 +1,6 @@
-{"name":"Pidex","short_name":"Pidex","start_url":"/","display":"standalone"}
+{
+  "name": "Pidex",
+  "short_name": "Pidex",
+  "start_url": "/",
+  "display": "standalone"
+}

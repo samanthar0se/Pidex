@@ -1,8 +1,22 @@
-export interface Clock { now(): number }
-export interface PiAdapter { readonly kind: "real" | "deterministic" }
-export interface NetworkAdapter { beforeSend(): void }
-export interface StorageFaultAdapter { beforeCommit(): void }
-export interface WindowsPlatformAdapter { readonly kind: "windows" | "deterministic" }
+export interface Clock {
+  now(): number;
+}
+
+export interface PiAdapter {
+  readonly kind: "real" | "deterministic";
+}
+
+export interface NetworkAdapter {
+  beforeSend(): void;
+}
+
+export interface StorageFaultAdapter {
+  beforeCommit(): void;
+}
+
+export interface WindowsPlatformAdapter {
+  readonly kind: "windows" | "deterministic";
+}
 
 export interface HostAdapters {
   clock: Clock;
@@ -12,10 +26,15 @@ export interface HostAdapters {
   windows: WindowsPlatformAdapter;
 }
 
-export function adaptersFor(mode: "product" | "deterministic" = "product"): HostAdapters {
+export type AdapterMode = "product" | "deterministic";
+
+export function adaptersFor(mode: AdapterMode = "product"): HostAdapters {
   const deterministic = mode === "deterministic";
+
   return {
-    clock: { now: () => deterministic ? 1_700_000_000_000 : Date.now() },
+    clock: {
+      now: () => (deterministic ? 1_700_000_000_000 : Date.now()),
+    },
     pi: { kind: deterministic ? "deterministic" : "real" },
     network: { beforeSend() {} },
     storage: { beforeCommit() {} },

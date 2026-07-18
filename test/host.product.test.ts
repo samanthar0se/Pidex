@@ -1,37 +1,97 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { get } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { startHost } from "../packages/host/src/host.js";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { readStatus } from "../packages/cli/src/main.js";
-import type { ServerMessage } from "../packages/protocol/src/status.js";
+import { startHost } from "../packages/host/src/host.js";
+import {
+  parseServerMessage,
+  type HostStatus,
+} from "../packages/protocol/src/status.js";
 
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-
-function pwaStatus(origin: string): Promise<ServerMessage["status"]> {
+function readPwaStatus(origin: string): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(origin.replace("https:", "wss:") + "/control", { rejectUnauthorized: false });
-    ws.once("message", bytes => { ws.close(); resolve((JSON.parse(bytes.toString()) as ServerMessage).status); });
-    ws.once("error", reject);
+    const controlOrigin = origin.replace("https:", "wss:");
+    const controlSocket = new WebSocket(`${controlOrigin}/control`, {
+      rejectUnauthorized: false,
+    });
+
+    controlSocket.once("message", bytes => {
+      try {
+        const message = parseServerMessage(bytes.toString());
+        controlSocket.close();
+        resolve(message.status);
+      } catch (error) {
+        controlSocket.close();
+        reject(error);
+      }
+    });
+    controlSocket.once("error", reject);
+  });
+}
+
+function readPwaShell(origin: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const request = get(origin, { rejectUnauthorized: false }, response => {
+      response.setEncoding("utf8");
+
+      let body = "";
+      response.on("data", chunk => {
+        body += chunk;
+      });
+      response.on("end", () => resolve(body));
+      response.on("error", reject);
+    });
+    request.on("error", reject);
   });
 }
 
 test("HTTPS PWA and CLI observe durable authoritative Host status across restart", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-product-"));
+
   try {
-    let host = await startHost({ dataDir, port: 0, adapters: adaptersFor("deterministic") });
-    const shell = await fetch(host.origin).then(r => r.text());
-    assert.match(shell, /Pidex Host/);
-    const [pwa, cli] = await Promise.all([pwaStatus(host.origin), readStatus(host.origin)]);
-    assert.deepEqual(pwa, cli);
-    assert.equal(cli.readiness, "ready");
-    assert.match(cli.synchronization.cursor, new RegExp(`^${cli.hostId}:`));
-    await host.close();
-    host = await startHost({ dataDir, port: 0, adapters: adaptersFor("deterministic") });
-    assert.deepEqual(await readStatus(host.origin), cli);
-    await host.close();
-  } finally { await rm(dataDir, { recursive: true, force: true }); }
+    const initialHost = await startHost({
+      dataDir,
+      port: 0,
+      adapters: adaptersFor("deterministic"),
+    });
+    let initialStatus: HostStatus;
+
+    try {
+      const shell = await readPwaShell(initialHost.origin);
+      assert.match(shell, /Pidex Host/);
+
+      const [pwaStatus, cliStatus] = await Promise.all([
+        readPwaStatus(initialHost.origin),
+        readStatus(initialHost.origin),
+      ]);
+      assert.deepEqual(pwaStatus, cliStatus);
+      assert.equal(cliStatus.readiness, "ready");
+      assert.match(
+        cliStatus.synchronization.cursor,
+        new RegExp(`^${cliStatus.hostId}:`),
+      );
+      initialStatus = cliStatus;
+    } finally {
+      await initialHost.close();
+    }
+
+    const restartedHost = await startHost({
+      dataDir,
+      port: 0,
+      adapters: adaptersFor("deterministic"),
+    });
+
+    try {
+      assert.deepEqual(await readStatus(restartedHost.origin), initialStatus);
+    } finally {
+      await restartedHost.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
