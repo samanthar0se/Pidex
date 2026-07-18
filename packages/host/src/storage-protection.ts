@@ -48,12 +48,15 @@ export class StorageProtection {
     const availableBytes = Number.isFinite(measuredBytes)
       ? Math.max(0, measuredBytes)
       : 0;
+    let mode: StorageProtectionStatus["mode"] = "normal";
+    if (availableBytes <= this.#options.emergencyReserveBytes) {
+      mode = "reserve";
+    } else if (availableBytes <= this.#options.admissionHeadroomBytes) {
+      mode = "protected";
+    }
+
     return {
-      mode: availableBytes <= this.#options.emergencyReserveBytes
-        ? "reserve"
-        : availableBytes <= this.#options.admissionHeadroomBytes
-          ? "protected"
-          : "normal",
+      mode,
       availableBytes,
       capacityBytes: this.#options.capacityBytes,
       emergencyReserveBytes: this.#options.emergencyReserveBytes,

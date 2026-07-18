@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  DEFAULT_ADMISSION_HEADROOM_BYTES,
+  DEFAULT_EMERGENCY_RESERVE_BYTES,
   MINIMUM_SUPPORTED_CAPACITY_BYTES,
   StorageProtection,
 } from "../packages/host/src/storage-protection.js";
 
-test("storage pressure cleans safe data before rejecting discretionary growth and preserves reserve writes", () => {
-  const gib = 1024 ** 3;
-  let available = 900 * 1024 ** 2;
+const MEBIBYTE = 1024 ** 2;
+const GIBIBYTE = 1024 ** 3;
+
+test("protected mode cleans safe data before rejecting discretionary growth", () => {
+  const available = 900 * MEBIBYTE;
   let cleanups = 0;
   const protection = new StorageProtection({
     capacityBytes: MINIMUM_SUPPORTED_CAPACITY_BYTES,
-    emergencyReserveBytes: 512 * 1024 ** 2,
-    admissionHeadroomBytes: gib,
+    emergencyReserveBytes: DEFAULT_EMERGENCY_RESERVE_BYTES,
+    admissionHeadroomBytes: DEFAULT_ADMISSION_HEADROOM_BYTES,
     availableBytes: () => available,
   });
 
@@ -22,20 +26,29 @@ test("storage pressure cleans safe data before rejecting discretionary growth an
     /storage-pressure:.*Reads and accepted-work controls remain available.*maintenance.*free Host disk space/,
   );
   assert.equal(cleanups, 1);
+});
 
-  // Cleanup may reclaim only proven disposable bytes and admission is retried.
+test("discretionary growth is admitted when cleanup restores headroom", () => {
+  let available = 900 * MEBIBYTE;
+  let cleanups = 0;
+  const protection = new StorageProtection({
+    availableBytes: () => available,
+  });
+
   protection.admitDiscretionary(() => {
     cleanups++;
-    available = 2 * gib;
+    available = 2 * GIBIBYTE;
   });
+  assert.equal(cleanups, 1);
   assert.equal(protection.status().mode, "normal");
+});
 
-  // Essential settlement/revocation/Stop callers do not use discretionary admission.
-  available = 256 * 1024 ** 2;
+test("storage at or below the emergency threshold is reported as reserve", () => {
+  const protection = new StorageProtection({
+    availableBytes: () => DEFAULT_EMERGENCY_RESERVE_BYTES / 2,
+  });
+
   assert.equal(protection.status().mode, "reserve");
-  let essentialCommitted = false;
-  essentialCommitted = true;
-  assert.equal(essentialCommitted, true);
 });
 
 test("storage thresholds are validated against the supported capacity floor", () => {

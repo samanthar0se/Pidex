@@ -231,8 +231,11 @@ export interface HostOptions {
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
+  /** Capacity used to validate the configured storage-protection thresholds. */
   storageCapacityBytes?: number;
+  /** Storage kept available for writes needed to settle accepted work. */
   emergencyReserveBytes?: number;
+  /** Available storage required before discretionary writes are admitted. */
   admissionHeadroomBytes?: number;
   /** Deterministic capacity seam; production uses the data volume. */
   availableStorageBytes?: () => number;
@@ -269,19 +272,21 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     adapters,
     options.initialCatalog,
   );
+  const availableStorageBytes = options.availableStorageBytes ?? (() => {
+    const volume = statfsSync(options.dataDir);
+    return Number(volume.bavail) * Number(volume.bsize);
+  });
   const storageProtection = new StorageProtection({
     capacityBytes: options.storageCapacityBytes,
     emergencyReserveBytes: options.emergencyReserveBytes,
     admissionHeadroomBytes: options.admissionHeadroomBytes,
-    availableBytes: options.availableStorageBytes ?? (() => {
-      const volume = statfsSync(options.dataDir);
-      return Number(volume.bavail) * Number(volume.bsize);
-    }),
+    availableBytes: availableStorageBytes,
   });
-  const admitDiscretionaryWrite = () =>
+  const admitDiscretionaryWrite = (): void => {
     storageProtection.admitDiscretionary(() => {
       store.runMaintenance(adapters.clock.now());
     });
+  };
   // An executing tail surviving daemon loss has no proof of normal completion.
   // Settle it conservatively and never dispatch it again to discover the result.
   store.reconcileAcceptedRuns(adapters.clock.now());
