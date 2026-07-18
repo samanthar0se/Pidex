@@ -4,7 +4,7 @@
 
 **Blocked by:** 08 — Resume or reset Client scopes; 18 — Resolve a basic Interaction
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A Session can hold several independent open Interactions, and the pinned UI orders timed requests by earliest deadline then untimed requests by creation order.
 - [ ] Any paired Device may respond; the first valid Host commit reserves the exact Interaction revision/worker generation and later competitors are stale.

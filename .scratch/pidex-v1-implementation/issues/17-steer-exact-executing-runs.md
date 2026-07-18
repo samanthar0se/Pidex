@@ -4,7 +4,7 @@
 
 **Blocked by:** 14 — Negotiate runtime controls; 16 — Queue durable follow-up Runs
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Steering is capability-gated and targets exact Session, executing Run identity, worker generation, and observed execution state/revision.
 - [ ] Accepted steering becomes a durable event inside the target Run and is delivered only to that Run's exact worker execution.
