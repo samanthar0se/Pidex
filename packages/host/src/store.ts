@@ -21,6 +21,11 @@ const CREATE_AUTHORITY_SCHEMA = `
     public_key_jwk TEXT NOT NULL,
     paired_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS revoked_devices (
+    device_id TEXT PRIMARY KEY,
+    paired_at INTEGER NOT NULL,
+    revoked_at INTEGER NOT NULL
+  );
 `;
 
 export class AuthorityStore {
@@ -87,6 +92,28 @@ export class AuthorityStore {
     return row && typeof row.public_key_jwk === "string"
       ? row.public_key_jwk
       : undefined;
+  }
+
+  revokeDevice(deviceId: string, revokedAt: number): boolean {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.#db
+        .prepare("SELECT paired_at FROM devices WHERE device_id = ?")
+        .get(deviceId);
+      if (!row || typeof row.paired_at !== "number") {
+        this.#db.exec("ROLLBACK");
+        return false;
+      }
+      this.#db
+        .prepare("INSERT INTO revoked_devices VALUES (?, ?, ?)")
+        .run(deviceId, row.paired_at, revokedAt);
+      this.#db.prepare("DELETE FROM devices WHERE device_id = ?").run(deviceId);
+      this.#db.exec("COMMIT");
+      return true;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   close(): void {

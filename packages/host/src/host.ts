@@ -57,6 +57,8 @@ export interface StartedHost {
   /** Host-local administration action. Its result must never be logged or projected. */
   createPairing(): PairingInstructions;
   status(): HostStatus;
+  /** Host-local administration bypasses Device authentication. */
+  revokeDevice(deviceId: string): void;
   close(): Promise<void>;
 }
 
@@ -109,18 +111,20 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
+  const clientDevices = new Map<import("ws").WebSocket, string>();
 
   server.on("upgrade", (request, socket, head) => {
     const upgradeUrl = new URL(request.url ?? "/", "https://pidex.invalid");
     const session = upgradeUrl.searchParams.get("session") ?? undefined;
-    const isAuthorizedControlRequest =
-      upgradeUrl.pathname === "/control" &&
-      (pairing.acceptsSession(session) ||
+    const sessionDevice = pairing.sessionDevice(session);
+    const isLocalAdministrator =
         hasValidAuthorization(
           request.headers.authorization,
           options.authorization,
           pairing,
-        ));
+        );
+    const isAuthorizedControlRequest =
+      upgradeUrl.pathname === "/control" && (sessionDevice !== undefined || isLocalAdministrator);
 
     if (!isAuthorizedControlRequest) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
@@ -129,11 +133,21 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     webSocketServer.handleUpgrade(request, socket, head, webSocket => {
+      if (sessionDevice) clientDevices.set(webSocket, sessionDevice);
       webSocketServer.emit("connection", webSocket, request);
     });
   });
 
   webSocketServer.on("connection", webSocket => {
+    webSocket.once("close", () => clientDevices.delete(webSocket));
+    webSocket.on("message", bytes => {
+      try {
+        const message: unknown = JSON.parse(bytes.toString());
+        if (isRevokeMessage(message)) revokeDevice(message.deviceId);
+      } catch {
+        // Invalid and unknown commands have no authority or side effects.
+      }
+    });
     adapters.network.beforeSend();
     const message: ServerMessage = {
       type: "host.snapshot",
@@ -175,10 +189,18 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     },
   });
 
+  function revokeDevice(deviceId: string): void {
+    pairing.revoke(deviceId);
+    for (const [client, connectedDeviceId] of clientDevices) {
+      if (connectedDeviceId === deviceId) client.close(4003, "device-revoked");
+    }
+  }
+
   return {
     origin: canonicalOrigin,
     createPairing: () => pairing.create(canonicalOrigin),
     status: () => store.status(RELEASE_ID, warnings),
+    revokeDevice,
     close: async () => {
       stopAdvertisement();
       for (const webSocket of webSocketServer.clients) {
@@ -198,6 +220,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       store.close();
     },
   };
+}
+
+function isRevokeMessage(value: unknown): value is { type: "device.revoke"; deviceId: string } {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Record<string, unknown>;
+  return message.type === "device.revoke" && typeof message.deviceId === "string";
 }
 
 function configureFirewall(

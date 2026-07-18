@@ -183,16 +183,39 @@ export class PairingAuthority {
   }
 
   acceptsSession(token: string | undefined): boolean {
+    return this.sessionDevice(token) !== undefined;
+  }
+
+  sessionDevice(token: string | undefined): string | undefined {
     if (!token) {
-      return false;
+      return undefined;
     }
 
     const session = this.#sessions.get(token);
     if (!session || session.expiresAt <= this.clock.now()) {
       this.#sessions.delete(token);
-      return false;
+      return undefined;
     }
-    return true;
+    // Recheck durable authority so revocation remains effective after restart
+    // and at every request boundary.
+    if (!this.store.devicePublicKey(session.deviceId)) {
+      this.#sessions.delete(token);
+      return undefined;
+    }
+    return session.deviceId;
+  }
+
+  revoke(deviceId: unknown): string {
+    if (typeof deviceId !== "string" || !this.store.revokeDevice(deviceId, this.clock.now())) {
+      throw new PairingError(404, "unknown-device");
+    }
+    for (const [id, challenge] of this.#authenticationChallenges) {
+      if (challenge.deviceId === deviceId) this.#authenticationChallenges.delete(id);
+    }
+    for (const [token, session] of this.#sessions) {
+      if (session.deviceId === deviceId) this.#sessions.delete(token);
+    }
+    return deviceId;
   }
 
   private validPairing(secret: unknown): ActivePairing {
