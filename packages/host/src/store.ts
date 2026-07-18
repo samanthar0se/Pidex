@@ -1186,26 +1186,51 @@ export class AuthorityStore {
     this.#db.prepare("UPDATE runs SET state = 'held' WHERE state = 'queued'").run();
   }
 
-  /** Holds continuation and removes runtime-owned authority after one worker is lost. */
-  recoverWorkerLoss(sessionId: string, runId: string, now: number): Interaction[] {
+  /** Holds continuation and removes runtime-owned authority after worker loss. */
+  recoverWorkerLoss(
+    sessionId: string,
+    runId: string,
+    now: number,
+  ): Interaction[] {
     this.markRunSteeringUnapplied(runId);
-    const unresolved = this.interactions(sessionId).filter(interaction =>
-      interaction.state === "open" || interaction.state === "resolving"
-    );
-    for (const interaction of unresolved) {
-      const expectedState = interaction.state === "open" ? "open" : "resolving";
-      this.settleInteraction(interaction.interactionId, expectedState,
-        "withdrawn", "worker-lost", now, false);
+    const withdrawnInteractions: Interaction[] = [];
+    for (const interaction of this.interactions(sessionId)) {
+      if (
+        interaction.state !== "open" &&
+        interaction.state !== "resolving"
+      ) {
+        continue;
+      }
+      this.settleInteraction(
+        interaction.interactionId,
+        interaction.state,
+        "withdrawn",
+        "worker-lost",
+        now,
+        false,
+      );
+      withdrawnInteractions.push({
+        ...interaction,
+        state: "withdrawn",
+        revision: interaction.revision + 1,
+        terminalCause: "worker-lost",
+        respondedAt: now,
+        applicationProven: false,
+      });
     }
-    this.#db.prepare(
-      "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
-    ).run(sessionId);
-    this.#db.prepare(
-      "UPDATE sessions SET residency = 'sleeping' WHERE session_id = ?",
-    ).run(sessionId);
-    return unresolved.map(interaction => ({ ...interaction,
-      state: "withdrawn" as const, revision: interaction.revision + 1,
-      terminalCause: "worker-lost", respondedAt: now, applicationProven: false }));
+
+    this.#db
+      .prepare(
+        "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
+      )
+      .run(sessionId);
+    this.#db
+      .prepare(
+        "UPDATE sessions SET residency = 'sleeping' WHERE session_id = ?",
+      )
+      .run(sessionId);
+
+    return withdrawnInteractions;
   }
 
   /** Publish immutable bytes first, then atomically reference them and settle once. */

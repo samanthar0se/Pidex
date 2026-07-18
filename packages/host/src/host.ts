@@ -1294,39 +1294,63 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             publishRunCompletion(run.sessionId, cancelled.run);
             return;
           }
-          invalidateWorkerGeneration(run.sessionId, workerGeneration);
-          if (!(error instanceof WorkerLossError)) {
-            const failed = store.settleRun(run.runId, "failed",
-              `Pi execution failed: ${error instanceof Error ? error.message : "runtime-error"}`,
-              null, adapters.clock.now());
-            presentationContextByRun.delete(run.runId);
-            publishRunCompletion(run.sessionId, failed.run);
-            store.holdQueued(run.sessionId);
+          if (error instanceof WorkerLossError) {
+            recoverFromWorkerLoss(run, workerGeneration, error);
             return;
           }
-          const finalAssistant = store.finalizeAssistant(run.sessionId, run.runId);
-          if (finalAssistant) publishTimelineChange(run.sessionId, finalAssistant);
+
+          invalidateWorkerGeneration(run.sessionId, workerGeneration);
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
-          const interrupted = store.settleRun(
+          const failed = store.settleRun(
             run.runId,
-            "interrupted",
-            `Worker recovery interrupted execution (${errorDetail}); normal settlement could not be proved. Partial output and committed side effects were preserved.`,
+            "failed",
+            `Pi execution failed: ${errorDetail}`,
             null,
             adapters.clock.now(),
           );
-          const job = sessionJobs.get(run.sessionId);
-          job?.close();
-          sessionJobs.delete(run.sessionId);
-          for (const interaction of store.recoverWorkerLoss(
-            run.sessionId, run.runId, adapters.clock.now()
-          )) publishInteraction(interaction);
           presentationContextByRun.delete(run.runId);
-          publishRunCompletion(run.sessionId, interrupted.run);
+          publishRunCompletion(run.sessionId, failed.run);
+          store.holdQueued(run.sessionId);
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
       });
+  }
+
+  function recoverFromWorkerLoss(
+    run: RunRecord,
+    workerGeneration: string,
+    error: WorkerLossError,
+  ): void {
+    invalidateWorkerGeneration(run.sessionId, workerGeneration);
+    const finalAssistant = store.finalizeAssistant(run.sessionId, run.runId);
+    if (finalAssistant) {
+      publishTimelineChange(run.sessionId, finalAssistant);
+    }
+
+    const interrupted = store.settleRun(
+      run.runId,
+      "interrupted",
+      `Worker recovery interrupted execution (${error.message}); normal settlement could not be proved. Partial output and committed side effects were preserved.`,
+      null,
+      adapters.clock.now(),
+    );
+    const sessionJob = sessionJobs.get(run.sessionId);
+    sessionJob?.close();
+    sessionJobs.delete(run.sessionId);
+
+    const withdrawnInteractions = store.recoverWorkerLoss(
+      run.sessionId,
+      run.runId,
+      adapters.clock.now(),
+    );
+    for (const interaction of withdrawnInteractions) {
+      publishInteraction(interaction);
+    }
+
+    presentationContextByRun.delete(run.runId);
+    publishRunCompletion(run.sessionId, interrupted.run);
   }
 
   function publishRunCompletion(sessionId: string, run: TerminalRun): void {
