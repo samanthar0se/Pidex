@@ -18,7 +18,7 @@ test("drafts survive independently and shell updates cannot gain background auth
   assert.doesNotMatch(app, /sync\.register/);
 
   assert.match(worker, /SHELL_GENERATION = "sha256-/);
-  assert.match(worker, /Promise\.all\(SHELL\.map/);
+  assert.match(worker, /Promise\.all\(\s*SHELL\.map/);
   assert.match(worker, /incomplete shell generation/);
   assert.match(worker, /Deliberately no skipWaiting/);
   assert.match(worker, /event\.data\?\.type !== "activate-shell"/);

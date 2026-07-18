@@ -4,7 +4,10 @@ const EXPECTED_HOST_ID_KEY = "pidex.expectedHostId";
 const CACHE_SCHEMA_VERSION = 2;
 const DEVICE_SCHEMA_VERSION = 2;
 const DEVICE_DATABASE = "pidex-device";
+const IDENTITY_STORE = "identity";
 const DRAFT_STORE = "drafts";
+const PREFERENCES_STORE = "preferences";
+const DEVICE_STORES = [IDENTITY_STORE, DRAFT_STORE, PREFERENCES_STORE];
 const PROTOCOL_BASIS = "1.1";
 const MAX_CACHED_SESSION_PROJECTIONS = 10;
 const MAX_FINALIZED_PAGES = 25;
@@ -164,7 +167,7 @@ if (pairingSecret) {
   $("#content").hidden = true;
   $("#pair-device").onclick = pairDevice;
 } else {
-  registerServiceWorker();
+  void registerServiceWorker();
   loadCachedWorkingSet().finally(authenticateStoredDevice);
 }
 
@@ -723,29 +726,56 @@ function wireComposer(session, executingRun) {
 
 function renderComposerState(session, draftKey) {
   const label = $("#composer-state");
-  if (!label) return;
+  if (!label) {
+    return;
+  }
+
   const failure = state.draftFailures.get(draftKey);
-  label.classList.toggle("draft-warning", Boolean(failure));
-  label.textContent = failure || (state.current
-    ? sessionCue(session)
-    : `${$("#connection-state").textContent} · draft local and unsent`);
+  if (failure) {
+    label.classList.add("draft-warning");
+    label.textContent = failure;
+    return;
+  }
+
+  label.classList.remove("draft-warning");
+  if (state.current) {
+    label.textContent = sessionCue(session);
+    return;
+  }
+
+  label.textContent =
+    `${$("#connection-state").textContent} · draft local and unsent`;
 }
 
 function deviceDraftKey(sessionId) {
-  return `${state.hostId || localStorage.getItem(EXPECTED_HOST_ID_KEY) || "unpaired"}:${sessionId}`;
+  const hostId = state.hostId ||
+    localStorage.getItem(EXPECTED_HOST_ID_KEY) ||
+    "unpaired";
+  return `${hostId}:${sessionId}`;
 }
 
 async function loadDraft(key, input, session) {
-  if (state.drafts.has(key)) return;
+  if (state.drafts.has(key)) {
+    return;
+  }
+
   try {
     const value = await withDeviceStore(DRAFT_STORE, "readonly", store =>
       requestValue(store.get(key))
     );
-    if (state.drafts.has(key)) return; // Never overwrite newer in-memory text.
+    // An input event may have supplied newer text while storage was loading.
+    if (state.drafts.has(key)) {
+      return;
+    }
     state.drafts.set(key, value?.text || "");
-    if (input.isConnected && !input.value) input.value = value?.text || "";
+    if (input.isConnected && !input.value) {
+      input.value = value?.text || "";
+    }
   } catch {
-    state.draftFailures.set(key, "Draft storage unavailable · text remains in memory");
+    state.draftFailures.set(
+      key,
+      "Draft storage unavailable · text remains in memory",
+    );
     renderComposerState(session, key);
   }
 }
@@ -1351,7 +1381,7 @@ function openDeviceDatabase() {
   return new Promise((resolve, reject) => {
     const openRequest = indexedDB.open(DEVICE_DATABASE, DEVICE_SCHEMA_VERSION);
     openRequest.onupgradeneeded = () => {
-      for (const name of ["identity", DRAFT_STORE, "preferences"]) {
+      for (const name of DEVICE_STORES) {
         if (!openRequest.result.objectStoreNames.contains(name)) {
           openRequest.result.createObjectStore(name);
         }
@@ -1361,7 +1391,6 @@ function openDeviceDatabase() {
     openRequest.onsuccess = () => resolve(openRequest.result);
   });
 }
-
 
 async function withDeviceStore(name, mode, operation) {
   const database = await openDeviceDatabase();
@@ -1375,56 +1404,84 @@ async function withDeviceStore(name, mode, operation) {
   }
 }
 
-function deviceStore(mode) {
-  return openDeviceDatabase().then(database =>
-    database.transaction("identity", mode).objectStore("identity")
-  );
-}
-
 async function persistAllDrafts() {
-  await Promise.all([...state.drafts].map(([key, text]) => persistDraft(key, text)));
+  const writes = [...state.drafts].map(([key, text]) =>
+    persistDraft(key, text)
+  );
+  await Promise.all(writes);
 }
 
 async function registerServiceWorker() {
-  if (!("serviceWorker" in navigator)) return;
-  const registration = await navigator.serviceWorker.register("/service-worker.js");
-  const offerUpdate = worker => {
-    if (!worker || !confirm("A complete Pidex update is ready. Save drafts and reload?")) return;
-    persistAllDrafts().then(() => worker.postMessage({ type: "activate-shell" }))
-      .catch(() => alert("Update refused: a Device-owned draft could not be saved."));
-  };
-  offerUpdate(registration.waiting);
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  const registration = await navigator.serviceWorker.register(
+    "/service-worker.js",
+  );
+  void offerShellUpdate(registration.waiting);
   registration.addEventListener("updatefound", () => {
-    registration.installing?.addEventListener("statechange", event => {
-      if (event.target.state === "installed" && navigator.serviceWorker.controller) {
-        offerUpdate(registration.waiting);
-      }
-    });
+    watchInstallingServiceWorker(registration);
   });
-  navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
-  navigator.serviceWorker.addEventListener("message", event => {
-    if (event.data?.type === "update-refused-multiple-clients") {
-      alert("Update refused: close other Pidex windows, then reload explicitly.");
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    location.reload();
+  });
+  navigator.serviceWorker.addEventListener(
+    "message",
+    handleServiceWorkerMessage,
+  );
+}
+
+function watchInstallingServiceWorker(registration) {
+  const installingWorker = registration.installing;
+  if (!installingWorker) {
+    return;
+  }
+
+  installingWorker.addEventListener("statechange", () => {
+    if (
+      installingWorker.state === "installed" &&
+      navigator.serviceWorker.controller
+    ) {
+      void offerShellUpdate(registration.waiting);
     }
   });
 }
 
-addEventListener("pagehide", () => { void persistAllDrafts(); });
+async function offerShellUpdate(worker) {
+  if (
+    !worker ||
+    !confirm("A complete Pidex update is ready. Save drafts and reload?")
+  ) {
+    return;
+  }
 
-async function saveDevice(value) {
-  const store = await deviceStore("readwrite");
-  await new Promise((resolve, reject) => {
-    const request = store.put(value, "device");
-    request.onsuccess = resolve;
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    await persistAllDrafts();
+    worker.postMessage({ type: "activate-shell" });
+  } catch {
+    alert("Update refused: a Device-owned draft could not be saved.");
+  }
 }
 
-async function loadDevice() {
-  const store = await deviceStore("readonly");
-  return new Promise((resolve, reject) => {
-    const request = store.get("device");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+function handleServiceWorkerMessage(event) {
+  if (event.data?.type === "update-refused-multiple-clients") {
+    alert("Update refused: close other Pidex windows, then reload explicitly.");
+  }
+}
+
+addEventListener("pagehide", () => {
+  void persistAllDrafts();
+});
+
+async function saveDevice(value) {
+  await withDeviceStore(IDENTITY_STORE, "readwrite", store =>
+    requestValue(store.put(value, "device"))
+  );
+}
+
+function loadDevice() {
+  return withDeviceStore(IDENTITY_STORE, "readonly", store =>
+    requestValue(store.get("device"))
+  );
 }
