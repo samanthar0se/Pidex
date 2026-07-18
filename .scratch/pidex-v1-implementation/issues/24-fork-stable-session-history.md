@@ -4,7 +4,7 @@
 
 **Blocked by:** 13 — Reach complete paginated Session history; 23 — Archive and restore Sessions safely
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Eligible Fork points are durable Timeline/Pi history entries validated by the matching pinned runtime; streaming or partial entries are rejected.
 - [ ] Fork commits a new available/sleeping Session with immutable parent identity, fork-point identity, and inherited history through that point.

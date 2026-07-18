@@ -4,7 +4,7 @@
 
 **Blocked by:** 25 — Recover from worker loss
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The launcher owns a kill-on-close daemon supervision Job whose loss tears down contained worker trees rather than orphaning execution.
 - [ ] Startup validates durable Host state and reconciles every Run recorded as executing/cancelling against artifacts and checkpoint evidence before normal mutation readiness.
