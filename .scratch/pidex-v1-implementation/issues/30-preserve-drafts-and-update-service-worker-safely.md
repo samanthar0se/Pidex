@@ -4,7 +4,7 @@
 
 **Blocked by:** 29 — Read a bounded working set offline
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Composer Drafts live in storage separate from disposable projections and remain local/unsent across reload, offline use, projection reset, and cache eviction.
 - [ ] No reconnect, service-worker event, Background Sync, notification action, or page launch automatically submits a draft or creates a Host command.
