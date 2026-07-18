@@ -18,6 +18,7 @@ import {
   protocolVersion,
   type ClientHello,
   type HostStatus,
+  type Interaction,
   type ServerMessage,
   type TimelineChange,
 } from "../../protocol/src/status.js";
@@ -91,6 +92,16 @@ interface ScopeSetMessage {
   cursor?: string;
   resourceRevisions?: Record<string, number>;
   protocolVersion: string;
+}
+
+interface InteractionResolveMessage {
+  type: "interaction.resolve";
+  commandId: string;
+  interactionId: string;
+  workerGeneration: number;
+  observedRevision: number;
+  dismiss?: boolean;
+  value?: unknown;
 }
 
 type ScopeResetReason = Extract<
@@ -221,6 +232,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
   const workers = new Map<string, PiSessionWorker>();
+  const interactionResolvers = new Map<string, (result: { dismissed: true } | { dismissed: false; value: string | boolean }) => void>();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
     if (client.readyState !== client.OPEN) {
@@ -347,6 +359,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleRunSubmit(webSocket, message);
         } else if (isScopeSetMessage(message)) {
           synchronize(webSocket, message);
+        } else if (isInteractionResolveMessage(message)) {
+          handleInteractionResolve(webSocket, message);
         }
       } catch {
         // Invalid and unknown commands have no authority or side effects.
@@ -528,7 +542,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           protocolBasis: protocolVersion,
           capabilities: ["session.rename"],
         },
-        snapshot: { session, timeline: store.timeline(sessionId) },
+        snapshot: { session, timeline: store.timeline(sessionId), interactions: store.interactions(sessionId) },
       });
     }
   }
@@ -748,7 +762,19 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           adapters.clock.now(),
         );
         publishTimelineChange(sessionId, change);
-      })
+      }, request => new Promise(resolve => {
+        const created = store.createInteraction({
+          sessionId, runId, workerGeneration: 1, correlationId: request.correlationId,
+          kind: request.kind,
+          payload: { message: request.message, ...(request.kind === "select" ? { options: request.options } : {}),
+            ...(request.kind !== "select" && request.defaultValue !== undefined ? { defaultValue: request.defaultValue } : {}) },
+          ...(request.provenance ? { provenance: request.provenance } : {}),
+          createdAt: adapters.clock.now(),
+        });
+        interactionResolvers.set(created.interaction.interactionId, resolve);
+        publishTimelineChange(sessionId, created.timelineChange);
+        publishInteraction(created.interaction);
+      }))
       .then(executionResult => {
         const finalAssistant = store.finalizeAssistant(sessionId, runId);
         if (finalAssistant) {
@@ -802,6 +828,35 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(socket, message);
       }
     }
+  }
+
+  function publishInteraction(interaction: Interaction): void {
+    for (const socket of admittedClients) {
+      if (scopedSessionIdsByClient.get(socket)?.has(interaction.sessionId)) {
+        sendServerMessage(socket, { type: "interaction.change", interaction });
+      }
+    }
+  }
+
+  function handleInteractionResolve(client: WebSocket, command: InteractionResolveMessage): void {
+    let interaction: Interaction;
+    try { interaction = store.loadInteraction(command.interactionId); }
+    catch { return reject("unknown-interaction"); }
+    if (interaction.state !== "open" || interaction.revision !== command.observedRevision || interaction.workerGeneration !== command.workerGeneration) return reject("stale-interaction");
+    if (!command.dismiss && !validInteractionValue(interaction, command.value)) return reject("invalid-interaction-value");
+    const resolver = interactionResolvers.get(interaction.interactionId);
+    if (!resolver) return reject("exact-worker-unavailable");
+    const resolving = store.transitionInteraction(interaction.interactionId, "open", "resolving");
+    if (!resolving) return reject("stale-interaction");
+    publishInteraction(resolving);
+    sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted" });
+    resolver(command.dismiss ? { dismissed: true } : { dismissed: false, value: command.value as string | boolean });
+    interactionResolvers.delete(interaction.interactionId);
+    // Resolving the exact in-process request is the worker acknowledgement;
+    // only then may authority expose a terminal state.
+    const terminal = store.transitionInteraction(interaction.interactionId, "resolving", command.dismiss ? "dismissed" : "responded");
+    if (terminal) publishInteraction(terminal);
+    function reject(error: string): void { sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error }); }
   }
 
   return {
@@ -963,6 +1018,24 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
       (Array.isArray(item.requiredCapabilityBasis) &&
         item.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
   );
+}
+
+function isInteractionResolveMessage(value: unknown): value is InteractionResolveMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "interaction.resolve" && typeof item.commandId === "string" &&
+    typeof item.interactionId === "string" && Number.isSafeInteger(item.workerGeneration) &&
+    Number.isSafeInteger(item.observedRevision) &&
+    (item.dismiss === undefined || typeof item.dismiss === "boolean");
+}
+
+function validInteractionValue(interaction: Interaction, value: unknown): boolean {
+  switch (interaction.kind) {
+    case "select": return typeof value === "string" && interaction.payload.options?.includes(value) === true;
+    case "confirm": return typeof value === "boolean";
+    case "input":
+    case "editor": return typeof value === "string" && Buffer.byteLength(value) <= 100_000;
+  }
 }
 
 function isCapabilityBasisRequirement(

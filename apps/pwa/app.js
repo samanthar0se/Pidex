@@ -10,6 +10,7 @@ const sessionsNav = document.querySelector("#sessions");
 const runModelSelect = document.querySelector("#run-model");
 const runModeSelect = document.querySelector("#run-mode");
 const runInput = document.querySelector("#run-input");
+const interactionArea = document.querySelector("#interaction");
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -22,6 +23,7 @@ const supportedCapabilities = [
   "pi.mode.select",
   "pi.input.text",
   "pi.runtime.cancel",
+  "pi.interaction.basic",
 ];
 let admittedCapabilities = new Map();
 let controlSocket;
@@ -152,6 +154,9 @@ function renderStatus({ data }) {
         renderHostSnapshot(message);
       }
       return;
+    case "interaction.change":
+      renderInteraction(message.interaction);
+      return;
   }
 }
 
@@ -242,6 +247,40 @@ function renderHostSnapshot(message) {
   );
   workspaceSelect.replaceChildren(new Option("No Workspace", ""));
   renderSessions();
+  const selectedSessionId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
+  if (selectedSessionId) controlSocket.send(JSON.stringify({ type: "scope.set", sessionIds: [selectedSessionId], protocolVersion: "1.1" }));
+}
+
+function renderInteraction(interaction) {
+  if (!["open", "resolving"].includes(interaction.state)) {
+    interactionArea.hidden = true;
+    interactionArea.replaceChildren();
+    return;
+  }
+  const message = document.createElement("p");
+  message.textContent = interaction.payload.message; // Always inert; extension markup is never interpreted.
+  let control;
+  if (interaction.kind === "select") {
+    control = document.createElement("select");
+    control.replaceChildren(...interaction.payload.options.map(value => new Option(value, value)));
+  } else if (interaction.kind === "confirm") {
+    control = document.createElement("input"); control.type = "checkbox";
+  } else {
+    control = document.createElement("textarea");
+    control.value = typeof interaction.payload.defaultValue === "string" ? interaction.payload.defaultValue : "";
+  }
+  const respond = document.createElement("button"); respond.textContent = "Respond";
+  const dismiss = document.createElement("button"); dismiss.textContent = "Dismiss";
+  const send = dismissing => controlSocket.send(JSON.stringify({
+    type: "interaction.resolve", commandId: crypto.randomUUID(), interactionId: interaction.interactionId,
+    workerGeneration: interaction.workerGeneration, observedRevision: interaction.revision,
+    dismiss: dismissing, ...(dismissing ? {} : { value: interaction.kind === "confirm" ? control.checked : control.value }),
+  }));
+  respond.addEventListener("click", () => send(false));
+  dismiss.addEventListener("click", () => send(true));
+  if (interaction.state === "resolving") { control.disabled = true; respond.disabled = true; dismiss.disabled = true; }
+  interactionArea.replaceChildren(message, control, respond, dismiss);
+  interactionArea.hidden = false;
 }
 
 function renderSessions() {

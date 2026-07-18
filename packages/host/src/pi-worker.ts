@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PiAdapter, PiTimelineEvent } from "../../adapters/src/index.js";
+import type { PiAdapter, PiInteractionRequest, PiInteractionResult, PiTimelineEvent } from "../../adapters/src/index.js";
 
 export const WORKER_PROTOCOL_GENERATION = 1 as const;
 export const BUNDLED_PI_SDK_GENERATION = "pi-sdk@0.1.0";
@@ -51,6 +51,11 @@ const timelineEventSchema = z.discriminatedUnion("type", [
       text: z.string(),
     })
     .strict(),
+]);
+const interactionRequestSchema = z.discriminatedUnion("kind", [
+  z.object({ correlationId: z.string().min(1).max(200), kind: z.literal("select"), message: z.string().max(4000), options: z.array(z.string().max(1000)).min(1).max(100), provenance: z.string().max(500).optional() }).strict(),
+  z.object({ correlationId: z.string().min(1).max(200), kind: z.literal("confirm"), message: z.string().max(4000), defaultValue: z.boolean().optional(), provenance: z.string().max(500).optional() }).strict(),
+  z.object({ correlationId: z.string().min(1).max(200), kind: z.enum(["input", "editor"]), message: z.string().max(4000), defaultValue: z.string().max(100_000).optional(), provenance: z.string().max(500).optional() }).strict(),
 ]);
 
 type WorkerCapability = z.infer<typeof capabilitySchema>;
@@ -108,6 +113,7 @@ export class PiSessionWorker {
   async execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
+    onInteraction?: (request: PiInteractionRequest) => Promise<PiInteractionResult>,
   ): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
@@ -115,7 +121,7 @@ export class PiSessionWorker {
 
     this.#running = true;
     try {
-      await PiSessionWorker.probe(this.#pi);
+      const capabilities = await PiSessionWorker.probe(this.#pi);
       const execute = this.#pi.execute;
       if (!execute) {
         throw new WorkerReadinessError("pi-sdk-unavailable");
@@ -130,6 +136,13 @@ export class PiSessionWorker {
           onTimelineEvent: event => {
             const timelineEvent = timelineEventSchema.parse(event);
             onTimelineEvent?.(timelineEvent);
+          },
+          onInteraction: async request => {
+            if (!capabilities.some(item => item.id === "interaction.basic")) {
+              throw new Error("interaction-capability-unavailable");
+            }
+            if (!onInteraction) throw new Error("interaction-handler-unavailable");
+            return onInteraction(interactionRequestSchema.parse(request));
           },
         }),
       );
