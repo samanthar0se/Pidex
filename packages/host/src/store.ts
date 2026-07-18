@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { z } from "zod";
 import type { HostAdapters } from "../../adapters/src/index.js";
 import {
   projectSummarySchema,
@@ -73,10 +74,27 @@ export interface RenameCommand {
   observedMetadataRevision: number;
 }
 
+const renameOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("accepted"),
+    session: sessionSummarySchema,
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.enum(["stale-precondition", "unknown-session"]),
+    currentMetadataRevision: z.number().optional(),
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+]);
+
+export type RenameOutcome = z.infer<typeof renameOutcomeSchema>;
+
 export type RenameResult =
-  | { kind: "accepted"; session: SessionSummary; cursor: string; digest: string }
-  | { kind: "rejected"; error: "stale-precondition" | "unknown-session"; currentMetadataRevision?: number; cursor: string; digest: string }
-  | { kind: "replayed"; outcome: RenameResult; digest: string }
+  | RenameOutcome
+  | { kind: "replayed"; outcome: RenameOutcome; digest: string }
   | { kind: "command-id-conflict" };
 
 export interface InitialCatalog {
@@ -215,49 +233,87 @@ export class AuthorityStore {
     }
   }
 
-  renameSession(deviceId: string, command: RenameCommand, now: number): RenameResult {
-    const envelope = JSON.stringify({
-      type: "session.rename",
-      commandId: command.commandId,
-      sessionId: command.sessionId,
-      name: command.name,
-      requiredCapability: command.requiredCapability,
-      observedMetadataRevision: command.observedMetadataRevision,
-    });
-    const digest = createHash("sha256").update(envelope).digest("hex");
+  renameSession(
+    deviceId: string,
+    command: RenameCommand,
+    now: number,
+  ): RenameResult {
+    const digest = renameCommandDigest(command);
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db.prepare(
-        `SELECT envelope_digest, outcome_json FROM command_receipts
-         WHERE device_id=? AND command_id=?`,
-      ).get(deviceId, command.commandId);
+      const receipt = this.#db
+        .prepare(
+          `SELECT envelope_digest, outcome_json FROM command_receipts
+           WHERE device_id = ? AND command_id = ?`,
+        )
+        .get(deviceId, command.commandId);
       if (receipt) {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) return { kind: "command-id-conflict" };
-        return { kind: "replayed", outcome: JSON.parse(String(receipt.outcome_json)) as RenameResult, digest };
+        if (receipt.envelope_digest !== digest) {
+          return { kind: "command-id-conflict" };
+        }
+        const outcome = renameOutcomeSchema.parse(
+          JSON.parse(String(receipt.outcome_json)),
+        );
+        return { kind: "replayed", outcome, digest };
       }
 
-      const row = this.#db.prepare(
-        `SELECT metadata_revision FROM sessions WHERE session_id=?`,
-      ).get(command.sessionId);
-      let outcome: RenameResult;
+      const row = this.#db
+        .prepare(
+          "SELECT metadata_revision FROM sessions WHERE session_id = ?",
+        )
+        .get(command.sessionId);
+      let outcome: RenameOutcome;
       if (!row || typeof row.metadata_revision !== "number") {
-        outcome = { kind: "rejected", error: "unknown-session", cursor: this.status("").synchronization.cursor, digest };
+        outcome = {
+          kind: "rejected",
+          error: "unknown-session",
+          cursor: this.status("").synchronization.cursor,
+          digest,
+        };
       } else if (row.metadata_revision !== command.observedMetadataRevision) {
-        outcome = { kind: "rejected", error: "stale-precondition", currentMetadataRevision: row.metadata_revision, cursor: this.status("").synchronization.cursor, digest };
+        outcome = {
+          kind: "rejected",
+          error: "stale-precondition",
+          currentMetadataRevision: row.metadata_revision,
+          cursor: this.status("").synchronization.cursor,
+          digest,
+        };
       } else {
-        this.#db.prepare(
-          `UPDATE sessions SET name=?, metadata_revision=metadata_revision+1 WHERE session_id=?`,
-        ).run(command.name, command.sessionId);
-        this.#db.prepare(
-          `UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1`,
-        ).run(now);
-        const session = this.session(command.sessionId);
-        outcome = { kind: "accepted", session, cursor: this.status("").synchronization.cursor, digest };
+        this.#db
+          .prepare(
+            `UPDATE sessions SET name = ?, metadata_revision = metadata_revision + 1
+             WHERE session_id = ?`,
+          )
+          .run(command.name, command.sessionId);
+        this.#db
+          .prepare(
+            `UPDATE host SET sequence = sequence + 1, committed_at = ?
+             WHERE singleton = 1`,
+          )
+          .run(now);
+        outcome = {
+          kind: "accepted",
+          session: this.loadSession(command.sessionId),
+          cursor: this.status("").synchronization.cursor,
+          digest,
+        };
       }
-      this.#db.prepare(
-        `INSERT INTO command_receipts VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(deviceId, command.commandId, digest, JSON.stringify(outcome), outcome.cursor, now);
+      this.#db
+        .prepare(
+          `INSERT INTO command_receipts
+           (device_id, command_id, envelope_digest, outcome_json,
+            commit_cursor, committed_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          deviceId,
+          command.commandId,
+          digest,
+          JSON.stringify(outcome),
+          outcome.cursor,
+          now,
+        );
       this.#db.exec("COMMIT");
       return outcome;
     } catch (error) {
@@ -266,14 +322,16 @@ export class AuthorityStore {
     }
   }
 
-  private session(sessionId: string): SessionSummary {
-    const row = this.#db.prepare(
-      `SELECT session_id AS sessionId, name, project_id AS projectId,
-              workspace_id AS workspaceId, retention, residency,
-              metadata_revision AS metadataRevision,
-              timeline_revision AS timelineRevision
-       FROM sessions WHERE session_id=?`,
-    ).get(sessionId);
+  private loadSession(sessionId: string): SessionSummary {
+    const row = this.#db
+      .prepare(
+        `SELECT session_id AS sessionId, name, project_id AS projectId,
+                workspace_id AS workspaceId, retention, residency,
+                metadata_revision AS metadataRevision,
+                timeline_revision AS timelineRevision
+         FROM sessions WHERE session_id = ?`,
+      )
+      .get(sessionId);
     return sessionSummarySchema.parse(row);
   }
 
@@ -352,4 +410,16 @@ export class AuthorityStore {
   close(): void {
     this.#db.close();
   }
+}
+
+function renameCommandDigest(command: RenameCommand): string {
+  const envelope = JSON.stringify({
+    type: "session.rename",
+    commandId: command.commandId,
+    sessionId: command.sessionId,
+    name: command.name,
+    requiredCapability: command.requiredCapability,
+    observedMetadataRevision: command.observedMetadataRevision,
+  });
+  return createHash("sha256").update(envelope).digest("hex");
 }
