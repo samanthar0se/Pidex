@@ -102,12 +102,19 @@ export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 export type WorkspaceSummary = z.infer<typeof workspaceSummarySchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
+const terminalRunStateSchema = z.enum([
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
 export const runRecordSchema = z.object({
   runId: z.string(),
   sessionId: z.string(),
   sessionOrder: z.number(),
   prompt: z.string(),
-  state: z.enum(["accepted", "completed", "failed", "cancelled", "interrupted"]),
+  state: z.union([z.literal("accepted"), terminalRunStateSchema]),
 });
 
 export const acceptedRunSchema = runRecordSchema.extend({
@@ -119,7 +126,7 @@ export const completedRunSchema = runRecordSchema.extend({
 });
 
 export const terminalRunSchema = runRecordSchema.extend({
-  state: z.enum(["completed", "failed", "cancelled", "interrupted"]),
+  state: terminalRunStateSchema,
 });
 
 export const timelineEntrySchema = z.object({

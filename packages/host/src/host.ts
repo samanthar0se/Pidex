@@ -678,10 +678,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       })
       .catch(error => {
         try {
+          const errorDetail =
+            error instanceof Error ? error.message : "runtime-error";
           const failed = store.settleRun(
             runId,
             "failed",
-            `Pi execution failed: ${error instanceof Error ? error.message : "runtime-error"}`,
+            `Pi execution failed: ${errorDetail}`,
             null,
             adapters.clock.now(),
           );
