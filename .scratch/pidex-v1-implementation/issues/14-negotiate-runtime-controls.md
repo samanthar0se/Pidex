@@ -4,7 +4,7 @@
 
 **Blocked by:** 10 — Execute the first completed Run
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Worker readiness probes every required Pi SDK semantic and advertises stable versioned optional capability identifiers plus constraints.
 - [ ] Missing required capabilities, changed required semantics, schema mismatch, or unknown required worker messages block worker readiness with typed diagnostics.

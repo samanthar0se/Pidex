@@ -4,7 +4,7 @@
 
 **Blocked by:** 10 — Execute the first completed Run
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The worker durably flushes the Pi artifact and returns stable checkpoint evidence before normal settlement can commit.
 - [ ] Immutable Timeline payloads stage, flush, verify, and publish before SQLite may reference them.
