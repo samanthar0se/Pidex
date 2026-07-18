@@ -23,6 +23,22 @@ const fileSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
+const sbomReferenceSchema = z.object({
+  path: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  format: z.literal("cyclonedx-json-1.5"),
+});
+
+const cycloneDxSbomSchema = z
+  .object({
+    bomFormat: z.literal("CycloneDX"),
+    specVersion: z.literal("1.5"),
+    serialNumber: z.string().startsWith("urn:uuid:"),
+    version: z.number().int().positive(),
+    components: z.array(z.object({}).passthrough()),
+  })
+  .passthrough();
+
 export const releaseManifestSchema = z
   .object({
     releaseId: z.string().min(1),
@@ -31,6 +47,7 @@ export const releaseManifestSchema = z
     workerGeneration: z.string().min(1),
     dataSchema: z.number().int().nonnegative(),
     files: z.array(fileSchema).min(1),
+    sbom: sbomReferenceSchema,
   })
   .strict();
 export type ReleaseManifest = z.infer<typeof releaseManifestSchema>;
@@ -70,6 +87,7 @@ export class SignedReleaseStore {
     }
 
     validateReleaseFiles(packageDirectory, manifest);
+    validateSbom(packageDirectory, manifest);
 
     const releasesDirectory = join(this.root, "releases");
     const releaseDirectory = join(
@@ -118,6 +136,30 @@ export class SignedReleaseStore {
       rmSync(stagingDirectory, { recursive: true, force: true });
       throw cause;
     }
+  }
+}
+
+function validateSbom(
+  packageDirectory: string,
+  manifest: ReleaseManifest,
+): void {
+  if (!manifest.files.some(file => file.path === manifest.sbom.path)) {
+    throw new ReleaseUpdateError("sbom-unlinked");
+  }
+  const bytes = readFileSync(join(packageDirectory, manifest.sbom.path));
+  if (sha256(bytes) !== manifest.sbom.sha256) {
+    throw new ReleaseUpdateError("sbom-invalid");
+  }
+
+  try {
+    const document = cycloneDxSbomSchema.parse(
+      JSON.parse(bytes.toString("utf8")),
+    );
+    if (document.components.length === 0) {
+      throw new Error("empty");
+    }
+  } catch (cause) {
+    throw new ReleaseUpdateError("sbom-invalid", String(cause));
   }
 }
 
