@@ -4,7 +4,7 @@
 
 **Blocked by:** 08 — Resume or reset Client scopes
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The opening handshake binds expected Host identity and negotiates a common protocol major, compatible minor, and stable capability identifiers with constraints.
 - [ ] No common major produces a clear `update required` state with control disabled rather than silent downgrade.
