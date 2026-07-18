@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statfsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
@@ -48,6 +48,10 @@ import {
   type SteerCommand,
   type StopCommand,
 } from "./store.js";
+import {
+  StorageProtection,
+  type StorageProtectionStatus,
+} from "./storage-protection.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
@@ -227,6 +231,11 @@ export interface HostOptions {
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
+  storageCapacityBytes?: number;
+  emergencyReserveBytes?: number;
+  admissionHeadroomBytes?: number;
+  /** Deterministic capacity seam; production uses the data volume. */
+  availableStorageBytes?: () => number;
 }
 
 export interface StartedHost {
@@ -238,6 +247,7 @@ export interface StartedHost {
   revokeDevice(deviceId: string): void;
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
+  storageProtection(): StorageProtectionStatus;
   close(): Promise<void>;
 }
 
@@ -259,6 +269,19 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     adapters,
     options.initialCatalog,
   );
+  const storageProtection = new StorageProtection({
+    capacityBytes: options.storageCapacityBytes,
+    emergencyReserveBytes: options.emergencyReserveBytes,
+    admissionHeadroomBytes: options.admissionHeadroomBytes,
+    availableBytes: options.availableStorageBytes ?? (() => {
+      const volume = statfsSync(options.dataDir);
+      return Number(volume.bavail) * Number(volume.bsize);
+    }),
+  });
+  const admitDiscretionaryWrite = () =>
+    storageProtection.admitDiscretionary(() => {
+      store.runMaintenance(adapters.clock.now());
+    });
   // An executing tail surviving daemon loss has no proof of normal completion.
   // Settle it conservatively and never dispatch it again to discover the result.
   store.reconcileAcceptedRuns(adapters.clock.now());
@@ -726,6 +749,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     command: SessionCreateMessage,
   ): void {
     try {
+      admitDiscretionaryWrite();
       adapters.storage.beforeCommit();
       const created = store.createSession(
         command.projectId ?? null,
@@ -763,6 +787,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     command: SessionForkMessage,
   ): Promise<void> {
     try {
+      admitDiscretionaryWrite();
       const checkpoint = store.checkpointAt(
         command.parentSessionId,
         command.forkPointEntryId,
@@ -999,6 +1024,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     try {
+      admitDiscretionaryWrite();
       if (command.invokingView) {
         observeView(client, {
           type: "view.observe",
@@ -1839,8 +1865,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   return {
     origin: canonicalOrigin,
-    createPairing: () => pairing.create(canonicalOrigin),
+    createPairing: () => {
+      admitDiscretionaryWrite();
+      return pairing.create(canonicalOrigin);
+    },
     status: () => store.status(RELEASE_ID, warnings),
+    storageProtection: () => storageProtection.status(),
     revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
