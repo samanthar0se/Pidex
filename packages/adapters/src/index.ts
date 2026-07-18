@@ -106,6 +106,22 @@ export interface PiAdapter {
     checkpoint: string,
     childSessionId: string,
   ): Promise<string>;
+  /** Copy-migrates an artifact owned by an older pinned Pi runtime. */
+  migrateArtifact?(request: PiArtifactMigrationRequest): Promise<PiArtifactMigrationResult>;
+}
+
+export interface PiArtifactMigrationRequest {
+  sessionId: string;
+  sourcePath: string;
+  destinationPath: string;
+  sourcePidexVersion: string;
+  sourcePiVersion: string;
+  targetPidexVersion: string;
+  targetPiVersion: string;
+}
+
+export interface PiArtifactMigrationResult {
+  checkpoint: string;
 }
 
 export interface NetworkAdapter {
