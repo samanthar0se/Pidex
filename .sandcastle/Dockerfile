@@ -1,4 +1,4 @@
-FROM node:22-bookworm
+FROM node:22-trixie
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -19,11 +19,13 @@ ARG AGENT_GID=1000
 RUN groupmod -o -g $AGENT_GID node && usermod -o -u $AGENT_UID -g $AGENT_GID -d /home/agent -m -l agent node
 
 # Install pi coding agent (run as root before USER agent)
-RUN npm install -g @mariozechner/pi-coding-agent
+RUN npm install -g @earendil-works/pi-coding-agent@0.80.10
 
 USER ${AGENT_UID}:${AGENT_GID}
 
 WORKDIR /home/agent
+
+RUN pi install npm:@howaboua/pi-codex-conversion@2.2.13
 
 # In worktree sandbox mode, Sandcastle bind-mounts the git worktree at /home/agent/workspace
 # and overrides the working directory to /home/agent/workspace at container start.

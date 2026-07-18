@@ -41,7 +41,7 @@ Before committing, run `npm run typecheck` and `npm run test` to ensure the test
 
 Make a git commit. The commit message must:
 
-1. Start with `RALPH:` prefix
+1. Start with `CLANKER:` prefix
 2. Include task completed + PRD reference
 3. Key decisions made
 4. Files changed
