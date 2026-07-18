@@ -293,6 +293,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     string,
     (result: PiInteractionResult) => void
   >();
+  const interactionDeadlineTimers = new Map<string, NodeJS.Timeout>();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
     if (client.readyState !== client.OPEN) {
@@ -1058,6 +1059,33 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
     workerGenerations.delete(sessionId);
     workers.delete(sessionId);
+    for (const interaction of store.interactions(sessionId)) {
+      const resolver = interactionResolvers.get(interaction.interactionId);
+      if (!resolver) {
+        continue;
+      }
+      if (
+        interaction.state !== "open" &&
+        interaction.state !== "resolving"
+      ) {
+        continue;
+      }
+      interactionResolvers.delete(interaction.interactionId);
+      clearInteractionDeadline(interaction.interactionId);
+      const withdrawn = store.settleInteraction(
+        interaction.interactionId,
+        interaction.state,
+        "withdrawn",
+        "worker-lost",
+        adapters.clock.now(),
+        false,
+      );
+      if (withdrawn) {
+        publishInteraction(withdrawn);
+      }
+      // Release the failed adapter invocation without replaying a submitted value.
+      resolver({ dismissed: true });
+    }
     for (const socket of admittedClients) {
       if (clientObservesPresentation(socket, sessionId)) {
         sendServerMessage(socket, {
@@ -1114,11 +1142,62 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         payload: interactionPayload(request),
         ...(request.provenance ? { provenance: request.provenance } : {}),
         createdAt: adapters.clock.now(),
+        deadlineAt: request.timeoutMs === undefined
+          ? null
+          : adapters.clock.now() + Math.max(0, request.timeoutMs),
       });
       interactionResolvers.set(created.interaction.interactionId, resolve);
       publishTimelineChange(sessionId, created.timelineChange);
       publishInteraction(created.interaction);
+      scheduleInteractionDeadline(created.interaction);
     });
+  }
+
+  function scheduleInteractionDeadline(interaction: Interaction): void {
+    if (interaction.deadlineAt === null) {
+      return;
+    }
+
+    const delay = Math.max(0, interaction.deadlineAt - adapters.clock.now());
+    const timer = setTimeout(
+      () => expireInteraction(interaction.interactionId),
+      delay,
+    );
+    interactionDeadlineTimers.set(interaction.interactionId, timer);
+  }
+
+  function clearInteractionDeadline(interactionId: string): void {
+    const timer = interactionDeadlineTimers.get(interactionId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    interactionDeadlineTimers.delete(interactionId);
+  }
+
+  function expireInteraction(interactionId: string): void {
+    const interaction = store.loadInteraction(interactionId);
+    if (
+      interaction.deadlineAt === null ||
+      adapters.clock.now() < interaction.deadlineAt
+    ) {
+      return;
+    }
+    const expired = store.settleInteraction(
+      interactionId,
+      "open",
+      "expired",
+      "deadline",
+      interaction.deadlineAt,
+      false,
+    );
+    if (!expired) {
+      return;
+    }
+    clearInteractionDeadline(interactionId);
+    publishInteraction(expired);
+    const resolver = interactionResolvers.get(interactionId);
+    interactionResolvers.delete(interactionId);
+    resolver?.({ dismissed: true });
   }
 
   function publishTimelineChange(
@@ -1175,6 +1254,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       return;
     }
 
+    if (
+      interaction.deadlineAt !== null &&
+      adapters.clock.now() >= interaction.deadlineAt
+    ) {
+      expireInteraction(interaction.interactionId);
+      reject("stale-interaction");
+      return;
+    }
+
     let result: PiInteractionResult;
     if (command.dismiss) {
       result = { dismissed: true };
@@ -1191,10 +1279,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       return;
     }
 
-    const resolving = store.transitionInteraction(
+    const resolving = store.reserveInteraction(
       interaction.interactionId,
-      "open",
-      "resolving",
+      command.observedRevision,
+      clientDeviceIds.get(client) ?? "paired device",
     );
     if (!resolving) {
       reject("stale-interaction");
@@ -1209,13 +1297,20 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     resolver(result);
     interactionResolvers.delete(interaction.interactionId);
+    clearInteractionDeadline(interaction.interactionId);
     // Resolving the exact in-process request is the worker acknowledgement;
     // only then may authority expose a terminal state.
     const terminalState = command.dismiss ? "dismissed" : "responded";
-    const terminal = store.transitionInteraction(
+    const terminalCause = command.dismiss
+      ? "device-dismissal"
+      : "device-response";
+    const terminal = store.settleInteraction(
       interaction.interactionId,
       "resolving",
       terminalState,
+      terminalCause,
+      adapters.clock.now(),
+      true,
     );
     if (terminal) {
       publishInteraction(terminal);
@@ -1231,6 +1326,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
       stopAdvertisement();
+      for (const timer of interactionDeadlineTimers.values()) {
+        clearTimeout(timer);
+      }
+      interactionDeadlineTimers.clear();
       for (const webSocket of webSocketServer.clients) {
         webSocket.close();
       }

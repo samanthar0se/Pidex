@@ -58,6 +58,7 @@ export type PiInteractionRequest =
       message: string;
       options: string[];
       provenance?: string;
+      timeoutMs?: number;
     }
   | {
       correlationId: string;
@@ -65,6 +66,7 @@ export type PiInteractionRequest =
       message: string;
       defaultValue?: boolean;
       provenance?: string;
+      timeoutMs?: number;
     }
   | {
       correlationId: string;
@@ -72,6 +74,7 @@ export type PiInteractionRequest =
       message: string;
       defaultValue?: string;
       provenance?: string;
+      timeoutMs?: number;
     };
 
 export type PiInteractionResult =

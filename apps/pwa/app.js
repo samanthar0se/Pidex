@@ -13,6 +13,7 @@ const runInput = document.querySelector("#run-input");
 const submitRunButton = document.querySelector("#submit-run");
 const followUpButton = document.querySelector("#follow-up");
 const interactionArea = document.querySelector("#interaction");
+const activeInteractions = new Map();
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -375,11 +376,38 @@ function renderHostSnapshot(message) {
 }
 
 function renderInteraction(interaction) {
-  if (!["open", "resolving"].includes(interaction.state)) {
-    interactionArea.hidden = true;
-    interactionArea.replaceChildren();
-    return;
+  const isActive = interaction.state === "open" ||
+    interaction.state === "resolving";
+  if (isActive) {
+    activeInteractions.set(interaction.interactionId, interaction);
+  } else {
+    activeInteractions.delete(interaction.interactionId);
   }
+
+  const orderedInteractions = [...activeInteractions.values()]
+    .sort(compareInteractionPriority);
+  interactionArea.replaceChildren(
+    ...orderedInteractions.map(createInteractionPanel),
+  );
+  interactionArea.hidden = orderedInteractions.length === 0;
+}
+
+function compareInteractionPriority(left, right) {
+  if (left.deadlineAt !== null && right.deadlineAt !== null) {
+    return left.deadlineAt - right.deadlineAt ||
+      left.createdAt - right.createdAt;
+  }
+  if (left.deadlineAt !== null) {
+    return -1;
+  }
+  if (right.deadlineAt !== null) {
+    return 1;
+  }
+  return left.createdAt - right.createdAt;
+}
+
+function createInteractionPanel(interaction) {
+  const panel = document.createElement("div");
 
   const message = document.createElement("p");
   // Keep extension-provided content inert rather than interpreting it as markup.
@@ -403,13 +431,13 @@ function renderInteraction(interaction) {
     dismissButton.disabled = true;
   }
 
-  interactionArea.replaceChildren(
+  panel.replaceChildren(
     message,
     control,
     respondButton,
     dismissButton,
   );
-  interactionArea.hidden = false;
+  return panel;
 }
 
 function createInteractionControl(interaction) {

@@ -197,9 +197,21 @@ export const interactionSchema = z.object({
     })
     .strict(),
   provenance: z.string().optional(),
-  state: z.enum(["open", "resolving", "responded", "dismissed"]),
+  state: z.enum([
+    "open",
+    "resolving",
+    "responded",
+    "dismissed",
+    "expired",
+    "withdrawn",
+  ]),
   revision: z.number().int().positive(),
   createdAt: z.number(),
+  deadlineAt: z.number().nullable(),
+  terminalCause: z.string().nullable(),
+  respondedAt: z.number().nullable(),
+  respondingDeviceLabel: z.string().nullable(),
+  applicationProven: z.boolean().nullable(),
 });
 export type Interaction = z.infer<typeof interactionSchema>;
 

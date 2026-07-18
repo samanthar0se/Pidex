@@ -121,9 +121,14 @@ const CREATE_AUTHORITY_SCHEMA = `
     kind TEXT NOT NULL CHECK(kind IN ('select','confirm','input','editor')),
     payload_json TEXT NOT NULL,
     provenance TEXT,
-    state TEXT NOT NULL CHECK(state IN ('open','resolving','responded','dismissed')),
+    state TEXT NOT NULL CHECK(state IN ('open','resolving','responded','dismissed','expired','withdrawn')),
     revision INTEGER NOT NULL,
     created_at INTEGER NOT NULL,
+    deadline_at INTEGER,
+    terminal_cause TEXT,
+    responded_at INTEGER,
+    responding_device_label TEXT,
+    application_proven INTEGER,
     UNIQUE(session_id, worker_generation, correlation_id)
   );
   CREATE TABLE IF NOT EXISTS steering (
@@ -198,12 +203,30 @@ const INTERACTION_PROJECTION = `
   interaction_id AS interactionId, session_id AS sessionId,
   run_id AS runId, worker_generation AS workerGeneration,
   correlation_id AS correlationId, kind, payload_json AS payloadJson,
-  provenance, state, revision, created_at AS createdAt
+  provenance, state, revision, created_at AS createdAt,
+  deadline_at AS deadlineAt, terminal_cause AS terminalCause,
+  responded_at AS respondedAt, responding_device_label AS respondingDeviceLabel,
+  application_proven AS applicationProven
 `;
 
 type NewInteraction = Omit<
   Interaction,
-  "interactionId" | "state" | "revision"
+  | "interactionId"
+  | "state"
+  | "revision"
+  | "terminalCause"
+  | "respondedAt"
+  | "respondingDeviceLabel"
+  | "applicationProven"
+>;
+
+type ActiveInteractionState = Extract<
+  Interaction["state"],
+  "open" | "resolving"
+>;
+type TerminalInteractionState = Exclude<
+  Interaction["state"],
+  ActiveInteractionState
 >;
 
 interface CreatedInteraction {
@@ -1092,7 +1115,7 @@ export class AuthorityStore {
         `SELECT ${INTERACTION_PROJECTION}
          FROM interactions
          WHERE session_id = ? AND state IN ('open','resolving')
-         ORDER BY created_at, interaction_id`,
+         ORDER BY deadline_at IS NULL, deadline_at, created_at, interaction_id`,
       )
       .all(sessionId);
     return rows.map(row => interactionFromRow(row));
@@ -1106,14 +1129,18 @@ export class AuthorityStore {
         interactionId: `interaction_${randomUUID()}`,
         state: "open",
         revision: 1,
+        terminalCause: null,
+        respondedAt: null,
+        respondingDeviceLabel: null,
+        applicationProven: null,
       };
       this.#db
         .prepare(
           `INSERT INTO interactions
            (interaction_id, session_id, run_id, worker_generation,
             correlation_id, kind, payload_json, provenance, state, revision,
-            created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?)`,
+            created_at, deadline_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?, ?)`,
         )
         .run(
           interaction.interactionId,
@@ -1125,6 +1152,7 @@ export class AuthorityStore {
           JSON.stringify(interaction.payload),
           interaction.provenance ?? null,
           interaction.createdAt,
+          interaction.deadlineAt,
         );
 
       const session = this.loadSession(interaction.sessionId);
@@ -1156,21 +1184,50 @@ export class AuthorityStore {
     }
   }
 
-  transitionInteraction(
+  reserveInteraction(
     interactionId: string,
-    from: Interaction["state"],
-    to: Interaction["state"],
+    revision: number,
+    deviceLabel: string,
   ): Interaction | undefined {
     const changed = this.#db
       .prepare(
-        `UPDATE interactions SET state = ?, revision = revision + 1
+        `UPDATE interactions
+         SET state = 'resolving', revision = revision + 1,
+             responding_device_label = ?
+         WHERE interaction_id = ? AND state = 'open' AND revision = ?`,
+      )
+      .run(deviceLabel, interactionId, revision);
+    return changed.changes === 1
+      ? this.loadInteraction(interactionId)
+      : undefined;
+  }
+
+  settleInteraction(
+    interactionId: string,
+    from: ActiveInteractionState,
+    state: TerminalInteractionState,
+    cause: string,
+    at: number,
+    applicationProven: boolean,
+  ): Interaction | undefined {
+    const changed = this.#db
+      .prepare(
+        `UPDATE interactions
+         SET state = ?, revision = revision + 1,
+             terminal_cause = ?, responded_at = ?, application_proven = ?
          WHERE interaction_id = ? AND state = ?`,
       )
-      .run(to, interactionId, from);
-    if (changed.changes !== 1) {
-      return undefined;
-    }
-    return this.loadInteraction(interactionId);
+      .run(
+        state,
+        cause,
+        at,
+        applicationProven ? 1 : 0,
+        interactionId,
+        from,
+      );
+    return changed.changes === 1
+      ? this.loadInteraction(interactionId)
+      : undefined;
   }
 
   loadInteraction(interactionId: string): Interaction {
@@ -1829,5 +1886,8 @@ function interactionFromRow(row: Record<string, unknown>): Interaction {
     ...row,
     payload: JSON.parse(String(row.payloadJson)),
     provenance: row.provenance ?? undefined,
+    applicationProven: row.applicationProven == null
+      ? null
+      : Boolean(row.applicationProven),
   });
 }
