@@ -36,21 +36,64 @@ self.addEventListener("fetch", event => {
 
 self.addEventListener("push", event => {
   const hint = event.data?.json() || {};
-  const notification = self.registration.showNotification(
-    hint.title || "Pidex update",
-    {
-      body: hint.body || "Open Pidex to reconcile current state.",
-      data: { path: hint.path || "/" },
-    },
-  );
-  event.waitUntil(notification);
+  event.waitUntil(showAdvisoryHint(hint));
 });
 
 self.addEventListener("notificationclick", event => {
   event.notification.close();
   const path = event.notification.data?.path || "/";
-  event.waitUntil(self.clients.openWindow(path));
+  event.waitUntil(openAndReconcile(path));
 });
+
+async function showAdvisoryHint(hint) {
+  if (hint.version !== 1 || !hint.eventId || await hasPushReceipt(hint.eventId)) return;
+  await savePushReceipt(hint.eventId);
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of windows) client.postMessage({ type: "push-hint", eventId: hint.eventId });
+  // A foreground Client renders the synchronized in-app fact; avoid a second surface.
+  if (windows.some(client => client.visibilityState === "visible")) return;
+  await self.registration.showNotification(hint.title || "Pidex update", {
+    body: hint.body || "Open Pidex to reconcile current state.",
+    tag: `${hint.hostId}:${hint.eventId}`,
+    data: { path: hint.path || "/", eventId: hint.eventId },
+  });
+}
+
+async function openAndReconcile(path) {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  let client = windows.find(item => new URL(item.url).pathname === new URL(path, self.location.origin).pathname);
+  client = client || await self.clients.openWindow(path);
+  client?.postMessage({ type: "push-reconcile", path });
+  await client?.focus?.();
+}
+
+function pushReceiptDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open("pidex-push-receipts", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("events");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function hasPushReceipt(eventId) {
+  const db = await pushReceiptDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("events").objectStore("events").get(eventId);
+    request.onsuccess = () => resolve(Boolean(request.result));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function savePushReceipt(eventId) {
+  const db = await pushReceiptDatabase();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction("events", "readwrite");
+    transaction.objectStore("events").put(Date.now(), eventId);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+  });
+}
 
 async function cacheShell() {
   const responses = await Promise.all(

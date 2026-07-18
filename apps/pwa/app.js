@@ -144,6 +144,32 @@ addEventListener("pageshow", event => {
     authenticateStoredDevice();
   }
 });
+navigator.serviceWorker?.addEventListener("message", event => {
+  if (event.data?.type !== "push-reconcile") return;
+  // Notification hints are historical. Authenticate and synchronize before
+  // rendering their target or enabling any control.
+  setCurrent(false, "Reconciling notification");
+  history.replaceState({}, "", event.data.path || "/");
+  authenticateStoredDevice();
+});
+
+// Device-owned defaults are stored before permission is requested so lock-
+// screen exposure is disclosed and can be changed both before and afterwards.
+async function configurePush({ enabled, privacy = "rich", categories }) {
+  const preferences = { enabled, privacy, categories };
+  await savePreference("push", preferences);
+  if (!("Notification" in window) || !("PushManager" in window)) return "unsupported";
+  if (!enabled) return "disabled";
+  const permission = Notification.permission === "default"
+    ? await Notification.requestPermission() : Notification.permission;
+  return permission;
+}
+
+function savePreference(key, value) {
+  return withDeviceStore(PREFERENCES_STORE, "readwrite", store =>
+    requestValue(store.put(value, key))
+  );
+}
 mobileLayoutQuery.addEventListener("change", closeDrawer);
 $("#drawer-toggle").onclick = toggleDrawer;
 $("#drawer-backdrop").onclick = closeDrawer;
