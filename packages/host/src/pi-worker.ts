@@ -2,6 +2,8 @@ import { z } from "zod";
 import type {
   PiAdapter,
   PiPresentationEffect,
+  PiInteractionRequest,
+  PiInteractionResult,
   PiTimelineEvent,
 } from "../../adapters/src/index.js";
 
@@ -53,6 +55,35 @@ const timelineEventSchema = z.discriminatedUnion("type", [
       toolCallId: z.string(),
       name: z.string(),
       text: z.string(),
+    })
+    .strict(),
+]);
+const interactionRequestSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      correlationId: z.string().min(1).max(200),
+      kind: z.literal("select"),
+      message: z.string().max(4000),
+      options: z.array(z.string().max(1000)).min(1).max(100),
+      provenance: z.string().max(500).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      correlationId: z.string().min(1).max(200),
+      kind: z.literal("confirm"),
+      message: z.string().max(4000),
+      defaultValue: z.boolean().optional(),
+      provenance: z.string().max(500).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      correlationId: z.string().min(1).max(200),
+      kind: z.enum(["input", "editor"]),
+      message: z.string().max(4000),
+      defaultValue: z.string().max(100_000).optional(),
+      provenance: z.string().max(500).optional(),
     })
     .strict(),
 ]);
@@ -161,6 +192,9 @@ export class PiSessionWorker {
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
     onPresentationEffect?: (effect: PiPresentationEffect) => void,
+    onInteraction?: (
+      request: PiInteractionRequest,
+    ) => Promise<PiInteractionResult>,
   ): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
@@ -192,6 +226,15 @@ export class PiSessionWorker {
             if (capabilityIds.has(requiredCapability)) {
               onPresentationEffect?.(presentationEffect);
             }
+          },
+          onInteraction: async request => {
+            if (!capabilities.some(item => item.id === "interaction.basic")) {
+              throw new Error("interaction-capability-unavailable");
+            }
+            if (!onInteraction) {
+              throw new Error("interaction-handler-unavailable");
+            }
+            return onInteraction(interactionRequestSchema.parse(request));
           },
         }),
       );

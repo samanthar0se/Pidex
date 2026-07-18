@@ -34,6 +34,10 @@ export interface PiExecuteRequest {
   onTimelineEvent?: (event: PiTimelineEvent) => void;
   /** Receives bounded, data-only UI effects. They never become Pi responses. */
   onPresentationEffect?: (effect: PiPresentationEffect) => void;
+  /** Resolves only when the exact Host-owned request has been answered. */
+  onInteraction?: (
+    request: PiInteractionRequest,
+  ) => Promise<PiInteractionResult>;
 }
 
 export type PiPresentationEffect =
@@ -42,6 +46,33 @@ export type PiPresentationEffect =
   | { type: "widget"; key: string; text: string | null }
   | { type: "title"; text: string | null }
   | { type: "editor-text"; text: string };
+
+export type PiInteractionRequest =
+  | {
+      correlationId: string;
+      kind: "select";
+      message: string;
+      options: string[];
+      provenance?: string;
+    }
+  | {
+      correlationId: string;
+      kind: "confirm";
+      message: string;
+      defaultValue?: boolean;
+      provenance?: string;
+    }
+  | {
+      correlationId: string;
+      kind: "input" | "editor";
+      message: string;
+      defaultValue?: string;
+      provenance?: string;
+    };
+
+export type PiInteractionResult =
+  | { dismissed: false; value: string | boolean }
+  | { dismissed: true };
 
 export type PiTimelineEvent =
   | { type: "assistant.delta"; text: string }
@@ -216,6 +247,11 @@ function deterministicPiAdapter(): PiAdapter {
         { id: "presentation.widget", version: 1 },
         { id: "presentation.title", version: 1 },
         { id: "presentation.editor-text", version: 1 },
+        {
+          id: "interaction.basic",
+          version: 1,
+          constraints: { maximumBytes: 100_000 },
+        },
       ],
     }),
     execute: async request => ({

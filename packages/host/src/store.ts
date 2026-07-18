@@ -8,6 +8,7 @@ import {
   acceptedRunSchema,
   completedRunSchema,
   hostChangeSchema,
+  interactionSchema,
   projectSummarySchema,
   runRecordSchema,
   sessionSummarySchema,
@@ -18,6 +19,7 @@ import {
   type CompletedRun,
   type HostChange,
   type HostStatus,
+  type Interaction,
   type ProjectSummary,
   type RunRecord,
   type SessionSummary,
@@ -110,6 +112,20 @@ const CREATE_AUTHORITY_SCHEMA = `
     tool_call_id TEXT,
     UNIQUE(session_id, entry_order)
   );
+  CREATE TABLE IF NOT EXISTS interactions (
+    interaction_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    run_id TEXT REFERENCES runs(run_id),
+    worker_generation INTEGER NOT NULL,
+    correlation_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('select','confirm','input','editor')),
+    payload_json TEXT NOT NULL,
+    provenance TEXT,
+    state TEXT NOT NULL CHECK(state IN ('open','resolving','responded','dismissed')),
+    revision INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(session_id, worker_generation, correlation_id)
+  );
 `;
 
 export interface SubmitCommand {
@@ -153,6 +169,22 @@ const TIMELINE_ENTRY_PROJECTION = `
   revision, finalized != 0 AS finalized,
   tool_call_id AS toolCallId
 `;
+const INTERACTION_PROJECTION = `
+  interaction_id AS interactionId, session_id AS sessionId,
+  run_id AS runId, worker_generation AS workerGeneration,
+  correlation_id AS correlationId, kind, payload_json AS payloadJson,
+  provenance, state, revision, created_at AS createdAt
+`;
+
+type NewInteraction = Omit<
+  Interaction,
+  "interactionId" | "state" | "revision"
+>;
+
+interface CreatedInteraction {
+  interaction: Interaction;
+  timelineChange: TimelineChange;
+}
 
 const RUN_RECORD_PROJECTION = `
   run_id AS runId, session_id AS sessionId,
@@ -901,6 +933,107 @@ export class AuthorityStore {
     return { entries, olderCursor };
   }
 
+  interactions(sessionId: string): Interaction[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT ${INTERACTION_PROJECTION}
+         FROM interactions
+         WHERE session_id = ? AND state IN ('open','resolving')
+         ORDER BY created_at, interaction_id`,
+      )
+      .all(sessionId);
+    return rows.map(row => interactionFromRow(row));
+  }
+
+  createInteraction(input: NewInteraction): CreatedInteraction {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const interaction: Interaction = {
+        ...input,
+        interactionId: `interaction_${randomUUID()}`,
+        state: "open",
+        revision: 1,
+      };
+      this.#db
+        .prepare(
+          `INSERT INTO interactions
+           (interaction_id, session_id, run_id, worker_generation,
+            correlation_id, kind, payload_json, provenance, state, revision,
+            created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?)`,
+        )
+        .run(
+          interaction.interactionId,
+          interaction.sessionId,
+          interaction.runId,
+          interaction.workerGeneration,
+          interaction.correlationId,
+          interaction.kind,
+          JSON.stringify(interaction.payload),
+          interaction.provenance ?? null,
+          interaction.createdAt,
+        );
+
+      const session = this.loadSession(interaction.sessionId);
+      const entryId = `entry_${randomUUID()}`;
+      this.#db
+        .prepare(
+          `INSERT INTO timeline_entries
+           (entry_id, session_id, run_id, entry_order, kind, text, created_at)
+           VALUES (?, ?, ?, ?, 'interaction', ?, ?)`,
+        )
+        .run(
+          entryId,
+          interaction.sessionId,
+          interaction.runId,
+          this.nextTimelineOrder(interaction.sessionId),
+          `${interaction.kind}: ${interaction.payload.message}`,
+          interaction.createdAt,
+        );
+      const timelineChange = this.advanceTimelineRevision(
+        interaction.sessionId,
+        session.timelineRevision,
+        entryId,
+      );
+      this.#db.exec("COMMIT");
+      return { interaction, timelineChange };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  transitionInteraction(
+    interactionId: string,
+    from: Interaction["state"],
+    to: Interaction["state"],
+  ): Interaction | undefined {
+    const changed = this.#db
+      .prepare(
+        `UPDATE interactions SET state = ?, revision = revision + 1
+         WHERE interaction_id = ? AND state = ?`,
+      )
+      .run(to, interactionId, from);
+    if (changed.changes !== 1) {
+      return undefined;
+    }
+    return this.loadInteraction(interactionId);
+  }
+
+  loadInteraction(interactionId: string): Interaction {
+    const row = this.#db
+      .prepare(
+        `SELECT ${INTERACTION_PROJECTION}
+         FROM interactions
+         WHERE interaction_id = ?`,
+      )
+      .get(interactionId);
+    if (!row) {
+      throw new Error("unknown-interaction");
+    }
+    return interactionFromRow(row);
+  }
+
   /** Applies one runtime fact and returns the exact revisioned projection change. */
   applyTimelineEvent(
     sessionId: string,
@@ -1536,4 +1669,12 @@ function submitCommandDigest(command: SubmitCommand): string {
   return createHash("sha256")
     .update(JSON.stringify(command))
     .digest("hex");
+}
+
+function interactionFromRow(row: Record<string, unknown>): Interaction {
+  return interactionSchema.parse({
+    ...row,
+    payload: JSON.parse(String(row.payloadJson)),
+    provenance: row.provenance ?? undefined,
+  });
 }
