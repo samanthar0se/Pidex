@@ -30,7 +30,14 @@ export interface PiExecuteRequest {
   prompt: string;
   projectTrust: true;
   resourceLoader: "public";
+  /** Receives schema-shaped runtime facts; SDK objects never cross this seam. */
+  onTimelineEvent?: (event: PiTimelineEvent) => void;
 }
+
+export type PiTimelineEvent =
+  | { type: "assistant.delta"; text: string }
+  | { type: "tool.started"; toolCallId: string; name: string }
+  | { type: "tool.completed"; toolCallId: string; name: string; text: string };
 
 export interface PiExecuteResult {
   text: string;

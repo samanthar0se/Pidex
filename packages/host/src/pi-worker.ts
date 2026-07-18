@@ -33,6 +33,11 @@ const executionResultSchema = z.object({
   text: z.string(),
   checkpoint: z.string().min(1),
 });
+const timelineEventSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("assistant.delta"), text: z.string() }).strict(),
+  z.object({ type: z.literal("tool.started"), toolCallId: z.string(), name: z.string() }).strict(),
+  z.object({ type: z.literal("tool.completed"), toolCallId: z.string(), name: z.string(), text: z.string() }).strict(),
+]);
 
 type WorkerCapability = z.infer<typeof capabilitySchema>;
 type WorkerReadinessErrorCode =
@@ -86,7 +91,10 @@ export class PiSessionWorker {
     );
   }
 
-  async execute(prompt: string): Promise<{ text: string; checkpoint: string }> {
+  async execute(
+    prompt: string,
+    onTimelineEvent?: (event: z.infer<typeof timelineEventSchema>) => void,
+  ): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
     }
@@ -105,6 +113,7 @@ export class PiSessionWorker {
           prompt,
           projectTrust: true,
           resourceLoader: "public",
+          onTimelineEvent: event => onTimelineEvent?.(timelineEventSchema.parse(event)),
         }),
       );
       if (!this.#pi.flushCheckpoint) {

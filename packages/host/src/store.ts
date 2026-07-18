@@ -102,6 +102,9 @@ const CREATE_AUTHORITY_SCHEMA = `
     checkpoint TEXT,
     blob_id TEXT,
     created_at INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    finalized INTEGER NOT NULL DEFAULT 1,
+    tool_call_id TEXT,
     UNIQUE(session_id, entry_order)
   );
 `;
@@ -212,6 +215,15 @@ export class AuthorityStore {
       .all();
     if (!timelineColumns.some(column => column.name === "blob_id")) {
       this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN blob_id TEXT");
+    }
+    if (!timelineColumns.some(column => column.name === "revision")) {
+      this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!timelineColumns.some(column => column.name === "finalized")) {
+      this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN finalized INTEGER NOT NULL DEFAULT 1");
+    }
+    if (!timelineColumns.some(column => column.name === "tool_call_id")) {
+      this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN tool_call_id TEXT");
     }
 
     const existingHost = this.#db
@@ -496,7 +508,7 @@ export class AuthorityStore {
             `entry_${randomUUID()}`,
             run.sessionId,
             run.runId,
-            run.sessionOrder * 2 - 1,
+            this.nextTimelineOrder(run.sessionId),
             run.prompt,
             now,
           );
@@ -625,7 +637,7 @@ export class AuthorityStore {
           `entry_${randomUUID()}`,
           acceptedRun.sessionId,
           runId,
-          acceptedRun.sessionOrder * 2,
+          this.nextTimelineOrder(acceptedRun.sessionId),
           outcome === "completed" ? "response" : "outcome",
           text,
           checkpoint,
@@ -668,13 +680,114 @@ export class AuthorityStore {
     const rows = this.#db
       .prepare(
         `SELECT entry_id AS entryId, run_id AS runId,
-                entry_order AS 'order', kind, text, blob_id AS blobId
+                entry_order AS 'order', kind, text, blob_id AS blobId,
+                revision, finalized != 0 AS finalized,
+                tool_call_id AS toolCallId
          FROM timeline_entries
          WHERE session_id = ?
          ORDER BY entry_order`,
       )
       .all(sessionId);
     return timelineEntrySchema.array().parse(rows);
+  }
+
+  /** Applies one runtime fact and returns the exact revisioned projection change. */
+  applyTimelineEvent(
+    sessionId: string,
+    runId: string,
+    event:
+      | { type: "assistant.delta"; text: string }
+      | { type: "tool.started"; toolCallId: string; name: string }
+      | { type: "tool.completed"; toolCallId: string; name: string; text: string },
+    now: number,
+  ): { baseRevision: number; revision: number; entry: TimelineEntry } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const session = this.loadSession(sessionId);
+      let entryId: string;
+      if (event.type === "assistant.delta") {
+        const tail = this.#db.prepare(
+          `SELECT entry_id AS entryId FROM timeline_entries
+           WHERE session_id = ? AND run_id = ? AND kind = 'assistant' AND finalized = 0
+           ORDER BY entry_order DESC LIMIT 1`,
+        ).get(sessionId, runId) as { entryId?: string } | undefined;
+        entryId = tail?.entryId ?? `entry_${randomUUID()}`;
+        if (tail) {
+          this.#db.prepare(
+            "UPDATE timeline_entries SET text = text || ?, revision = revision + 1 WHERE entry_id = ?",
+          ).run(event.text, entryId);
+        } else {
+          this.#db.prepare(
+            `INSERT INTO timeline_entries
+             (entry_id, session_id, run_id, entry_order, kind, text, checkpoint,
+              blob_id, created_at, revision, finalized, tool_call_id)
+             VALUES (?, ?, ?, ?, 'assistant', ?, NULL, NULL, ?, 1, 0, NULL)`,
+          ).run(entryId, sessionId, runId, this.nextTimelineOrder(sessionId), event.text, now);
+        }
+      } else if (event.type === "tool.started") {
+        entryId = `entry_${randomUUID()}`;
+        this.#db.prepare(
+          `INSERT INTO timeline_entries
+           (entry_id, session_id, run_id, entry_order, kind, text, checkpoint,
+            blob_id, created_at, revision, finalized, tool_call_id)
+           VALUES (?, ?, ?, ?, 'tool', ?, NULL, NULL, ?, 1, 0, ?)`,
+        ).run(entryId, sessionId, runId, this.nextTimelineOrder(sessionId), event.name, now, event.toolCallId);
+      } else {
+        const row = this.#db.prepare(
+          "SELECT entry_id AS entryId FROM timeline_entries WHERE session_id=? AND run_id=? AND tool_call_id=? AND finalized=0",
+        ).get(sessionId, runId, event.toolCallId) as { entryId?: string } | undefined;
+        entryId = row?.entryId ?? `entry_${randomUUID()}`;
+        if (row) {
+          this.#db.prepare("UPDATE timeline_entries SET text=?, revision=revision+1, finalized=1 WHERE entry_id=?")
+            .run(`${event.name}: ${event.text}`, entryId);
+        } else {
+          this.#db.prepare(
+            `INSERT INTO timeline_entries (entry_id,session_id,run_id,entry_order,kind,text,checkpoint,blob_id,created_at,revision,finalized,tool_call_id)
+             VALUES (?,?,?,?,'tool',?,NULL,NULL,?,1,1,?)`,
+          ).run(entryId, sessionId, runId, this.nextTimelineOrder(sessionId), `${event.name}: ${event.text}`, now, event.toolCallId);
+        }
+      }
+      this.#db.prepare("UPDATE sessions SET timeline_revision=timeline_revision+1 WHERE session_id=?").run(sessionId);
+      const revision = session.timelineRevision + 1;
+      const entry = this.timeline(sessionId).find(item => item.entryId === entryId)!;
+      this.#db.exec("COMMIT");
+      return { baseRevision: session.timelineRevision, revision, entry };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  finalizeAssistant(sessionId: string, runId: string):
+    | { baseRevision: number; revision: number; entry: TimelineEntry }
+    | undefined {
+    const row = this.#db.prepare(
+      `SELECT entry_id AS entryId FROM timeline_entries
+       WHERE session_id=? AND run_id=? AND kind='assistant' AND finalized=0
+       ORDER BY entry_order DESC LIMIT 1`,
+    ).get(sessionId, runId) as { entryId?: string } | undefined;
+    if (!row?.entryId) return undefined;
+    const session = this.loadSession(sessionId);
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db.prepare(
+        "UPDATE timeline_entries SET revision=revision+1, finalized=1 WHERE entry_id=?",
+      ).run(row.entryId);
+      this.#db.prepare("UPDATE sessions SET timeline_revision=timeline_revision+1 WHERE session_id=?").run(sessionId);
+      const entry = this.timeline(sessionId).find(item => item.entryId === row.entryId)!;
+      this.#db.exec("COMMIT");
+      return { baseRevision: session.timelineRevision, revision: session.timelineRevision + 1, entry };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private nextTimelineOrder(sessionId: string): number {
+    const row = this.#db.prepare(
+      "SELECT COALESCE(MAX(entry_order), 0) + 1 AS value FROM timeline_entries WHERE session_id = ?",
+    ).get(sessionId) as { value: number };
+    return row.value;
   }
 
   acceptedRuns(): Array<{ runId: string }> {

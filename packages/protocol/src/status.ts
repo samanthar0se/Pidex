@@ -137,11 +137,14 @@ export const terminalRunSchema = runRecordSchema.extend({
 
 export const timelineEntrySchema = z.object({
   entryId: z.string(),
-  runId: z.string(),
+  runId: z.string().nullable(),
   order: z.number(),
-  kind: z.enum(["prompt", "response", "outcome"]),
+  kind: z.enum(["prompt", "response", "assistant", "tool", "run", "outcome", "lifecycle"]),
   text: z.string(),
   blobId: z.string().nullable().optional(),
+  revision: z.number().int().positive(),
+  finalized: z.coerce.boolean(),
+  toolCallId: z.string().nullable().optional(),
 });
 
 export type RunRecord = z.infer<typeof runRecordSchema>;
@@ -229,7 +232,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
         workspaces: z.array(workspaceSummarySchema),
         sessions: z.array(sessionSummarySchema),
       }),
-      z.object({ session: sessionSummarySchema }),
+      z.object({ session: sessionSummarySchema, timeline: z.array(timelineEntrySchema).optional() }),
     ]),
   }),
   z.object({
@@ -252,6 +255,13 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("run.completed"),
     run: terminalRunSchema,
     timeline: z.array(timelineEntrySchema),
+  }),
+  z.object({
+    type: z.literal("timeline.change"),
+    sessionId: z.string(),
+    baseRevision: z.number().int(),
+    revision: z.number().int(),
+    entry: timelineEntrySchema,
   }),
 ]).and(optionalEnvelopeSchema);
 
