@@ -39,17 +39,20 @@ const state = {
 
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let socket;
-const mobileLayout = matchMedia("(max-width: 720px)");
-const standalonePwa = matchMedia("(display-mode: standalone)");
+const mobileLayoutQuery = matchMedia("(max-width: 720px)");
 
-function openDrawer() {
-  document.body.classList.add("drawer-open");
-  $("#drawer-toggle").setAttribute("aria-expanded", "true");
+function setDrawerOpen(isOpen) {
+  document.body.classList.toggle("drawer-open", isOpen);
+  $("#drawer-toggle").setAttribute("aria-expanded", String(isOpen));
 }
 
 function closeDrawer() {
-  document.body.classList.remove("drawer-open");
-  $("#drawer-toggle").setAttribute("aria-expanded", "false");
+  setDrawerOpen(false);
+}
+
+function toggleDrawer() {
+  const isOpen = document.body.classList.contains("drawer-open");
+  setDrawerOpen(!isOpen);
 }
 
 function send(command) {
@@ -112,15 +115,13 @@ addEventListener("pageshow", event => {
     authenticateStoredDevice();
   }
 });
-mobileLayout.addEventListener("change", closeDrawer);
-$("#drawer-toggle").onclick = () => {
-  document.body.classList.contains("drawer-open")
-    ? closeDrawer()
-    : openDrawer();
-};
+mobileLayoutQuery.addEventListener("change", closeDrawer);
+$("#drawer-toggle").onclick = toggleDrawer;
 $("#drawer-backdrop").onclick = closeDrawer;
 addEventListener("keydown", event => {
-  if (event.key === "Escape") closeDrawer();
+  if (event.key === "Escape") {
+    closeDrawer();
+  }
 });
 
 $("#new-session").onclick = () => $("#new-session-view").showModal();
@@ -368,11 +369,6 @@ function setCurrent(current, label) {
   state.current = current;
   $("#connection-state").textContent = label;
   document.body.classList.toggle("stale", !current);
-  const mobileHostState = $("#mobile-host-state");
-  if (mobileHostState) {
-    mobileHostState.hidden = state.current;
-    mobileHostState.textContent = `Host · ${label}`;
-  }
   renderCurrentView();
 }
 
