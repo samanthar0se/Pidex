@@ -3,9 +3,11 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -119,6 +121,49 @@ export class RunArtifactStore {
       throw new Error("blob-verification-failed");
     }
     return bytes;
+  }
+
+  /** Lists only ordinary, content-addressed files directly inside the managed root. */
+  listBlobDigests(): string[] {
+    const directory = join(this.#dataDir, "blobs");
+    if (!existsSync(directory)) return [];
+    return readdirSync(directory).filter(name => {
+      if (!/^[a-f0-9]{64}$/.test(name)) return false;
+      const stat = lstatSync(join(directory, name));
+      return stat.isFile() && !stat.isSymbolicLink();
+    });
+  }
+
+  quarantineBlob(digest: string): boolean {
+    if (!/^[a-f0-9]{64}$/.test(digest)) return false;
+    const source = join(this.#dataDir, "blobs", digest);
+    if (!existsSync(source)) return false;
+    const stat = lstatSync(source);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const directory = join(this.#dataDir, "quarantine", "blobs");
+    mkdirSync(directory, { recursive: true });
+    renameSync(source, join(directory, digest));
+    flushPath(directory);
+    return true;
+  }
+
+  restoreBlob(digest: string): boolean {
+    const source = join(this.#dataDir, "quarantine", "blobs", digest);
+    if (!/^[a-f0-9]{64}$/.test(digest) || !existsSync(source)) return false;
+    const directory = join(this.#dataDir, "blobs");
+    mkdirSync(directory, { recursive: true });
+    renameSync(source, join(directory, digest));
+    flushPath(directory);
+    return true;
+  }
+
+  deleteQuarantinedBlob(digest: string): boolean {
+    const path = join(this.#dataDir, "quarantine", "blobs", digest);
+    if (!/^[a-f0-9]{64}$/.test(digest) || !existsSync(path)) return false;
+    const stat = lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    unlinkSync(path);
+    return true;
   }
 
   private settlementDirectory(): string {

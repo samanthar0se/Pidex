@@ -88,7 +88,22 @@ const CREATE_AUTHORITY_SCHEMA = `
   );
   CREATE TABLE IF NOT EXISTS synchronization_changes (
     sequence INTEGER PRIMARY KEY,
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    committed_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS storage_orphans (
+    object_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK(kind IN ('blob')),
+    first_proved_at INTEGER NOT NULL,
+    proof_generation TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('quarantined'))
+  );
+  CREATE TABLE IF NOT EXISTS retained_object_references (
+    owner_kind TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    object_id TEXT NOT NULL,
+    protected INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY(owner_kind, owner_id, object_id)
   );
   CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -411,6 +426,14 @@ interface SynchronizationChange {
   change: HostChange;
 }
 
+export interface MaintenanceResult {
+  receiptsCompacted: number;
+  changesCompacted: number;
+  quarantined: string[];
+  deleted: string[];
+  restored: string[];
+}
+
 export class AuthorityStore {
   readonly #db: DatabaseSync;
   readonly #runArtifacts: RunArtifactStore;
@@ -462,6 +485,10 @@ export class AuthorityStore {
       this.#db.exec(
         "ALTER TABLE timeline_entries ADD COLUMN tool_call_id TEXT",
       );
+    }
+    const changeColumns = this.#db.prepare("PRAGMA table_info(synchronization_changes)").all();
+    if (!changeColumns.some(column => column.name === "committed_at")) {
+      this.#db.exec("ALTER TABLE synchronization_changes ADD COLUMN committed_at INTEGER");
     }
     const runsTable = this.#db
       .prepare(
@@ -2492,8 +2519,8 @@ export class AuthorityStore {
         : undefined;
     const hasMissingChanges =
       decoded.sequence < status.synchronization.sequence &&
-      earliestRetainedSequence !== undefined &&
-      decoded.sequence < earliestRetainedSequence - 1;
+      (earliestRetainedSequence === undefined ||
+        decoded.sequence < earliestRetainedSequence - 1);
     if (hasMissingChanges) {
       return { compatible: false, reason: "history-unavailable" };
     }
@@ -2520,6 +2547,79 @@ export class AuthorityStore {
     }));
   }
 
+  /** Registers recovery/rollback/artifact manifest reachability in SQLite authority. */
+  retainObjectReference(ownerKind: string, ownerId: string, objectId: string): void {
+    this.#db.prepare(
+      `INSERT OR REPLACE INTO retained_object_references
+       (owner_kind, owner_id, object_id, protected) VALUES (?, ?, ?, 1)`,
+    ).run(ownerKind, ownerId, objectId);
+  }
+
+  /**
+   * Applies v1's minimum operational retention and conservative two-proof GC.
+   * Session, ancestry, security, and product rows are deliberately never removed.
+   */
+  runMaintenance(now: number): MaintenanceResult {
+    const day = 24 * 60 * 60 * 1_000;
+    const result: MaintenanceResult = {
+      receiptsCompacted: 0,
+      changesCompacted: 0,
+      quarantined: [],
+      deleted: [],
+      restored: [],
+    };
+
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      // V1 retains security history indefinitely. Old command IDs cannot be
+      // dropped without replacing their proof with an expired tombstone,
+      // because doing so would revive a retry as new intent.
+      result.changesCompacted = Number(this.#db.prepare(
+        "DELETE FROM synchronization_changes WHERE committed_at IS NOT NULL AND committed_at < ?",
+      ).run(now - 7 * day).changes);
+
+      const referenced = new Set<string>(
+        this.#db.prepare(
+          `SELECT blob_id AS objectId FROM timeline_entries WHERE blob_id IS NOT NULL
+           UNION SELECT object_id FROM retained_object_references WHERE protected = 1`,
+        ).all().map(row => String(row.objectId)),
+      );
+      const tombstones = this.#db.prepare(
+        "SELECT object_id AS objectId, first_proved_at AS firstProvedAt FROM storage_orphans",
+      ).all() as Array<{ objectId: string; firstProvedAt: number }>;
+
+      for (const tombstone of tombstones) {
+        if (referenced.has(tombstone.objectId)) {
+          this.#db.prepare("DELETE FROM storage_orphans WHERE object_id = ?").run(tombstone.objectId);
+          result.restored.push(tombstone.objectId);
+        } else if (now > tombstone.firstProvedAt) {
+          this.#db.prepare("DELETE FROM storage_orphans WHERE object_id = ?").run(tombstone.objectId);
+          result.deleted.push(tombstone.objectId);
+        }
+      }
+
+      for (const digest of this.#runArtifacts.listBlobDigests()) {
+        const objectId = `sha256:${digest}`;
+        if (referenced.has(objectId) || tombstones.some(row => row.objectId === objectId)) continue;
+        this.#db.prepare(
+          "INSERT INTO storage_orphans VALUES (?, 'blob', ?, ?, 'quarantined')",
+        ).run(objectId, now, randomUUID());
+        result.quarantined.push(objectId);
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+
+    // Physical operations follow the durable maintenance decision. A crash is
+    // retried from the tombstone; no authority row can point at partial bytes.
+    for (const objectId of result.restored) this.#runArtifacts.restoreBlob(objectId.slice(7));
+    for (const objectId of result.quarantined) this.#runArtifacts.quarantineBlob(objectId.slice(7));
+    for (const objectId of result.deleted) this.#runArtifacts.deleteQuarantinedBlob(objectId.slice(7));
+    return result;
+  }
+
   rotateSynchronizationEpoch(now: number): void {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
@@ -2540,7 +2640,7 @@ export class AuthorityStore {
   private recordSynchronizationChange(change: HostChange): string {
     const synchronization = this.status("").synchronization;
     this.#db
-      .prepare("INSERT INTO synchronization_changes VALUES (?, ?)")
+      .prepare("INSERT INTO synchronization_changes (sequence, payload_json, committed_at) VALUES (?, ?, (SELECT committed_at FROM host WHERE singleton=1))")
       .run(synchronization.sequence, JSON.stringify(change));
     return synchronization.cursor;
   }
