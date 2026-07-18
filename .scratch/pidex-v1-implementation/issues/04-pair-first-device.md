@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Discover and expose the Host on the Private LAN
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A Host-local action creates a one-time pairing secret shown as QR and manual entry, expiring after five minutes with a bounded failure count.
 - [ ] Discovery, bootstrap pages, logs, diagnostics, and ordinary product state never expose the pairing secret.
