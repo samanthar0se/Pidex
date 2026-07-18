@@ -20,6 +20,9 @@ export async function readStatus(
     controlSocket.once("message", data => {
       try {
         const message = parseServerMessage(data.toString());
+        if (message.type !== "host.snapshot") {
+          throw new Error("Expected Host snapshot");
+        }
         controlSocket.close();
         resolve(message.status);
       } catch (error) {

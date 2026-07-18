@@ -13,7 +13,9 @@ import {
 import {
   protocolVersion,
   type HostStatus,
+  type ProjectSummary,
   type ServerMessage,
+  type WorkspaceSummary,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
 import {
@@ -37,6 +39,7 @@ interface DeviceRevokeMessage {
   type: "device.revoke";
   deviceId: string;
 }
+interface SessionCreateMessage { type: "session.create"; commandId: string; projectId?: string | null; workspaceId?: string | null }
 
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
@@ -55,6 +58,7 @@ export interface HostOptions {
   label?: string;
   authorization?: string;
   bindAddress?: string;
+  initialCatalog?: { projects?: ProjectSummary[]; workspaces?: WorkspaceSummary[] };
 }
 
 export interface StartedHost {
@@ -72,6 +76,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const store = new AuthorityStore(
     join(options.dataDir, "authority.sqlite"),
     adapters,
+    options.initialCatalog,
   );
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
@@ -105,7 +110,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         return;
       }
 
-      const asset = PWA_ASSETS[request.url ?? ""];
+      const asset = PWA_ASSETS[request.url ?? ""] ??
+        (request.method === "GET" && request.url?.startsWith("/sessions/") ? PWA_ASSETS["/"] : undefined);
       if (!asset) {
         response.writeHead(404).end();
         return;
@@ -152,6 +158,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         const message: unknown = JSON.parse(bytes.toString());
         if (isRevokeMessage(message)) {
           revokeDevice(message.deviceId);
+        } else if (isSessionCreateMessage(message)) {
+          createSession(webSocket, message);
         }
       } catch {
         // Invalid and unknown commands have no authority or side effects.
@@ -162,6 +170,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       type: "host.snapshot",
       protocolVersion,
       status: store.status(RELEASE_ID, warnings),
+      ...store.projection(),
     };
     webSocket.send(JSON.stringify(message));
   });
@@ -207,6 +216,18 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
+  function createSession(client: WebSocket, command: SessionCreateMessage): void {
+    try {
+      adapters.storage.beforeCommit();
+      const created = store.createSession(command.projectId ?? null, command.workspaceId ?? null, adapters.clock.now());
+      client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "accepted" } satisfies ServerMessage));
+      const changeSet: ServerMessage = { type: "host.change-set", cursor: created.cursor, changes: [{ type: "session.created", session: created.session }] };
+      for (const socket of webSocketServer.clients) socket.send(JSON.stringify(changeSet));
+    } catch (error) {
+      client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: error instanceof Error ? error.message : "invalid-scope" } satisfies ServerMessage));
+    }
+  }
+
   return {
     origin: canonicalOrigin,
     createPairing: () => pairing.create(canonicalOrigin),
@@ -231,6 +252,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       store.close();
     },
   };
+}
+
+function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<SessionCreateMessage>;
+  return candidate.type === "session.create" && typeof candidate.commandId === "string" &&
+    (candidate.projectId === undefined || candidate.projectId === null || typeof candidate.projectId === "string") &&
+    (candidate.workspaceId === undefined || candidate.workspaceId === null || typeof candidate.workspaceId === "string");
 }
 
 function isRevokeMessage(value: unknown): value is DeviceRevokeMessage {

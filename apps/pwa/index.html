@@ -18,6 +18,15 @@
         <dt>Readiness</dt>
         <dd>connecting</dd>
       </dl>
+      <button id="new-session">New Session</button>
+      <section id="new-session-view" hidden>
+        <h2>New Session</h2>
+        <label>Project <select id="session-project"><option value="">Host-unscoped</option></select></label>
+        <label>Workspace <select id="session-workspace"><option value="">No Workspace</option></select></label>
+        <button id="create-session">Create empty Session</button>
+        <button id="cancel-session">Cancel</button>
+      </section>
+      <nav id="sessions" aria-label="Sessions"></nav>
     </main>
     <script type="module" src="/app.js"></script>
   </body>

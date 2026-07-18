@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { HostStatus } from "../../protocol/src/status.js";
+import type { HostStatus, ProjectSummary, SessionSummary, WorkspaceSummary } from "../../protocol/src/status.js";
 import type { HostAdapters } from "../../adapters/src/index.js";
 
 const CREATE_AUTHORITY_SCHEMA = `
@@ -26,12 +26,33 @@ const CREATE_AUTHORITY_SCHEMA = `
     paired_at INTEGER NOT NULL,
     revoked_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS projects (project_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS workspaces (
+    workspace_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(project_id),
+    name TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(project_id),
+    workspace_id TEXT REFERENCES workspaces(workspace_id),
+    retention TEXT NOT NULL CHECK(retention='available'),
+    residency TEXT NOT NULL CHECK(residency='sleeping'),
+    metadata_revision INTEGER NOT NULL,
+    timeline_revision INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
 `;
+
+export interface InitialCatalog {
+  projects?: ProjectSummary[];
+  workspaces?: WorkspaceSummary[];
+}
 
 export class AuthorityStore {
   readonly #db: DatabaseSync;
 
-  constructor(path: string, adapters: HostAdapters) {
+  constructor(path: string, adapters: HostAdapters, catalog: InitialCatalog = {}) {
     mkdirSync(dirname(path), { recursive: true });
     this.#db = new DatabaseSync(path);
     this.#db.exec(CREATE_AUTHORITY_SCHEMA);
@@ -44,6 +65,41 @@ export class AuthorityStore {
       this.#db
         .prepare("INSERT INTO host VALUES (1, ?, ?, 1, 'ready', ?)")
         .run(`host_${randomUUID()}`, randomUUID(), adapters.clock.now());
+    }
+    for (const project of catalog.projects ?? []) {
+      this.#db.prepare("INSERT OR IGNORE INTO projects VALUES (?, ?)").run(project.projectId, project.name);
+    }
+    for (const workspace of catalog.workspaces ?? []) {
+      this.#db.prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)").run(workspace.workspaceId, workspace.projectId, workspace.name);
+    }
+  }
+
+  projection(): { projects: ProjectSummary[]; workspaces: WorkspaceSummary[]; sessions: SessionSummary[] } {
+    return {
+      projects: this.#db.prepare("SELECT project_id AS projectId, name FROM projects ORDER BY name").all() as ProjectSummary[],
+      workspaces: this.#db.prepare("SELECT workspace_id AS workspaceId, project_id AS projectId, name FROM workspaces ORDER BY name").all() as WorkspaceSummary[],
+      sessions: this.#db.prepare("SELECT session_id AS sessionId, project_id AS projectId, workspace_id AS workspaceId, retention, residency, metadata_revision AS metadataRevision, timeline_revision AS timelineRevision FROM sessions ORDER BY created_at").all() as SessionSummary[],
+    };
+  }
+
+  createSession(projectId: string | null, workspaceId: string | null, now: number): { session: SessionSummary; cursor: string } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      if (projectId && !this.#db.prepare("SELECT 1 FROM projects WHERE project_id=?").get(projectId)) throw new Error("unknown-project");
+      if (workspaceId) {
+        const workspace = this.#db.prepare("SELECT project_id FROM workspaces WHERE workspace_id=?").get(workspaceId) as { project_id?: unknown } | undefined;
+        if (!workspace) throw new Error("unknown-workspace");
+        if (!projectId || workspace.project_id !== projectId) throw new Error("workspace-project-mismatch");
+      }
+      const session: SessionSummary = { sessionId: `session_${randomUUID()}`, projectId, workspaceId, retention: "available", residency: "sleeping", metadataRevision: 1, timelineRevision: 1 };
+      this.#db.prepare("INSERT INTO sessions VALUES (?, ?, ?, 'available', 'sleeping', 1, 1, ?)").run(session.sessionId, projectId, workspaceId, now);
+      this.#db.prepare("UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1").run(now);
+      const status = this.status("");
+      this.#db.exec("COMMIT");
+      return { session, cursor: status.synchronization.cursor };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
     }
   }
 
