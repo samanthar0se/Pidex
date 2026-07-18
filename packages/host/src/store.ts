@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -47,13 +47,37 @@ const CREATE_AUTHORITY_SCHEMA = `
     session_id TEXT PRIMARY KEY,
     project_id TEXT REFERENCES projects(project_id),
     workspace_id TEXT REFERENCES workspaces(workspace_id),
+    name TEXT NOT NULL DEFAULT 'Untitled Session',
     retention TEXT NOT NULL CHECK(retention='available'),
     residency TEXT NOT NULL CHECK(residency='sleeping'),
     metadata_revision INTEGER NOT NULL,
     timeline_revision INTEGER NOT NULL,
     created_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS command_receipts (
+    device_id TEXT NOT NULL,
+    command_id TEXT NOT NULL,
+    envelope_digest TEXT NOT NULL,
+    outcome_json TEXT NOT NULL,
+    commit_cursor TEXT NOT NULL,
+    committed_at INTEGER NOT NULL,
+    PRIMARY KEY(device_id, command_id)
+  );
 `;
+
+export interface RenameCommand {
+  commandId: string;
+  sessionId: string;
+  name: string;
+  requiredCapability: "session.rename";
+  observedMetadataRevision: number;
+}
+
+export type RenameResult =
+  | { kind: "accepted"; session: SessionSummary; cursor: string; digest: string }
+  | { kind: "rejected"; error: "stale-precondition" | "unknown-session"; currentMetadataRevision?: number; cursor: string; digest: string }
+  | { kind: "replayed"; outcome: RenameResult; digest: string }
+  | { kind: "command-id-conflict" };
 
 export interface InitialCatalog {
   projects?: ProjectSummary[];
@@ -67,6 +91,12 @@ export class AuthorityStore {
     mkdirSync(dirname(path), { recursive: true });
     this.#db = new DatabaseSync(path);
     this.#db.exec(CREATE_AUTHORITY_SCHEMA);
+    const sessionColumns = this.#db.prepare("PRAGMA table_info(sessions)").all();
+    if (!sessionColumns.some(column => column.name === "name")) {
+      this.#db.exec(
+        "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",
+      );
+    }
 
     const existingHost = this.#db
       .prepare("SELECT 1 FROM host WHERE singleton=1")
@@ -107,7 +137,7 @@ export class AuthorityStore {
       .all();
     const sessions = this.#db
       .prepare(
-        `SELECT session_id AS sessionId, project_id AS projectId,
+        `SELECT session_id AS sessionId, name, project_id AS projectId,
                 workspace_id AS workspaceId, retention, residency,
                 metadata_revision AS metadataRevision,
                 timeline_revision AS timelineRevision
@@ -154,6 +184,7 @@ export class AuthorityStore {
 
       const session: SessionSummary = {
         sessionId: `session_${randomUUID()}`,
+        name: "Untitled Session",
         projectId,
         workspaceId,
         retention: "available",
@@ -164,7 +195,9 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `INSERT INTO sessions
-           VALUES (?, ?, ?, 'available', 'sleeping', 1, 1, ?)`,
+           (session_id, project_id, workspace_id, name, retention, residency,
+            metadata_revision, timeline_revision, created_at)
+           VALUES (?, ?, ?, 'Untitled Session', 'available', 'sleeping', 1, 1, ?)`,
         )
         .run(session.sessionId, projectId, workspaceId, now);
       this.#db
@@ -180,6 +213,68 @@ export class AuthorityStore {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  renameSession(deviceId: string, command: RenameCommand, now: number): RenameResult {
+    const envelope = JSON.stringify({
+      type: "session.rename",
+      commandId: command.commandId,
+      sessionId: command.sessionId,
+      name: command.name,
+      requiredCapability: command.requiredCapability,
+      observedMetadataRevision: command.observedMetadataRevision,
+    });
+    const digest = createHash("sha256").update(envelope).digest("hex");
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const receipt = this.#db.prepare(
+        `SELECT envelope_digest, outcome_json FROM command_receipts
+         WHERE device_id=? AND command_id=?`,
+      ).get(deviceId, command.commandId);
+      if (receipt) {
+        this.#db.exec("COMMIT");
+        if (receipt.envelope_digest !== digest) return { kind: "command-id-conflict" };
+        return { kind: "replayed", outcome: JSON.parse(String(receipt.outcome_json)) as RenameResult, digest };
+      }
+
+      const row = this.#db.prepare(
+        `SELECT metadata_revision FROM sessions WHERE session_id=?`,
+      ).get(command.sessionId);
+      let outcome: RenameResult;
+      if (!row || typeof row.metadata_revision !== "number") {
+        outcome = { kind: "rejected", error: "unknown-session", cursor: this.status("").synchronization.cursor, digest };
+      } else if (row.metadata_revision !== command.observedMetadataRevision) {
+        outcome = { kind: "rejected", error: "stale-precondition", currentMetadataRevision: row.metadata_revision, cursor: this.status("").synchronization.cursor, digest };
+      } else {
+        this.#db.prepare(
+          `UPDATE sessions SET name=?, metadata_revision=metadata_revision+1 WHERE session_id=?`,
+        ).run(command.name, command.sessionId);
+        this.#db.prepare(
+          `UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1`,
+        ).run(now);
+        const session = this.session(command.sessionId);
+        outcome = { kind: "accepted", session, cursor: this.status("").synchronization.cursor, digest };
+      }
+      this.#db.prepare(
+        `INSERT INTO command_receipts VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(deviceId, command.commandId, digest, JSON.stringify(outcome), outcome.cursor, now);
+      this.#db.exec("COMMIT");
+      return outcome;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private session(sessionId: string): SessionSummary {
+    const row = this.#db.prepare(
+      `SELECT session_id AS sessionId, name, project_id AS projectId,
+              workspace_id AS workspaceId, retention, residency,
+              metadata_revision AS metadataRevision,
+              timeline_revision AS timelineRevision
+       FROM sessions WHERE session_id=?`,
+    ).get(sessionId);
+    return sessionSummarySchema.parse(row);
   }
 
   status(

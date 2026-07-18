@@ -45,6 +45,15 @@ interface SessionCreateMessage {
   workspaceId?: string | null;
 }
 
+interface SessionRenameMessage {
+  type: "session.rename";
+  commandId: string;
+  sessionId: string;
+  name: string;
+  requiredCapability: "session.rename";
+  observedMetadataRevision: number;
+}
+
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
   "/app.js": { file: "app.js", contentType: "text/javascript" },
@@ -149,6 +158,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     webSocketServer.handleUpgrade(request, socket, head, webSocket => {
       if (sessionDeviceId !== undefined) {
         clientDeviceIds.set(webSocket, sessionDeviceId);
+      } else if (hasValidBearerAuthorization) {
+        clientDeviceIds.set(webSocket, `bearer:${createHash("sha256").update(request.headers.authorization ?? "").digest("hex")}`);
       }
       webSocketServer.emit("connection", webSocket, request);
     });
@@ -163,6 +174,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           revokeDevice(message.deviceId);
         } else if (isSessionCreateMessage(message)) {
           handleSessionCreate(webSocket, message);
+        } else if (isSessionRenameMessage(message)) {
+          handleSessionRename(webSocket, message);
         }
       } catch {
         // Invalid and unknown commands have no authority or side effects.
@@ -256,6 +269,31 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
+  function handleSessionRename(client: WebSocket, command: SessionRenameMessage): void {
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      adapters.storage.beforeCommit();
+      const result = store.renameSession(deviceId, command, adapters.clock.now());
+      if (result.kind === "command-id-conflict") {
+        client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "command-id-conflict" } satisfies ServerMessage));
+        return;
+      }
+      const resolved = result.kind === "replayed" ? result.outcome : result;
+      if (resolved.kind === "accepted") {
+        client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "accepted", receipt: { digest: resolved.digest, commitCursor: resolved.cursor } } satisfies ServerMessage));
+        if (result.kind !== "replayed") {
+          const changeSet: ServerMessage = { type: "host.change-set", cursor: resolved.cursor, changes: [{ type: "session.renamed", session: resolved.session }] };
+          for (const socket of webSocketServer.clients) socket.send(JSON.stringify(changeSet));
+        }
+      } else if (resolved.kind === "rejected") {
+        client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: resolved.error, receipt: { digest: resolved.digest, commitCursor: resolved.cursor }, ...(resolved.error === "stale-precondition" ? { failedPrecondition: "metadataRevision" as const, currentMetadataRevision: resolved.currentMetadataRevision, reconciliationCursor: resolved.cursor } : {}) } satisfies ServerMessage));
+      }
+    } catch {
+      client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "commit-failed" } satisfies ServerMessage));
+    }
+  }
+
   return {
     origin: canonicalOrigin,
     createPairing: () => pairing.create(canonicalOrigin),
@@ -306,6 +344,14 @@ function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
     hasValidProject &&
     hasValidWorkspace
   );
+}
+
+function isSessionRenameMessage(value: unknown): value is SessionRenameMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "session.rename" && typeof item.commandId === "string" &&
+    typeof item.sessionId === "string" && typeof item.name === "string" && item.name.trim().length > 0 && item.name.length <= 200 &&
+    item.requiredCapability === "session.rename" && Number.isSafeInteger(item.observedMetadataRevision) && Number(item.observedMetadataRevision) > 0;
 }
 
 function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {

@@ -35,6 +35,7 @@ export const workspaceSummarySchema = z.object({
 
 export const sessionSummarySchema = z.object({
   sessionId: z.string(),
+  name: z.string(),
   projectId: z.string().nullable(),
   workspaceId: z.string().nullable(),
   retention: z.literal("available"),
@@ -60,10 +61,16 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.change-set"),
     cursor: z.string(),
     changes: z.array(
-      z.object({
-        type: z.literal("session.created"),
-        session: sessionSummarySchema,
-      }),
+      z.discriminatedUnion("type", [
+        z.object({
+          type: z.literal("session.created"),
+          session: sessionSummarySchema,
+        }),
+        z.object({
+          type: z.literal("session.renamed"),
+          session: sessionSummarySchema,
+        }),
+      ]),
     ),
   }),
   z.object({
@@ -71,6 +78,10 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     commandId: z.string(),
     outcome: z.enum(["accepted", "rejected"]),
     error: z.string().optional(),
+    receipt: z.object({ digest: z.string(), commitCursor: z.string() }).optional(),
+    failedPrecondition: z.literal("metadataRevision").optional(),
+    currentMetadataRevision: z.number().optional(),
+    reconciliationCursor: z.string().optional(),
   }),
 ]);
 

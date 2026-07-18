@@ -115,6 +115,7 @@ test("scoped empty Sessions reject atomically, publish typed changes, and surviv
     assert.ok(createdSession);
     assert.deepEqual(createdSession, {
       sessionId: createdSession.sessionId,
+      name: "Untitled Session",
       projectId: "project_alpha",
       workspaceId: "workspace_main",
       retention: "available",

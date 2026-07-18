@@ -107,6 +107,12 @@ function renderStatus({ data }) {
     for (const change of message.changes) {
       if (change.type === "session.created") {
         projection.sessions.push(change.session);
+      } else if (change.type === "session.renamed") {
+        projection.sessions = projection.sessions.map(session =>
+          session.sessionId === change.session.sessionId
+            ? change.session
+            : session,
+        );
       }
     }
     renderSessions();
@@ -183,7 +189,7 @@ function sessionGroupName(session) {
 function createSessionLink(session) {
   const link = document.createElement("a");
   link.href = `/sessions/${session.sessionId}`;
-  link.textContent = session.sessionId;
+  link.textContent = session.name;
   return link;
 }
 
