@@ -92,7 +92,12 @@ const CREATE_AUTHORITY_SCHEMA = `
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     session_order INTEGER NOT NULL,
     prompt TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('queued','executing','cancelling','held','completed','failed','cancelled','interrupted')),
+    state TEXT NOT NULL CHECK(
+      state IN (
+        'queued', 'executing', 'cancelling', 'held', 'completed',
+        'failed', 'cancelled', 'interrupted'
+      )
+    ),
     created_at INTEGER NOT NULL,
     completed_at INTEGER,
     UNIQUE(session_id, session_order)
@@ -170,8 +175,18 @@ export interface StopCommand {
 }
 
 export type StopResult =
-  | { kind: "accepted" | "replayed"; run: RunRecord; entry: TimelineEntry; withdrawn: Interaction[]; cursor: string }
-  | { kind: "rejected"; error: "stale-execution" | "command-id-conflict"; cursor: string };
+  | {
+      kind: "accepted" | "replayed";
+      run: RunRecord;
+      entry: TimelineEntry;
+      withdrawn: Interaction[];
+      cursor: string;
+    }
+  | {
+      kind: "rejected";
+      error: "stale-execution" | "command-id-conflict";
+      cursor: string;
+    };
 
 export type SteerResult =
   | { kind: "accepted" | "replayed"; entry: TimelineEntry; cursor: string }
@@ -196,6 +211,11 @@ const activeRunReferenceSchema = z.object({ runId: z.string() });
 const timelineEntryReferenceSchema = z.object({ entryId: z.string() });
 const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
+const stopReceiptOutcomeSchema = z.object({
+  runId: z.string(),
+  entryId: z.string(),
+  cursor: z.string(),
+});
 const TIMELINE_WINDOW_SIZE = 100;
 const MAX_TIMELINE_PAGE_SIZE = 200;
 const timelineCursorSchema = z.object({
@@ -862,40 +882,171 @@ export class AuthorityStore {
       .run(runId);
   }
 
-  /** Atomically accepts exact-target Stop and removes all undelivered continuation. */
-  acceptStop(deviceId: string, command: StopCommand, activeGeneration: string | undefined, now: number): StopResult {
-    const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+  /** Atomically accepts an exact-target stop and removes undelivered continuation. */
+  acceptStop(
+    deviceId: string,
+    command: StopCommand,
+    activeWorkerGeneration: string | undefined,
+    now: number,
+  ): StopResult {
+    const digest = createHash("sha256")
+      .update(JSON.stringify(command))
+      .digest("hex");
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db.prepare(`SELECT envelope_digest, outcome_json FROM command_receipts WHERE device_id = ? AND command_id = ?`).get(deviceId, command.commandId);
+      const receipt = this.#db
+        .prepare(
+          `SELECT envelope_digest, outcome_json FROM command_receipts
+           WHERE device_id = ? AND command_id = ?`,
+        )
+        .get(deviceId, command.commandId);
       if (receipt) {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) return { kind: "rejected", error: "command-id-conflict", cursor: this.status("").synchronization.cursor };
-        const prior = JSON.parse(String(receipt.outcome_json)) as { runId: string; entryId: string; cursor: string };
-        return { kind: "replayed", run: this.loadRun(prior.runId), entry: this.loadTimelineEntry(prior.entryId), withdrawn: [], cursor: prior.cursor };
+        if (receipt.envelope_digest !== digest) {
+          return {
+            kind: "rejected",
+            error: "command-id-conflict",
+            cursor: this.status("").synchronization.cursor,
+          };
+        }
+        const prior = stopReceiptOutcomeSchema.parse(
+          JSON.parse(String(receipt.outcome_json)),
+        );
+        return {
+          kind: "replayed",
+          run: this.loadRun(prior.runId),
+          entry: this.loadTimelineEntry(prior.entryId),
+          withdrawn: [],
+          cursor: prior.cursor,
+        };
       }
-      const run = this.#db.prepare(`SELECT ${RUN_RECORD_PROJECTION} FROM runs WHERE run_id = ? AND session_id = ?`).get(command.runId, command.sessionId);
-      const session = timelineRevisionSchema.optional().parse(this.#db.prepare(`SELECT timeline_revision AS timelineRevision FROM sessions WHERE session_id = ?`).get(command.sessionId));
+
+      const run = this.#db
+        .prepare(
+          `SELECT ${RUN_RECORD_PROJECTION} FROM runs
+           WHERE run_id = ? AND session_id = ?`,
+        )
+        .get(command.runId, command.sessionId);
+      const session = timelineRevisionSchema.optional().parse(
+        this.#db
+          .prepare(
+            `SELECT timeline_revision AS timelineRevision
+             FROM sessions WHERE session_id = ?`,
+          )
+          .get(command.sessionId),
+      );
       const cursor = this.status("").synchronization.cursor;
-      if (!run || runRecordSchema.parse(run).state !== "executing" || activeGeneration !== command.workerGeneration || session?.timelineRevision !== command.observedTimelineRevision) {
+      const runIsExecuting =
+        run !== undefined && runRecordSchema.parse(run).state === "executing";
+      const targetsActiveExecution =
+        runIsExecuting &&
+        activeWorkerGeneration === command.workerGeneration &&
+        session?.timelineRevision === command.observedTimelineRevision;
+      if (!targetsActiveExecution) {
         this.#db.exec("COMMIT");
         return { kind: "rejected", error: "stale-execution", cursor };
       }
-      this.#db.prepare(`UPDATE runs SET state = 'cancelling' WHERE run_id = ?`).run(command.runId);
-      this.#db.prepare(`UPDATE runs SET state = 'cancelled', completed_at = ? WHERE session_id = ? AND state IN ('queued','held')`).run(now, command.sessionId);
-      this.#db.prepare(`UPDATE steering SET state = 'unapplied' WHERE run_id = ? AND state = 'accepted'`).run(command.runId);
-      const withdrawn = this.interactions(command.sessionId).filter(item => item.runId === command.runId);
-      this.#db.prepare(`UPDATE interactions SET state='withdrawn', revision=revision+1, terminal_cause='run-stop', responded_at=?, application_proven=0 WHERE run_id=? AND state IN ('open','resolving')`).run(now, command.runId);
+
+      this.#db
+        .prepare("UPDATE runs SET state = 'cancelling' WHERE run_id = ?")
+        .run(command.runId);
+      this.#db
+        .prepare(
+          `UPDATE runs SET state = 'cancelled', completed_at = ?
+           WHERE session_id = ? AND state IN ('queued','held')`,
+        )
+        .run(now, command.sessionId);
+      this.#db
+        .prepare(
+          `UPDATE steering SET state = 'unapplied'
+           WHERE run_id = ? AND state = 'accepted'`,
+        )
+        .run(command.runId);
+
+      const withdrawn = this.interactions(command.sessionId).filter(
+        interaction =>
+          interaction.runId === command.runId &&
+          (interaction.state === "open" || interaction.state === "resolving"),
+      );
+      this.#db
+        .prepare(
+          `UPDATE interactions
+           SET state = 'withdrawn', revision = revision + 1,
+               terminal_cause = 'run-stop', responded_at = ?,
+               application_proven = 0
+           WHERE run_id = ? AND state IN ('open','resolving')`,
+        )
+        .run(now, command.runId);
+
       const entryId = `entry_${randomUUID()}`;
-      this.#db.prepare(`INSERT INTO timeline_entries (entry_id, session_id, run_id, entry_order, kind, text, created_at) VALUES (?, ?, ?, ?, 'lifecycle', 'Cancellation requested; partial output and committed side effects are preserved.', ?)`).run(entryId, command.sessionId, command.runId, this.nextTimelineOrder(command.sessionId), now);
-      this.#db.prepare(`UPDATE sessions SET timeline_revision=timeline_revision+1 WHERE session_id=?`).run(command.sessionId);
-      this.#db.prepare(`UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1`).run(now);
+      this.#db
+        .prepare(
+          `INSERT INTO timeline_entries
+           (entry_id, session_id, run_id, entry_order, kind, text, created_at)
+           VALUES (?, ?, ?, ?, 'lifecycle',
+                   'Cancellation requested; partial output and committed side effects are preserved.', ?)`,
+        )
+        .run(
+          entryId,
+          command.sessionId,
+          command.runId,
+          this.nextTimelineOrder(command.sessionId),
+          now,
+        );
+      this.#db
+        .prepare(
+          `UPDATE sessions SET timeline_revision = timeline_revision + 1
+           WHERE session_id = ?`,
+        )
+        .run(command.sessionId);
+      this.#db
+        .prepare(
+          `UPDATE host SET sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(now);
+
       const committedCursor = this.status("").synchronization.cursor;
-      this.#db.prepare(`INSERT INTO command_receipts (device_id, command_id, envelope_digest, outcome_json, commit_cursor, committed_at) VALUES (?, ?, ?, ?, ?, ?)`).run(deviceId, command.commandId, digest, JSON.stringify({ runId: command.runId, entryId, cursor: committedCursor }), committedCursor, now);
-      const result = { kind: "accepted" as const, run: this.loadRun(command.runId), entry: this.loadTimelineEntry(entryId), withdrawn: withdrawn.map(item => ({ ...item, state: "withdrawn" as const, revision: item.revision + 1, terminalCause: "run-stop", respondedAt: now, applicationProven: false })), cursor: committedCursor };
+      const outcome = {
+        runId: command.runId,
+        entryId,
+        cursor: committedCursor,
+      };
+      this.#db
+        .prepare(
+          `INSERT INTO command_receipts
+           (device_id, command_id, envelope_digest, outcome_json,
+            commit_cursor, committed_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          deviceId,
+          command.commandId,
+          digest,
+          JSON.stringify(outcome),
+          committedCursor,
+          now,
+        );
+      const result: StopResult = {
+        kind: "accepted",
+        run: this.loadRun(command.runId),
+        entry: this.loadTimelineEntry(entryId),
+        withdrawn: withdrawn.map(interaction => ({
+          ...interaction,
+          state: "withdrawn",
+          revision: interaction.revision + 1,
+          terminalCause: "run-stop",
+          respondedAt: now,
+          applicationProven: false,
+        })),
+        cursor: committedCursor,
+      };
       this.#db.exec("COMMIT");
       return result;
-    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   completeRun(
@@ -1009,7 +1160,7 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `UPDATE runs SET state = ?, completed_at = ?
-           WHERE run_id = ? AND state = 'executing'`,
+           WHERE run_id = ? AND state IN ('executing','cancelling')`,
         )
         .run(outcome, now, runId);
       this.#db
@@ -1402,7 +1553,10 @@ export class AuthorityStore {
 
   executingRuns(): Array<{ runId: string }> {
     const rows = this.#db
-      .prepare("SELECT run_id AS runId FROM runs WHERE state IN ('executing','cancelling')")
+      .prepare(
+        `SELECT run_id AS runId FROM runs
+         WHERE state IN ('executing','cancelling')`,
+      )
       .all();
     return activeRunReferenceSchema.array().parse(rows);
   }

@@ -77,16 +77,24 @@ projectSelect.addEventListener("change", () => {
 });
 submitRunButton.addEventListener("click", () => sendRun("run.submit"));
 followUpButton.addEventListener("click", () => sendRun("run.follow-up"));
-stopRunButton.addEventListener("click", () => {
-  if (!observedExecution || !presentation.generation) return;
+stopRunButton.addEventListener("click", sendStop);
+
+function sendStop() {
+  if (!observedExecution || !presentation.generation) {
+    return;
+  }
+
   controlSocket.send(JSON.stringify({
-    type: "run.stop", commandId: crypto.randomUUID(),
-    sessionId: observedExecution.sessionId, runId: observedExecution.runId,
-    workerGeneration: presentation.generation, observedState: "executing",
+    type: "run.stop",
+    commandId: crypto.randomUUID(),
+    sessionId: observedExecution.sessionId,
+    runId: observedExecution.runId,
+    workerGeneration: presentation.generation,
+    observedState: "executing",
     observedTimelineRevision: observedExecution.timelineRevision,
     requiredCapability: "run.stop",
   }));
-});
+}
 
 function sendRun(type) {
   const sessionId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
@@ -206,9 +214,16 @@ function renderStatus({ data }) {
       return;
     case "scope.reset":
       if (message.barrier.scope.kind === "session" && message.snapshot.runs) {
-        const run = message.snapshot.runs.find(item => item.state === "executing");
-        observedExecution = run ? { ...run, timelineRevision: message.barrier.resourceRevisions.timeline } : null;
-        renderStop();
+        const run = message.snapshot.runs.find(
+          item => item.state === "executing",
+        );
+        observedExecution = run
+          ? {
+              ...run,
+              timelineRevision: message.barrier.resourceRevisions.timeline,
+            }
+          : null;
+        renderStopControl();
       }
       return;
     case "timeline.change":
@@ -217,13 +232,15 @@ function renderStatus({ data }) {
       }
       return;
     case "run.completed":
-      if (observedExecution?.runId === message.run.runId) observedExecution = null;
-      renderStop();
+      if (observedExecution?.runId === message.run.runId) {
+        observedExecution = null;
+      }
+      renderStopControl();
       return;
     case "run.execution":
       observedExecution = message.state === "executing" ? message : null;
       presentation.generation = message.workerGeneration;
-      renderStop();
+      renderStopControl();
       return;
   }
 }
@@ -236,7 +253,7 @@ function renderPresentationEffect(message) {
     resetPresentation();
   }
   presentation.generation = message.workerGeneration;
-  renderStop();
+  renderStopControl();
 
   const effect = message.effect;
   switch (effect.type) {
@@ -280,8 +297,12 @@ function renderPresentationEffect(message) {
   }
 }
 
-function renderStop() {
-  const visible = Boolean(observedExecution && presentation.generation && admittedCapabilities.has("run.stop"));
+function renderStopControl() {
+  const visible = Boolean(
+    observedExecution &&
+    presentation.generation &&
+    admittedCapabilities.has("run.stop"),
+  );
   stopRunButton.hidden = !visible;
   stopRunButton.disabled = !visible;
 }

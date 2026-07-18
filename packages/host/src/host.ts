@@ -56,6 +56,8 @@ const MAX_RUN_PROMPT_LENGTH = 100_000;
 const MAX_INTERACTION_RESPONSE_BYTES = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
+const COOPERATIVE_CANCELLATION_DETAIL =
+  "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
@@ -926,32 +928,71 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function handleRunStop(client: WebSocket, command: RunStopMessage): void {
     const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) return;
+    if (!deviceId) {
+      return;
+    }
+
     try {
       adapters.storage.beforeCommit();
-      const result = store.acceptStop(deviceId, command, workerGenerations.get(command.sessionId), adapters.clock.now());
+      const result = store.acceptStop(
+        deviceId,
+        command,
+        workerGenerations.get(command.sessionId),
+        adapters.clock.now(),
+      );
       if (result.kind === "rejected") {
-        sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: result.error, reconciliationCursor: result.cursor, runId: command.runId });
+        sendServerMessage(client, {
+          type: "command.outcome",
+          commandId: command.commandId,
+          outcome: "rejected",
+          error: result.error,
+          reconciliationCursor: result.cursor,
+          runId: command.runId,
+        });
         return;
       }
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted", reconciliationCursor: result.cursor, runId: command.runId });
-      if (result.kind === "replayed") return;
-      publishTimelineChange(command.sessionId, { baseRevision: command.observedTimelineRevision, revision: command.observedTimelineRevision + 1, entry: result.entry });
-      for (const socket of admittedClients) {
-        if (scopedSessionIdsByClient.get(socket)?.has(command.sessionId)) {
-          sendServerMessage(socket, { type: "run.execution", sessionId: command.sessionId, runId: command.runId, state: "cancelling", workerGeneration: command.workerGeneration, timelineRevision: command.observedTimelineRevision + 1 });
-        }
+
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+        reconciliationCursor: result.cursor,
+        runId: command.runId,
+      });
+      if (result.kind === "replayed") {
+        return;
       }
+
+      const nextTimelineRevision = command.observedTimelineRevision + 1;
+      publishTimelineChange(command.sessionId, {
+        baseRevision: command.observedTimelineRevision,
+        revision: nextTimelineRevision,
+        entry: result.entry,
+      });
+      publishRunExecution(
+        command.sessionId,
+        command.runId,
+        "cancelling",
+        command.workerGeneration,
+        nextTimelineRevision,
+      );
       for (const interaction of result.withdrawn) {
         clearInteractionDeadline(interaction.interactionId);
-        interactionResolvers.get(interaction.interactionId)?.({ dismissed: true });
+        interactionResolvers
+          .get(interaction.interactionId)
+          ?.({ dismissed: true });
         interactionResolvers.delete(interaction.interactionId);
         publishInteraction(interaction);
       }
       store.markRunSteeringUnapplied(command.runId);
       workers.get(command.sessionId)?.stop();
     } catch (error) {
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: error instanceof Error ? error.message : "stop-failed" });
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: error instanceof Error ? error.message : "stop-failed",
+      });
     }
   }
 
@@ -963,13 +1004,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const workerGeneration =
       workerGenerations.get(run.sessionId) ?? randomUUID();
     workerGenerations.set(run.sessionId, workerGeneration);
-    const timelineRevision = store.projection().sessions.find(item => item.sessionId === run.sessionId)?.timelineRevision;
+    const timelineRevision = store.projection().sessions.find(
+      item => item.sessionId === run.sessionId,
+    )?.timelineRevision;
     if (timelineRevision !== undefined) {
-      for (const socket of admittedClients) {
-        if (scopedSessionIdsByClient.get(socket)?.has(run.sessionId)) {
-          sendServerMessage(socket, { type: "run.execution", sessionId: run.sessionId, runId: run.runId, state: "executing", workerGeneration, timelineRevision });
-        }
-      }
+      publishRunExecution(
+        run.sessionId,
+        run.runId,
+        "executing",
+        workerGeneration,
+        timelineRevision,
+      );
     }
     const presentationContext = presentationContextByRun.get(run.runId);
     void worker
@@ -1002,10 +1047,26 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         if (finalAssistant) {
           publishTimelineChange(run.sessionId, finalAssistant);
         }
-        const isCancelling = store.runs(run.sessionId).find(item => item.runId === run.runId)?.state === "cancelling";
-        const completed = isCancelling
-          ? store.settleRun(run.runId, "cancelled", "Cancelled cooperatively. Partial output and committed side effects were not rolled back.", executionResult.checkpoint, adapters.clock.now())
-          : store.completeRun(run.runId, executionResult.text, executionResult.checkpoint, adapters.clock.now());
+        const currentRun = store
+          .runs(run.sessionId)
+          .find(item => item.runId === run.runId);
+        let completed;
+        if (currentRun?.state === "cancelling") {
+          completed = store.settleRun(
+            run.runId,
+            "cancelled",
+            COOPERATIVE_CANCELLATION_DETAIL,
+            executionResult.checkpoint,
+            adapters.clock.now(),
+          );
+        } else {
+          completed = store.completeRun(
+            run.runId,
+            executionResult.text,
+            executionResult.checkpoint,
+            adapters.clock.now(),
+          );
+        }
         presentationContextByRun.delete(run.runId);
         publishRunCompletion(run.sessionId, completed.run);
         const nextRun = store.dispatchNext(run.sessionId);
@@ -1016,9 +1077,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       .catch(error => {
         store.markRunSteeringUnapplied(run.runId);
         try {
-          const isCancelling = store.runs(run.sessionId).find(item => item.runId === run.runId)?.state === "cancelling";
-          if (isCancelling) {
-            const cancelled = store.settleRun(run.runId, "cancelled", "Cancelled cooperatively. Partial output and committed side effects were not rolled back.", null, adapters.clock.now());
+          const currentRun = store
+            .runs(run.sessionId)
+            .find(item => item.runId === run.runId);
+          if (currentRun?.state === "cancelling") {
+            const cancelled = store.settleRun(
+              run.runId,
+              "cancelled",
+              COOPERATIVE_CANCELLATION_DETAIL,
+              null,
+              adapters.clock.now(),
+            );
             presentationContextByRun.delete(run.runId);
             publishRunCompletion(run.sessionId, cancelled.run);
             return;
@@ -1260,6 +1329,28 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       type: "timeline.change",
       sessionId,
       ...change,
+    };
+    for (const socket of admittedClients) {
+      if (scopedSessionIdsByClient.get(socket)?.has(sessionId)) {
+        sendServerMessage(socket, message);
+      }
+    }
+  }
+
+  function publishRunExecution(
+    sessionId: string,
+    runId: string,
+    state: "executing" | "cancelling",
+    workerGeneration: string,
+    timelineRevision: number,
+  ): void {
+    const message: ServerMessage = {
+      type: "run.execution",
+      sessionId,
+      runId,
+      state,
+      workerGeneration,
+      timelineRevision,
     };
     for (const socket of admittedClients) {
       if (scopedSessionIdsByClient.get(socket)?.has(sessionId)) {
@@ -1598,12 +1689,22 @@ function isRunSteerMessage(value: unknown): value is RunSteerMessage {
 }
 
 function isRunStopMessage(value: unknown): value is RunStopMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "run.stop" && item.requiredCapability === "run.stop" &&
-    typeof item.commandId === "string" && typeof item.sessionId === "string" &&
-    typeof item.runId === "string" && typeof item.workerGeneration === "string" &&
-    item.observedState === "executing" && Number.isSafeInteger(item.observedTimelineRevision) && Number(item.observedTimelineRevision) > 0;
+  return (
+    item.type === "run.stop" &&
+    item.requiredCapability === "run.stop" &&
+    typeof item.commandId === "string" &&
+    typeof item.sessionId === "string" &&
+    typeof item.runId === "string" &&
+    typeof item.workerGeneration === "string" &&
+    item.observedState === "executing" &&
+    Number.isSafeInteger(item.observedTimelineRevision) &&
+    Number(item.observedTimelineRevision) > 0
+  );
 }
 
 function isInteractionResolveMessage(
