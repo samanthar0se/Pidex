@@ -1178,12 +1178,34 @@ export class AuthorityStore {
       this.settleRun(
         runId,
         "interrupted",
-        "Execution was interrupted; normal completion could not be proved.",
+        "Worker recovery interrupted execution because normal completion could not be proved. Partial output and committed side effects were preserved.",
         null,
         now,
       );
     }
     this.#db.prepare("UPDATE runs SET state = 'held' WHERE state = 'queued'").run();
+  }
+
+  /** Holds continuation and removes runtime-owned authority after one worker is lost. */
+  recoverWorkerLoss(sessionId: string, runId: string, now: number): Interaction[] {
+    this.markRunSteeringUnapplied(runId);
+    const unresolved = this.interactions(sessionId).filter(interaction =>
+      interaction.state === "open" || interaction.state === "resolving"
+    );
+    for (const interaction of unresolved) {
+      const expectedState = interaction.state === "open" ? "open" : "resolving";
+      this.settleInteraction(interaction.interactionId, expectedState,
+        "withdrawn", "worker-lost", now, false);
+    }
+    this.#db.prepare(
+      "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
+    ).run(sessionId);
+    this.#db.prepare(
+      "UPDATE sessions SET residency = 'sleeping' WHERE session_id = ?",
+    ).run(sessionId);
+    return unresolved.map(interaction => ({ ...interaction,
+      state: "withdrawn" as const, revision: interaction.revision + 1,
+      terminalCause: "worker-lost", respondedAt: now, applicationProven: false }));
   }
 
   /** Publish immutable bytes first, then atomically reference them and settle once. */

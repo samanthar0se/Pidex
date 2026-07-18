@@ -309,3 +309,12 @@ export class WorkerReadinessError extends Error {
     this.diagnostic = diagnostic;
   }
 }
+
+/** Typed process/IPC boundary failure; unlike a Pi failure its outcome is uncertain. */
+export class WorkerLossError extends Error {
+  readonly code = "worker-lost" as const;
+  constructor(detail: string, options?: ErrorOptions) {
+    super(detail, options);
+    this.name = "WorkerLossError";
+  }
+}

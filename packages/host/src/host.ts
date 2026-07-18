@@ -36,6 +36,7 @@ import {
 } from "./pairing.js";
 import {
   PiSessionWorker,
+  WorkerLossError,
   WORKER_PROTOCOL_GENERATION,
 } from "./pi-worker.js";
 import {
@@ -1271,7 +1272,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       })
       .catch(error => {
         clearForcedStopTimer(run.runId);
-        store.markRunSteeringUnapplied(run.runId);
         try {
           const currentRun = store
             .runs(run.sessionId)
@@ -1295,18 +1295,34 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             return;
           }
           invalidateWorkerGeneration(run.sessionId, workerGeneration);
+          if (!(error instanceof WorkerLossError)) {
+            const failed = store.settleRun(run.runId, "failed",
+              `Pi execution failed: ${error instanceof Error ? error.message : "runtime-error"}`,
+              null, adapters.clock.now());
+            presentationContextByRun.delete(run.runId);
+            publishRunCompletion(run.sessionId, failed.run);
+            store.holdQueued(run.sessionId);
+            return;
+          }
+          const finalAssistant = store.finalizeAssistant(run.sessionId, run.runId);
+          if (finalAssistant) publishTimelineChange(run.sessionId, finalAssistant);
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
-          const failed = store.settleRun(
+          const interrupted = store.settleRun(
             run.runId,
-            "failed",
-            `Pi execution failed: ${errorDetail}`,
+            "interrupted",
+            `Worker recovery interrupted execution (${errorDetail}); normal settlement could not be proved. Partial output and committed side effects were preserved.`,
             null,
             adapters.clock.now(),
           );
+          const job = sessionJobs.get(run.sessionId);
+          job?.close();
+          sessionJobs.delete(run.sessionId);
+          for (const interaction of store.recoverWorkerLoss(
+            run.sessionId, run.runId, adapters.clock.now()
+          )) publishInteraction(interaction);
           presentationContextByRun.delete(run.runId);
-          publishRunCompletion(run.sessionId, failed.run);
-          store.holdQueued(run.sessionId);
+          publishRunCompletion(run.sessionId, interrupted.run);
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
