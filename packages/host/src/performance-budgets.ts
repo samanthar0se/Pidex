@@ -19,6 +19,8 @@ export type ExternalWait =
   | "pushMs"
   | "backupDestinationMs";
 
+type ExternalWaitTotals = Partial<Record<ExternalWait, number>>;
+
 export const RESOURCE_BUDGETS = Object.freeze({
   launcherDaemonRssBytes: 300 * 1024 ** 2,
   launcherDaemonCpuPercent: 1,
@@ -30,45 +32,47 @@ export const RESOURCE_BUDGETS = Object.freeze({
   soakMemoryGrowthRatio: 0.1,
 });
 
-interface GateMetadata {
+export interface PerformanceGateMetadata {
   build: string;
   environment: { os: string; browser: string; memoryBytes: number };
   network: { rttMs: number; lossPercent: number };
 }
 
-interface LatencySample {
+export interface LatencySample {
   localMs: number;
-  external?: Partial<Record<ExternalWait, number>>;
+  external?: ExternalWaitTotals;
 }
 
-interface QuiescentSample {
+export interface QuiescentSample {
   launcherDaemonRssBytes: number;
   launcherDaemonCpuPercent: number;
   workerRssBytes: number[];
 }
 
-interface ClientSample {
+export interface ClientSample {
   timelineEntries: number;
   heapBytes: number;
   longestNavigationTaskMs: number;
 }
 
-interface SoakSample {
+export interface SoakSample {
   beforeRssBytes: number;
   afterRssBytes: number;
   handleSamples: number[];
   diagnosticBytes: number;
 }
 
+interface LatencyEvidence {
+  samples: number;
+  p95LocalMs: number;
+  budgetMs: number;
+  external: ExternalWaitTotals;
+}
+
 export interface PerformanceEvidence {
   schema: "pidex-performance-v1";
-  metadata: GateMetadata;
-  latency: Partial<Record<LatencyMetric, {
-    samples: number;
-    p95LocalMs: number;
-    budgetMs: number;
-    external: Partial<Record<ExternalWait, number>>;
-  }>>;
+  metadata: PerformanceGateMetadata;
+  latency: Partial<Record<LatencyMetric, LatencyEvidence>>;
   authorityAssertions: Record<string, boolean>;
   failures: string[];
   passed: boolean;
@@ -82,8 +86,12 @@ export class PerformanceGate {
   readonly #clients: ClientSample[] = [];
   readonly #soaks: SoakSample[] = [];
 
-  constructor(readonly metadata: GateMetadata) {
-    if (!metadata.build || !metadata.environment.os || !metadata.environment.browser) {
+  constructor(readonly metadata: PerformanceGateMetadata) {
+    if (
+      !metadata.build ||
+      !metadata.environment.os ||
+      !metadata.environment.browser
+    ) {
       throw new Error("benchmark-metadata-incomplete");
     }
   }
@@ -98,50 +106,150 @@ export class PerformanceGate {
     this.#latencies.set(metric, samples);
   }
 
-  recordQuiescent(sample: QuiescentSample): void { this.#quiescent.push(sample); }
-  recordClient(sample: ClientSample): void { this.#clients.push(sample); }
-  recordSoak(sample: SoakSample): void { this.#soaks.push(sample); }
+  recordQuiescent(sample: QuiescentSample): void {
+    this.#quiescent.push(sample);
+  }
+
+  recordClient(sample: ClientSample): void {
+    this.#clients.push(sample);
+  }
+
+  recordSoak(sample: SoakSample): void {
+    this.#soaks.push(sample);
+  }
+
   assertAuthority(name: string, preserved: boolean): void {
-    if (!name) throw new Error("authority-assertion-name-required");
+    if (!name) {
+      throw new Error("authority-assertion-name-required");
+    }
     this.#authority.set(name, preserved);
   }
 
   evaluate(): PerformanceEvidence {
     const failures: string[] = [];
-    const latency: PerformanceEvidence["latency"] = {};
-    if (this.metadata.network.rttMs > 50 || this.metadata.network.lossPercent > 1) {
+
+    if (
+      this.metadata.network.rttMs > 50 ||
+      this.metadata.network.lossPercent > 1
+    ) {
       failures.push("unsupported-network-condition");
     }
+
+    const latency = this.evaluateLatencies(failures);
+    this.evaluateQuiescentSamples(failures);
+    this.evaluateClientSamples(failures);
+    this.evaluateSoakSamples(failures);
+
+    const authorityAssertions = Object.fromEntries(this.#authority);
+    const authorityWasNotPreserved = [...this.#authority.values()].some(
+      preserved => !preserved,
+    );
+    if (this.#authority.size === 0 || authorityWasNotPreserved) {
+      failures.push("authority-assertions-not-preserved");
+    }
+
+    const uniqueFailures = [...new Set(failures)];
+    return {
+      schema: "pidex-performance-v1",
+      metadata: this.metadata,
+      latency,
+      authorityAssertions,
+      failures: uniqueFailures,
+      passed: uniqueFailures.length === 0,
+    };
+  }
+
+  private evaluateLatencies(
+    failures: string[],
+  ): PerformanceEvidence["latency"] {
+    const latency: PerformanceEvidence["latency"] = {};
+
     for (const [metric, samples] of this.#latencies) {
       const p95LocalMs = percentile95(samples.map(sample => sample.localMs));
-      const external: Partial<Record<ExternalWait, number>> = {};
-      for (const sample of samples) for (const [name, value] of Object.entries(sample.external ?? {})) {
-        const key = name as ExternalWait;
-        external[key] = (external[key] ?? 0) + value;
+      const budgetMs = LATENCY_BUDGETS_MS[metric];
+
+      latency[metric] = {
+        samples: samples.length,
+        p95LocalMs,
+        budgetMs,
+        external: sumExternalWaits(samples),
+      };
+      if (p95LocalMs > budgetMs) {
+        failures.push(`${metric}-p95-over-budget`);
       }
-      latency[metric] = { samples: samples.length, p95LocalMs, budgetMs: LATENCY_BUDGETS_MS[metric], external };
-      if (p95LocalMs > LATENCY_BUDGETS_MS[metric]) failures.push(`${metric}-p95-over-budget`);
     }
-    for (const sample of this.#quiescent) {
-      if (sample.launcherDaemonRssBytes > RESOURCE_BUDGETS.launcherDaemonRssBytes) failures.push("launcher-daemon-rss-over-budget");
-      if (sample.launcherDaemonCpuPercent > RESOURCE_BUDGETS.launcherDaemonCpuPercent) failures.push("launcher-daemon-cpu-over-budget");
-      if (sample.workerRssBytes.some(value => value > RESOURCE_BUDGETS.residentWorkerRssBytes)) failures.push("worker-rss-over-budget");
-    }
-    for (const sample of this.#clients) {
-      if (sample.timelineEntries !== RESOURCE_BUDGETS.timelineEntries) failures.push("timeline-fixture-incomplete");
-      if (sample.heapBytes > RESOURCE_BUDGETS.clientHeapBytes) failures.push("client-heap-over-budget");
-      if (sample.longestNavigationTaskMs > RESOURCE_BUDGETS.responsiveTaskMs) failures.push("timeline-navigation-unresponsive");
-    }
-    for (const sample of this.#soaks) {
-      if (sample.afterRssBytes > sample.beforeRssBytes * (1 + RESOURCE_BUDGETS.soakMemoryGrowthRatio)) failures.push("soak-memory-growth>10%");
-      if (strictlyIncreasing(sample.handleSamples)) failures.push("soak-handles-monotonic");
-      if (sample.diagnosticBytes > RESOURCE_BUDGETS.diagnosticBytes) failures.push("diagnostics-over-budget");
-    }
-    const authorityAssertions = Object.fromEntries(this.#authority);
-    if (this.#authority.size === 0 || [...this.#authority.values()].some(value => !value)) failures.push("authority-assertions-not-preserved");
-    const uniqueFailures = [...new Set(failures)];
-    return { schema: "pidex-performance-v1", metadata: this.metadata, latency, authorityAssertions, failures: uniqueFailures, passed: uniqueFailures.length === 0 };
+
+    return latency;
   }
+
+  private evaluateQuiescentSamples(failures: string[]): void {
+    for (const sample of this.#quiescent) {
+      if (
+        sample.launcherDaemonRssBytes >
+        RESOURCE_BUDGETS.launcherDaemonRssBytes
+      ) {
+        failures.push("launcher-daemon-rss-over-budget");
+      }
+      if (
+        sample.launcherDaemonCpuPercent >
+        RESOURCE_BUDGETS.launcherDaemonCpuPercent
+      ) {
+        failures.push("launcher-daemon-cpu-over-budget");
+      }
+      if (
+        sample.workerRssBytes.some(
+          value => value > RESOURCE_BUDGETS.residentWorkerRssBytes,
+        )
+      ) {
+        failures.push("worker-rss-over-budget");
+      }
+    }
+  }
+
+  private evaluateClientSamples(failures: string[]): void {
+    for (const sample of this.#clients) {
+      if (sample.timelineEntries !== RESOURCE_BUDGETS.timelineEntries) {
+        failures.push("timeline-fixture-incomplete");
+      }
+      if (sample.heapBytes > RESOURCE_BUDGETS.clientHeapBytes) {
+        failures.push("client-heap-over-budget");
+      }
+      if (
+        sample.longestNavigationTaskMs > RESOURCE_BUDGETS.responsiveTaskMs
+      ) {
+        failures.push("timeline-navigation-unresponsive");
+      }
+    }
+  }
+
+  private evaluateSoakSamples(failures: string[]): void {
+    for (const sample of this.#soaks) {
+      const maximumRssBytes =
+        sample.beforeRssBytes *
+        (1 + RESOURCE_BUDGETS.soakMemoryGrowthRatio);
+      if (sample.afterRssBytes > maximumRssBytes) {
+        failures.push("soak-memory-growth>10%");
+      }
+      if (strictlyIncreasing(sample.handleSamples)) {
+        failures.push("soak-handles-monotonic");
+      }
+      if (sample.diagnosticBytes > RESOURCE_BUDGETS.diagnosticBytes) {
+        failures.push("diagnostics-over-budget");
+      }
+    }
+  }
+}
+
+function sumExternalWaits(samples: LatencySample[]): ExternalWaitTotals {
+  const totals: Record<string, number> = {};
+
+  for (const sample of samples) {
+    for (const [name, value] of Object.entries(sample.external ?? {})) {
+      totals[name] = (totals[name] ?? 0) + value;
+    }
+  }
+
+  return totals;
 }
 
 function percentile95(values: number[]): number {
@@ -150,9 +258,14 @@ function percentile95(values: number[]): number {
 }
 
 function strictlyIncreasing(values: number[]): boolean {
-  return values.length > 1 && values.slice(1).every((value, index) => value > values[index]!);
+  return (
+    values.length > 1 &&
+    values.slice(1).every((value, index) => value > values[index]!)
+  );
 }
 
 function assertFiniteNonnegative(value: number, label: string): void {
-  if (!Number.isFinite(value) || value < 0) throw new Error(`${label} must be finite and nonnegative`);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${label} must be finite and nonnegative`);
+  }
 }

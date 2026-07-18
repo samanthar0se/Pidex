@@ -9,7 +9,11 @@ import {
 test("performance evidence gates p95 local work without charging external waits", () => {
   const gate = new PerformanceGate({
     build: "sha256:release",
-    environment: { os: "Windows 11", browser: "Edge 128", memoryBytes: 8 * 1024 ** 3 },
+    environment: {
+      os: "Windows 11",
+      browser: "Edge 128",
+      memoryBytes: 8 * 1024 ** 3,
+    },
     network: { rttMs: 50, lossPercent: 1 },
   });
 
@@ -31,16 +35,38 @@ test("performance evidence gates p95 local work without charging external waits"
 test("resource and soak gates enforce quiescent bounds and leak detection", () => {
   const gate = new PerformanceGate({
     build: "sha256:release",
-    environment: { os: "Windows 11", browser: "Chrome 128", memoryBytes: 16 * 1024 ** 3 },
+    environment: {
+      os: "Windows 11",
+      browser: "Chrome 128",
+      memoryBytes: 16 * 1024 ** 3,
+    },
     network: { rttMs: 40, lossPercent: 0.5 },
   });
-  gate.recordQuiescent({ launcherDaemonRssBytes: 299 * 1024 ** 2, launcherDaemonCpuPercent: 0.9, workerRssBytes: [300 * 1024 ** 2] });
-  gate.recordClient({ timelineEntries: 100_000, heapBytes: 299 * 1024 ** 2, longestNavigationTaskMs: 40 });
-  gate.recordSoak({ beforeRssBytes: 200, afterRssBytes: 220, handleSamples: [20, 22, 21], diagnosticBytes: RESOURCE_BUDGETS.diagnosticBytes });
+  gate.recordQuiescent({
+    launcherDaemonRssBytes: 299 * 1024 ** 2,
+    launcherDaemonCpuPercent: 0.9,
+    workerRssBytes: [300 * 1024 ** 2],
+  });
+  gate.recordClient({
+    timelineEntries: 100_000,
+    heapBytes: 299 * 1024 ** 2,
+    longestNavigationTaskMs: 40,
+  });
+  gate.recordSoak({
+    beforeRssBytes: 200,
+    afterRssBytes: 220,
+    handleSamples: [20, 22, 21],
+    diagnosticBytes: RESOURCE_BUDGETS.diagnosticBytes,
+  });
   gate.assertAuthority("timeline-remains-authoritative", true);
   assert.equal(gate.evaluate().passed, true);
 
-  gate.recordSoak({ beforeRssBytes: 200, afterRssBytes: 221, handleSamples: [20, 21, 22], diagnosticBytes: 1 });
+  gate.recordSoak({
+    beforeRssBytes: 200,
+    afterRssBytes: 221,
+    handleSamples: [20, 21, 22],
+    diagnosticBytes: 1,
+  });
   const failed = gate.evaluate();
   assert.equal(failed.passed, false);
   assert.ok(failed.failures.includes("soak-memory-growth>10%"));
