@@ -1,3 +1,5 @@
+import { assessBrowser, browserSemantics } from "./browser-compatibility.mjs";
+
 const $ = (selector, root = document) => root.querySelector(selector);
 
 const EXPECTED_HOST_ID_KEY = "pidex.expectedHostId";
@@ -79,6 +81,22 @@ const state = {
   drafts: new Map(),
   draftFailures: new Map(),
 };
+
+const standalone = matchMedia("(display-mode: standalone)").matches ||
+  navigator.standalone === true;
+const browserAssessment = assessBrowser(
+  navigator.userAgent,
+  browserSemantics(window),
+  standalone,
+);
+if (!browserAssessment.supported) {
+  document.body.replaceChildren(Object.assign(document.createElement("main"), {
+    id: "unsupported-browser",
+    role: "alert",
+    textContent: `Pidex cannot safely run in this browser (${browserAssessment.reason}). Use a supported current or previous Edge/Chrome on Windows, Chrome on Android, or Safari/PWA on iOS or iPadOS. No Host controls are available.`,
+  }));
+  throw new Error(browserAssessment.reason);
+}
 
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let socket;

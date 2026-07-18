@@ -210,6 +210,10 @@ interface ClientDelivery {
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
   "/app.js": { file: "app.js", contentType: "text/javascript" },
+  "/browser-compatibility.mjs": {
+    file: "browser-compatibility.mjs",
+    contentType: "text/javascript",
+  },
   "/service-worker.js": {
     file: "service-worker.js",
     contentType: "text/javascript",
