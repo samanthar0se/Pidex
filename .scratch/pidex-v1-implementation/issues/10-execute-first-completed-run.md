@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 — Negotiate protocol compatibility and isolate slow Clients
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] First submit from a local New Session View creates the Session and accepts its initial Run as distinguishable durable operations.
 - [ ] A prompt becomes a Run only after validation, Session-local identity/order, receipt, and authoritative state commit; rejection before that boundary creates no Run.
