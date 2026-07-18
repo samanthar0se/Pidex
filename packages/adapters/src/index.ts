@@ -21,6 +21,42 @@ export interface WindowsPlatformAdapter {
   restrictToCurrentUser(path: string): void;
   trustCurrentUserCertificate(path: string): void;
   registerLogonTask(command: string, args: readonly string[]): void;
+  privateInterfaces(): readonly PrivateInterface[];
+  advertisePidex(advertisement: PidexAdvertisement): () => void;
+  inspectPidexFirewall(port: number): FirewallHealth;
+  applyPidexFirewall(operation: FirewallOperation): void;
+  writeCoarseEvent(event: CoarseWindowsEvent): void;
+}
+
+export interface PrivateInterface { name: string; addresses: readonly string[]; profile: "private"; }
+export interface PidexAdvertisement {
+  service: "_pidex._tcp.local";
+  hostname: string;
+  port: number;
+  interfaces: readonly PrivateInterface[];
+  txt: { location: string; label: string; version: string; fingerprint: string };
+}
+export type FirewallHealth =
+  | { state: "healthy" }
+  | { state: "missing" | "disabled" | "broadened" | "unverifiable"; detail: string };
+export type FirewallOperation = { operation: "ensure-private-rule"; port: number } | { operation: "remove-rule" };
+export interface CoarseWindowsEvent { severity: "error"; code: "PIDEX_FIREWALL_DEGRADED"; detail: string; }
+
+/** Sole input boundary for the elevated helper; rejects arguments and extra fields. */
+export function executePidexFirewallOperation(windows: WindowsPlatformAdapter, input: unknown): void {
+  if (!input || typeof input !== "object") throw new Error("Invalid Pidex Firewall operation");
+  const value = input as Record<string, unknown>;
+  const keys = Object.keys(value).sort().join(",");
+  if (value.operation === "remove-rule" && keys === "operation") {
+    windows.applyPidexFirewall({ operation: "remove-rule" });
+    return;
+  }
+  if (value.operation === "ensure-private-rule" && keys === "operation,port" &&
+      Number.isInteger(value.port) && Number(value.port) >= 1 && Number(value.port) <= 65_535) {
+    windows.applyPidexFirewall({ operation: "ensure-private-rule", port: Number(value.port) });
+    return;
+  }
+  throw new Error("Invalid Pidex Firewall operation");
 }
 
 export interface HostAdapters {
@@ -62,6 +98,11 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
     restrictToCurrentUser() {},
     trustCurrentUserCertificate() {},
     registerLogonTask() {},
+    privateInterfaces: () => [{ name: "deterministic-private", addresses: ["192.168.50.4"], profile: "private" }],
+    advertisePidex: () => () => {},
+    inspectPidexFirewall: () => ({ state: "healthy" }),
+    applyPidexFirewall() {},
+    writeCoarseEvent() {},
   };
 }
 
@@ -89,5 +130,13 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
     registerLogonTask() {
       throw new Error("Pidex Windows Task Scheduler bridge is not bundled");
     },
+    privateInterfaces() { throw new Error("Pidex Windows network-profile bridge is not bundled"); },
+    advertisePidex() { throw new Error("Pidex Windows mDNS bridge is not bundled"); },
+    inspectPidexFirewall() { return { state: "unverifiable", detail: "Windows Firewall bridge is not bundled" }; },
+    applyPidexFirewall(operation) {
+      if (operation.operation !== "ensure-private-rule" && operation.operation !== "remove-rule") throw new Error("Invalid privileged operation");
+      throw new Error("Pidex Windows Firewall bridge is not bundled");
+    },
+    writeCoarseEvent() {},
   };
 }

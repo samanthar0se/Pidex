@@ -13,11 +13,12 @@ import {
   type HostStatus,
 } from "../packages/protocol/src/status.js";
 
-function readPwaStatus(origin: string): Promise<HostStatus> {
+function readPwaStatus(origin: string, authorization: string): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
     const controlOrigin = origin.replace("https:", "wss:");
     const controlSocket = new WebSocket(`${controlOrigin}/control`, {
       rejectUnauthorized: false,
+      headers: { authorization: `Bearer ${authorization}` },
     });
 
     controlSocket.once("message", bytes => {
@@ -54,10 +55,12 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-product-"));
 
   try {
+    const authorization = "product-test-device";
     const initialHost = await startHost({
       dataDir,
       port: 0,
       adapters: adaptersFor("deterministic"),
+      authorization,
     });
     let initialStatus: HostStatus;
 
@@ -66,8 +69,8 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
       assert.match(shell, /Pidex Host/);
 
       const [pwaStatus, cliStatus] = await Promise.all([
-        readPwaStatus(initialHost.origin),
-        readStatus(initialHost.origin),
+        readPwaStatus(initialHost.origin, authorization),
+        readStatus(initialHost.origin, authorization),
       ]);
       assert.deepEqual(pwaStatus, cliStatus);
       assert.equal(cliStatus.readiness, "ready");
@@ -84,10 +87,11 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
       dataDir,
       port: 0,
       adapters: adaptersFor("deterministic"),
+      authorization,
     });
 
     try {
-      assert.deepEqual(await readStatus(restartedHost.origin), initialStatus);
+      assert.deepEqual(await readStatus(restartedHost.origin, authorization), initialStatus);
     } finally {
       await restartedHost.close();
     }

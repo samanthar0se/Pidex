@@ -6,6 +6,7 @@ import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
 export interface HostCertificate {
   key: Buffer;
   cert: Buffer;
+  ca: Buffer;
 }
 
 export function ensureCertificate(
@@ -35,6 +36,7 @@ export function ensureCertificate(
       readFileSync(paths.protectedHostKeyPath),
     ),
     cert: readFileSync(paths.hostCertificatePath),
+    ca: readFileSync(paths.caCertificatePath),
   };
 }
 
