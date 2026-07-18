@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Pair the first Device
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Projects, Workspaces, Sessions, Timeline data, capabilities, status, APIs, WebSockets, and commands reject unauthenticated access.
 - [ ] Every paired Device receives equal full v1 authority; no read-only role, Device scope, or per-capability grant is introduced.
