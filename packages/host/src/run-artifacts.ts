@@ -28,6 +28,8 @@ const completionEvidenceBodySchema = z.object({
 
 type CompletionEvidence = z.infer<typeof completionEvidenceBodySchema>;
 
+const BLOB_DIGEST_PATTERN = /^[a-f0-9]{64}$/;
+
 /** Owns durable files used to prove and publish Run settlements. */
 export class RunArtifactStore {
   readonly #dataDir: string;
@@ -84,7 +86,7 @@ export class RunArtifactStore {
   /** Publishes verified bytes before returning their content-addressed ID. */
   publishBlob(bytes: Buffer): string {
     const digest = sha256(bytes);
-    const directory = join(this.#dataDir, "blobs");
+    const directory = this.blobDirectory();
     const destination = join(directory, digest);
     mkdirSync(directory, { recursive: true });
 
@@ -111,7 +113,7 @@ export class RunArtifactStore {
       return null;
     }
 
-    const path = join(this.#dataDir, "blobs", digest);
+    const path = join(this.blobDirectory(), digest);
     if (!existsSync(path)) {
       return null;
     }
@@ -123,24 +125,34 @@ export class RunArtifactStore {
     return bytes;
   }
 
-  /** Lists only ordinary, content-addressed files directly inside the managed root. */
+  /**
+   * Lists only ordinary, content-addressed files directly inside the managed root.
+   */
   listBlobDigests(): string[] {
-    const directory = join(this.#dataDir, "blobs");
-    if (!existsSync(directory)) return [];
-    return readdirSync(directory).filter(name => {
-      if (!/^[a-f0-9]{64}$/.test(name)) return false;
-      const stat = lstatSync(join(directory, name));
-      return stat.isFile() && !stat.isSymbolicLink();
+    const directory = this.blobDirectory();
+    if (!existsSync(directory)) {
+      return [];
+    }
+
+    return readdirSync(directory).filter((name) => {
+      if (!isBlobDigest(name)) {
+        return false;
+      }
+      return isOrdinaryFile(join(directory, name));
     });
   }
 
   quarantineBlob(digest: string): boolean {
-    if (!/^[a-f0-9]{64}$/.test(digest)) return false;
-    const source = join(this.#dataDir, "blobs", digest);
-    if (!existsSync(source)) return false;
-    const stat = lstatSync(source);
-    if (!stat.isFile() || stat.isSymbolicLink()) return false;
-    const directory = join(this.#dataDir, "quarantine", "blobs");
+    if (!isBlobDigest(digest)) {
+      return false;
+    }
+
+    const source = join(this.blobDirectory(), digest);
+    if (!existsSync(source) || !isOrdinaryFile(source)) {
+      return false;
+    }
+
+    const directory = this.quarantinedBlobDirectory();
     mkdirSync(directory, { recursive: true });
     renameSync(source, join(directory, digest));
     flushPath(directory);
@@ -148,9 +160,12 @@ export class RunArtifactStore {
   }
 
   restoreBlob(digest: string): boolean {
-    const source = join(this.#dataDir, "quarantine", "blobs", digest);
-    if (!/^[a-f0-9]{64}$/.test(digest) || !existsSync(source)) return false;
-    const directory = join(this.#dataDir, "blobs");
+    const source = join(this.quarantinedBlobDirectory(), digest);
+    if (!isBlobDigest(digest) || !existsSync(source)) {
+      return false;
+    }
+
+    const directory = this.blobDirectory();
     mkdirSync(directory, { recursive: true });
     renameSync(source, join(directory, digest));
     flushPath(directory);
@@ -158,12 +173,21 @@ export class RunArtifactStore {
   }
 
   deleteQuarantinedBlob(digest: string): boolean {
-    const path = join(this.#dataDir, "quarantine", "blobs", digest);
-    if (!/^[a-f0-9]{64}$/.test(digest) || !existsSync(path)) return false;
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const path = join(this.quarantinedBlobDirectory(), digest);
+    if (!isBlobDigest(digest) || !existsSync(path) || !isOrdinaryFile(path)) {
+      return false;
+    }
+
     unlinkSync(path);
     return true;
+  }
+
+  private blobDirectory(): string {
+    return join(this.#dataDir, "blobs");
+  }
+
+  private quarantinedBlobDirectory(): string {
+    return join(this.#dataDir, "quarantine", "blobs");
   }
 
   private settlementDirectory(): string {
@@ -177,6 +201,15 @@ export class RunArtifactStore {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function isBlobDigest(value: string): boolean {
+  return BLOB_DIGEST_PATTERN.test(value);
+}
+
+function isOrdinaryFile(path: string): boolean {
+  const stat = lstatSync(path);
+  return stat.isFile() && !stat.isSymbolicLink();
 }
 
 function flushPath(path: string): void {
