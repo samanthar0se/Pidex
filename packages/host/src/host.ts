@@ -19,6 +19,7 @@ import {
   protocolVersion,
   type ClientHello,
   type HostStatus,
+  type RunRecord,
   type ServerMessage,
   type TerminalRun,
   type TimelineChange,
@@ -93,7 +94,7 @@ interface ViewIdentity {
 }
 
 interface RunSubmitMessage extends SubmitCommand {
-  type: "run.submit";
+  type: "run.submit" | "run.follow-up";
   requiredCapabilityBasis?: CapabilityBasisRequirement[];
   invokingView?: ViewIdentity;
 }
@@ -109,6 +110,17 @@ interface ScopeSetMessage {
   cursor?: string;
   resourceRevisions?: Record<string, number>;
   protocolVersion: string;
+}
+
+interface RunQueueActionMessage {
+  type: "run.release" | "run.cancel";
+  commandId: string;
+  runId: string;
+}
+
+interface RunPresentationContext {
+  client: WebSocket;
+  invokingView?: ViewIdentity;
 }
 
 type ScopeResetReason = Extract<
@@ -253,6 +265,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const workers = new Map<string, PiSessionWorker>();
   const workerGenerations = new Map<string, string>();
   const viewsByClient = new Map<WebSocket, Map<string, ViewIdentity>>();
+  const presentationContextByRun = new Map<string, RunPresentationContext>();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
     if (client.readyState !== client.OPEN) {
@@ -380,6 +393,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleRunSubmit(webSocket, message);
         } else if (isViewObserveMessage(message)) {
           observeView(webSocket, message);
+        } else if (isRunQueueActionMessage(message)) {
+          handleRunQueueAction(webSocket, message);
         } else if (isScopeSetMessage(message)) {
           synchronize(webSocket, message);
         }
@@ -566,7 +581,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         snapshot: {
           session,
           timelineWindow: store.timelineWindow(sessionId),
-          runs: store.acceptedRunsForSession(sessionId),
+          runs: store.runs(sessionId),
         },
       });
     }
@@ -758,22 +773,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             entry: promptEntry,
           });
         }
-        const worker =
-          workers.get(command.sessionId) ??
-          new PiSessionWorker(command.sessionId, adapters.pi);
-        workers.set(command.sessionId, worker);
-        const workerGeneration =
-          workerGenerations.get(command.sessionId) ?? randomUUID();
-        workerGenerations.set(command.sessionId, workerGeneration);
-        dispatchAcceptedRun(
-          worker,
-          command.sessionId,
-          outcome.run.runId,
-          command.prompt,
-          workerGeneration,
+        presentationContextByRun.set(outcome.run.runId, {
           client,
-          command.invokingView,
-        );
+          invokingView: command.invokingView,
+        });
+        if (outcome.run.state === "executing") {
+          dispatchRun(outcome.run);
+        }
       }
     } catch {
       sendServerMessage(client, {
@@ -785,62 +791,108 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  function dispatchAcceptedRun(
-    worker: PiSessionWorker,
-    sessionId: string,
-    runId: string,
-    prompt: string,
-    workerGeneration: string,
-    invokingClient: WebSocket,
-    invokingView: RunSubmitMessage["invokingView"],
+  function handleRunQueueAction(
+    client: WebSocket,
+    command: RunQueueActionMessage,
   ): void {
+    try {
+      adapters.storage.beforeCommit();
+      let run: RunRecord;
+      if (command.type === "run.release") {
+        run = store.releaseRun(command.runId);
+        if (!presentationContextByRun.has(run.runId)) {
+          presentationContextByRun.set(run.runId, { client });
+        }
+      } else {
+        run = store.cancelQueuedRun(command.runId, adapters.clock.now());
+        presentationContextByRun.delete(run.runId);
+      }
+
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+        runId: run.runId,
+      });
+      if (run.state === "executing") {
+        dispatchRun(run);
+      }
+    } catch (error) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error:
+          error instanceof Error ? error.message : "queue-action-failed",
+      });
+    }
+  }
+
+  function dispatchRun(run: RunRecord): void {
+    const worker =
+      workers.get(run.sessionId) ??
+      new PiSessionWorker(run.sessionId, adapters.pi);
+    workers.set(run.sessionId, worker);
+    const workerGeneration =
+      workerGenerations.get(run.sessionId) ?? randomUUID();
+    workerGenerations.set(run.sessionId, workerGeneration);
+    const presentationContext = presentationContextByRun.get(run.runId);
     void worker
       .execute(
-        prompt,
+        run.prompt,
         event => {
           const change = store.applyTimelineEvent(
-            sessionId,
-            runId,
+            run.sessionId,
+            run.runId,
             event,
             adapters.clock.now(),
           );
-          publishTimelineChange(sessionId, change);
+          publishTimelineChange(run.sessionId, change);
         },
         effect =>
           publishPresentationEffect(
-            sessionId,
+            run.sessionId,
             workerGeneration,
             effect,
-            invokingClient,
-            invokingView,
+            presentationContext,
           ),
       )
       .then(executionResult => {
-        const finalAssistant = store.finalizeAssistant(sessionId, runId);
+        const finalAssistant = store.finalizeAssistant(
+          run.sessionId,
+          run.runId,
+        );
         if (finalAssistant) {
-          publishTimelineChange(sessionId, finalAssistant);
+          publishTimelineChange(run.sessionId, finalAssistant);
         }
         const completed = store.completeRun(
-          runId,
+          run.runId,
           executionResult.text,
           executionResult.checkpoint,
           adapters.clock.now(),
         );
-        publishRunCompletion(sessionId, completed.run);
+        presentationContextByRun.delete(run.runId);
+        publishRunCompletion(run.sessionId, completed.run);
+        const nextRun = store.dispatchNext(run.sessionId);
+        if (nextRun) {
+          dispatchRun(nextRun);
+        }
       })
       .catch(error => {
-        invalidateWorkerGeneration(sessionId, workerGeneration);
+        invalidateWorkerGeneration(run.sessionId, workerGeneration);
         try {
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
           const failed = store.settleRun(
-            runId,
+            run.runId,
             "failed",
             `Pi execution failed: ${errorDetail}`,
             null,
             adapters.clock.now(),
           );
-          publishRunCompletion(sessionId, failed.run);
+          presentationContextByRun.delete(run.runId);
+          publishRunCompletion(run.sessionId, failed.run);
+          store.holdQueued(run.sessionId);
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
@@ -862,15 +914,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sessionId: string,
     workerGeneration: string,
     effect: PiPresentationEffect,
-    invokingClient: WebSocket,
-    invokingView: RunSubmitMessage["invokingView"],
+    context: RunPresentationContext | undefined,
   ): void {
     if (workerGenerations.get(sessionId) !== workerGeneration) {
       return;
     }
 
     if (effect.type === "editor-text") {
-      if (!clientSupportsPresentationEffects(invokingClient)) {
+      const invokingClient = context?.client;
+      const invokingView = context?.invokingView;
+      if (!invokingClient || !clientSupportsPresentationEffects(invokingClient)) {
         return;
       }
 
@@ -1120,13 +1173,13 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
 
   const item = value as Record<string, unknown>;
   return (
-    item.type === "run.submit" &&
+    (item.type === "run.submit" || item.type === "run.follow-up") &&
     typeof item.commandId === "string" &&
     typeof item.sessionId === "string" &&
     typeof item.prompt === "string" &&
     item.prompt.trim().length > 0 &&
     item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
-    item.requiredCapability === "run.submit" &&
+    item.requiredCapability === item.type &&
     (item.invokingView === undefined || isInvokingView(item.invokingView)) &&
     (item.requiredCapabilityBasis === undefined ||
       (Array.isArray(item.requiredCapabilityBasis) &&
@@ -1159,6 +1212,19 @@ function isViewObserveMessage(value: unknown): value is ViewObserveMessage {
     item.type === "view.observe" &&
     typeof item.sessionId === "string" &&
     isInvokingView(item)
+  );
+}
+
+function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const item = value as Record<string, unknown>;
+  return (
+    (item.type === "run.release" || item.type === "run.cancel") &&
+    typeof item.commandId === "string" &&
+    typeof item.runId === "string"
   );
 }
 

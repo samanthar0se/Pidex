@@ -11,6 +11,9 @@ export const protocolCapabilities = [
   { id: "session.rename", version: 1 },
   { id: "run.submit", version: 1 },
   { id: "presentation.effects", version: 1 },
+  { id: "run.follow-up", version: 1 },
+  { id: "run.release", version: 1 },
+  { id: "run.cancel", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -115,17 +118,18 @@ const terminalRunStateSchema = z.enum([
   "cancelled",
   "interrupted",
 ]);
+const activeRunStateSchema = z.enum(["queued", "executing", "held"]);
 
 export const runRecordSchema = z.object({
   runId: z.string(),
   sessionId: z.string(),
   sessionOrder: z.number(),
   prompt: z.string(),
-  state: z.union([z.literal("accepted"), terminalRunStateSchema]),
+  state: z.union([activeRunStateSchema, terminalRunStateSchema]),
 });
 
 export const acceptedRunSchema = runRecordSchema.extend({
-  state: z.literal("accepted"),
+  state: activeRunStateSchema,
 });
 
 export const completedRunSchema = runRecordSchema.extend({
