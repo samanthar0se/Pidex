@@ -15,9 +15,21 @@ test("the Pi contract admits versioned constrained controls and preserves option
       capabilities: [
         { id: "run.execute", version: 1 },
         { id: "checkpoint.durable", version: 1 },
-        { id: "model.select", version: 1, constraints: { values: ["pi-model"] } },
-        { id: "mode.select", version: 1, constraints: { values: ["agent"] } },
-        { id: "input.text", version: 1, constraints: { maximumBytes: 4096 } },
+        {
+          id: "model.select",
+          version: 1,
+          constraints: { values: ["pi-model"] },
+        },
+        {
+          id: "mode.select",
+          version: 1,
+          constraints: { values: ["agent"] },
+        },
+        {
+          id: "input.text",
+          version: 1,
+          constraints: { maximumBytes: 4096 },
+        },
         { id: "future.optional", version: 1 },
       ],
     }),
@@ -25,24 +37,32 @@ test("the Pi contract admits versioned constrained controls and preserves option
   };
 
   const capabilities = await PiSessionWorker.probe(pi);
-  assert.deepEqual(capabilities.find(item => item.id === "model.select")?.constraints,
-    { values: ["pi-model"] });
+  assert.deepEqual(
+    capabilities.find(item => item.id === "model.select")?.constraints,
+    { values: ["pi-model"] },
+  );
   assert.ok(capabilities.some(item => item.id === "future.optional"));
 });
 
-test("the Pi contract reports malformed and version-shifted readiness diagnostically", async () => {
-  for (const capability of [
-    { id: "run.execute", version: 2 },
-    { id: "input.text", version: 1, constraints: { maximumBytes: -1 } },
-  ]) {
-    const pi: PiAdapter = {
-      kind: "deterministic",
-      probe: async request => ({ ...request, capabilities: [capability] }),
-      execute: async () => ({ text: "no", checkpoint: "no" }),
-    };
-    await assert.rejects(PiSessionWorker.probe(pi), /worker-readiness-schema-mismatch/);
-  }
-});
+test(
+  "the Pi contract reports malformed and version-shifted readiness diagnostically",
+  async () => {
+    for (const capability of [
+      { id: "run.execute", version: 2 },
+      { id: "input.text", version: 1, constraints: { maximumBytes: -1 } },
+    ]) {
+      const pi: PiAdapter = {
+        kind: "deterministic",
+        probe: async request => ({ ...request, capabilities: [capability] }),
+        execute: async () => ({ text: "no", checkpoint: "no" }),
+      };
+      await assert.rejects(
+        PiSessionWorker.probe(pi),
+        /worker-readiness-schema-mismatch/,
+      );
+    }
+  },
+);
 
 test("a Pi worker rejects a readiness response without every required capability", async () => {
   let didExecute = false;

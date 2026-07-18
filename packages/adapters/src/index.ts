@@ -17,7 +17,12 @@ export interface PiProbeResult {
 export interface PiSdkCapability {
   id: string;
   version: number;
-  constraints?: { values?: string[]; maximumBytes?: number };
+  constraints?: PiSdkCapabilityConstraints;
+}
+
+export interface PiSdkCapabilityConstraints {
+  values?: string[];
+  maximumBytes?: number;
 }
 
 export interface PiExecuteRequest {
@@ -172,9 +177,21 @@ function deterministicPiAdapter(): PiAdapter {
       capabilities: [
         { id: "run.execute", version: 1 },
         { id: "checkpoint.durable", version: 1 },
-        { id: "model.select", version: 1, constraints: { values: ["deterministic"] } },
-        { id: "mode.select", version: 1, constraints: { values: ["agent"] } },
-        { id: "input.text", version: 1, constraints: { maximumBytes: 100_000 } },
+        {
+          id: "model.select",
+          version: 1,
+          constraints: { values: ["deterministic"] },
+        },
+        {
+          id: "mode.select",
+          version: 1,
+          constraints: { values: ["agent"] },
+        },
+        {
+          id: "input.text",
+          version: 1,
+          constraints: { maximumBytes: 100_000 },
+        },
         { id: "runtime.cancel", version: 1 },
       ],
     }),

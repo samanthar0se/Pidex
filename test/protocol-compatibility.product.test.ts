@@ -126,3 +126,74 @@ test(
     }
   },
 );
+
+test(
+  "runtime capability negotiation preserves constraints and rejects unavailable command bases",
+  async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "pidex-runtime-capability-"));
+    const host = await startHost({
+      dataDir,
+      port: 0,
+      authorization: "device",
+      adapters: adaptersFor("deterministic"),
+    });
+    try {
+      const client = socket(host.origin);
+      const offer = await nextControlMessage(client);
+      assert.equal(offer.type, "host.hello");
+      if (offer.type !== "host.hello") {
+        throw new Error("expected Host hello");
+      }
+
+      const modelCapability = {
+        id: "pi.model.select",
+        version: 1,
+        constraints: { values: ["deterministic"] },
+      };
+      assert.deepEqual(
+        offer.capabilities.find(item => item.id === modelCapability.id),
+        modelCapability,
+      );
+
+      client.send(JSON.stringify({
+        type: "client.hello",
+        expectedHostId: offer.hostId,
+        protocols: [{ major: 1, minor: 1 }],
+        capabilities: offer.capabilities.map(item => ({
+          id: item.id,
+          minVersion: item.version,
+          maxVersion: item.version,
+        })),
+      }));
+      const admitted = await nextControlMessage(client);
+      assert.equal(admitted.type, "protocol.admitted");
+      if (admitted.type !== "protocol.admitted") {
+        throw new Error("expected protocol admission");
+      }
+      assert.deepEqual(
+        admitted.capabilities.find(item => item.id === modelCapability.id),
+        modelCapability,
+      );
+      assert.equal((await nextControlMessage(client)).type, "host.snapshot");
+
+      client.send(JSON.stringify({
+        type: "run.submit",
+        commandId: "unsupported-runtime-basis",
+        sessionId: "missing-session",
+        prompt: "hello",
+        requiredCapability: "run.submit",
+        requiredCapabilityBasis: [{ id: modelCapability.id, version: 2 }],
+      }));
+      const rejected = await nextControlMessage(client);
+      assert.equal(rejected.type, "command.outcome");
+      if (rejected.type !== "command.outcome") {
+        throw new Error("expected command outcome");
+      }
+      assert.equal(rejected.error, "required-capability-basis-unavailable");
+      client.close();
+    } finally {
+      await host.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  },
+);

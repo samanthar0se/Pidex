@@ -7,6 +7,9 @@ const createSessionButton = document.querySelector("#create-session");
 const projectSelect = document.querySelector("#session-project");
 const workspaceSelect = document.querySelector("#session-workspace");
 const sessionsNav = document.querySelector("#sessions");
+const runModelSelect = document.querySelector("#run-model");
+const runModeSelect = document.querySelector("#run-mode");
+const runInput = document.querySelector("#run-input");
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -130,7 +133,9 @@ function renderStatus({ data }) {
       return;
     case "protocol.admitted":
       admitted = true;
-      admittedCapabilities = new Map(message.capabilities.map(item => [item.id, item]));
+      admittedCapabilities = new Map(
+        message.capabilities.map(item => [item.id, item]),
+      );
       renderRuntimeControls();
       return;
     case "protocol.update-required":
@@ -151,16 +156,21 @@ function renderStatus({ data }) {
 }
 
 function renderRuntimeControls() {
-  for (const [id, selector] of [
-    ["pi.model.select", "#run-model"], ["pi.mode.select", "#run-mode"],
+  for (const [capabilityId, select] of [
+    ["pi.model.select", runModelSelect],
+    ["pi.mode.select", runModeSelect],
   ]) {
-    const element = document.querySelector(selector);
-    const capability = admittedCapabilities.get(id);
-    element.hidden = !capability;
-    element.disabled = !capability;
-    if (capability) element.replaceChildren(...capability.constraints.values.map(value => new Option(value, value)));
+    const capability = admittedCapabilities.get(capabilityId);
+    select.hidden = !capability;
+    select.disabled = !capability;
+    if (capability) {
+      const options = capability.constraints.values.map(
+        value => new Option(value, value),
+      );
+      select.replaceChildren(...options);
+    }
   }
-  document.querySelector("#run-input").disabled = !admittedCapabilities.has("pi.input.text");
+  runInput.disabled = !admittedCapabilities.has("pi.input.text");
 }
 
 function sendClientHello(hostId) {

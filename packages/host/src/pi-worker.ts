@@ -28,10 +28,17 @@ const workerReadinessSchema = z.object({
   sdkGeneration: z.literal(BUNDLED_PI_SDK_GENERATION),
   capabilities: z.array(capabilitySchema),
 }).strict();
+
 const executionResultSchema = z.object({
   text: z.string(),
   checkpoint: z.string().min(1),
 });
+
+type WorkerCapability = z.infer<typeof capabilitySchema>;
+type WorkerReadinessErrorCode =
+  | "pi-sdk-unavailable"
+  | "worker-readiness-schema-mismatch"
+  | "missing-required-worker-capability";
 
 /** One immutable Session binding and one-at-a-time SDK execution boundary. */
 export class PiSessionWorker {
@@ -44,21 +51,39 @@ export class PiSessionWorker {
     this.#pi = pi;
   }
 
-  static async probe(pi: PiAdapter) {
-    if (!pi.probe || !pi.execute) throw new WorkerReadinessError("pi-sdk-unavailable");
+  static async probe(pi: PiAdapter): Promise<readonly WorkerCapability[]> {
+    if (!pi.probe || !pi.execute) {
+      throw new WorkerReadinessError("pi-sdk-unavailable");
+    }
+
     let readiness: z.infer<typeof workerReadinessSchema>;
     try {
-      readiness = workerReadinessSchema.parse(await pi.probe({
-        protocolGeneration: WORKER_PROTOCOL_GENERATION,
-        sdkGeneration: BUNDLED_PI_SDK_GENERATION,
-      }));
+      readiness = workerReadinessSchema.parse(
+        await pi.probe({
+          protocolGeneration: WORKER_PROTOCOL_GENERATION,
+          sdkGeneration: BUNDLED_PI_SDK_GENERATION,
+        }),
+      );
     } catch (cause) {
       throw new WorkerReadinessError("worker-readiness-schema-mismatch", cause);
     }
-    const ids = new Set(readiness.capabilities.map(capability => capability.id));
-    const missing = REQUIRED_WORKER_CAPABILITIES.filter(id => !ids.has(id));
-    if (missing.length) throw new WorkerReadinessError("missing-required-worker-capability", missing);
-    return Object.freeze(readiness.capabilities.map(capability => Object.freeze(capability)));
+
+    const capabilityIds = new Set(
+      readiness.capabilities.map(capability => capability.id),
+    );
+    const missingCapabilities = REQUIRED_WORKER_CAPABILITIES.filter(
+      id => !capabilityIds.has(id),
+    );
+    if (missingCapabilities.length > 0) {
+      throw new WorkerReadinessError(
+        "missing-required-worker-capability",
+        missingCapabilities,
+      );
+    }
+
+    return Object.freeze(
+      readiness.capabilities.map(capability => Object.freeze(capability)),
+    );
   }
 
   async execute(prompt: string): Promise<{ text: string; checkpoint: string }> {
@@ -70,7 +95,9 @@ export class PiSessionWorker {
     try {
       await PiSessionWorker.probe(this.#pi);
       const execute = this.#pi.execute;
-      if (!execute) throw new WorkerReadinessError("pi-sdk-unavailable");
+      if (!execute) {
+        throw new WorkerReadinessError("pi-sdk-unavailable");
+      }
 
       return executionResultSchema.parse(
         await execute({
@@ -87,10 +114,13 @@ export class PiSessionWorker {
 }
 
 export class WorkerReadinessError extends Error {
-  readonly code: string;
+  readonly code: WorkerReadinessErrorCode;
   readonly diagnostic: unknown;
-  constructor(code: string, diagnostic?: unknown) {
-    super(`${code}${diagnostic instanceof Error ? `: ${diagnostic.message}` : ""}`);
+
+  constructor(code: WorkerReadinessErrorCode, diagnostic?: unknown) {
+    const diagnosticMessage =
+      diagnostic instanceof Error ? `: ${diagnostic.message}` : "";
+    super(`${code}${diagnosticMessage}`);
     this.name = "WorkerReadinessError";
     this.code = code;
     this.diagnostic = diagnostic;
