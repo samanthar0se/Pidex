@@ -1,6 +1,10 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 
 const EXPECTED_HOST_ID_KEY = "pidex.expectedHostId";
+const CACHE_SCHEMA_VERSION = 1;
+const PROTOCOL_BASIS = "1.1";
+const MAX_CACHED_SESSION_PROJECTIONS = 10;
+const MAX_FINALIZED_PAGES = 25;
 const OFFLINE_STATUS = "Offline · cached state may be stale";
 const ACTIVE_INTERACTION_STATES = ["open", "resolving"];
 const ACTIVE_RUN_STATES = ["executing", "cancelling"];
@@ -35,10 +39,16 @@ const state = {
   current: false,
   pending: new Set(),
   apiToken: null,
+  hostId: null,
+  epoch: null,
+  cursor: null,
+  lastSuccessfulSync: null,
+  currentScopes: new Set(),
 };
 
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let socket;
+let messageChain = Promise.resolve();
 const mobileLayoutQuery = matchMedia("(max-width: 720px)");
 
 function setDrawerOpen(isOpen) {
@@ -56,8 +66,11 @@ function toggleDrawer() {
 }
 
 function send(command) {
+  const targetSessionId = command.sessionId || currentSessionId();
   if (
     !state.current ||
+    !state.currentScopes.has("host") ||
+    (targetSessionId && !state.currentScopes.has(`session:${targetSessionId}`)) ||
     !socket ||
     socket.readyState !== WebSocket.OPEN
   ) {
@@ -100,11 +113,7 @@ addEventListener("visibilitychange", () => {
 
   if (socket?.readyState === WebSocket.OPEN) {
     const selectedSessionId = currentSessionId();
-    socket.send(JSON.stringify({
-      type: "scope.set",
-      sessionIds: selectedSessionId ? [selectedSessionId] : [],
-      protocolVersion: "1.1",
-    }));
+    sendScopeSet(selectedSessionId);
   }
 });
 addEventListener("pageshow", event => {
@@ -138,7 +147,7 @@ if (pairingSecret) {
   $("#content").hidden = true;
   $("#pair-device").onclick = pairDevice;
 } else {
-  authenticateStoredDevice();
+  loadCachedWorkingSet().finally(authenticateStoredDevice);
 }
 
 async function pairDevice() {
@@ -187,8 +196,11 @@ async function authenticateStoredDevice() {
 
     state.apiToken = authentication.session;
     openControl(authentication.session);
-  } catch {
-    setCurrent(false, OFFLINE_STATUS);
+  } catch (error) {
+    setCurrent(
+      false,
+      String(error?.message).includes("revoked") ? "Revoked" : OFFLINE_STATUS,
+    );
   }
 }
 
@@ -197,11 +209,15 @@ function openControl(token) {
   socket = new WebSocket(
     `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
   );
-  socket.onmessage = event => handleMessage(JSON.parse(event.data));
+  socket.onmessage = event => {
+    // Preserve wire order while IndexedDB transactions commit. A scope cannot
+    // become current before its replacement projection is durable.
+    messageChain = messageChain.then(() => handleMessage(JSON.parse(event.data)));
+  };
   socket.onclose = () => setCurrent(false, OFFLINE_STATUS);
 }
 
-function handleMessage(message) {
+async function handleMessage(message) {
   switch (message.type) {
     case "host.hello":
       sendClientHello(message.hostId);
@@ -220,13 +236,23 @@ function handleMessage(message) {
       }
       renderSidebar();
       renderCurrentView();
+      state.cursor = message.cursor;
+      await persistWorkingSet();
       return;
     case "scope.reset":
       if (message.barrier.scope.kind === "session") {
-        resetSessionScope(message);
+        await resetSessionScope(message);
+      } else {
+        installHostReset(message);
+        await persistWorkingSet();
+        state.currentScopes.add("host");
+        setCurrent(true, "Current");
       }
       return;
     case "scope.current":
+      state.cursor = message.cursor;
+      state.currentScopes.add(scopeKey(message.scope));
+      await persistWorkingSet();
       setCurrent(true, "Current");
       return;
     case "timeline.change":
@@ -272,14 +298,19 @@ function handleHostSnapshot(message) {
     sessions: message.sessions,
     archivedSessions: message.archivedSessions,
   });
+  state.hostId = message.status.hostId;
+  state.epoch = message.status.synchronization.epoch;
+  state.cursor = message.status.synchronization.cursor;
+  state.currentScopes.add("host");
   localStorage.setItem(EXPECTED_HOST_ID_KEY, message.status.hostId);
   $("#device-state").textContent = `Device · ${message.status.hostId}`;
   setCurrent(true, "Current");
+  void persistWorkingSet();
   renderCatalogControls();
   route();
 }
 
-function resetSessionScope(message) {
+async function resetSessionScope(message) {
   const { scope } = message.barrier;
   const { snapshot } = message;
   const timeline = [
@@ -291,8 +322,20 @@ function resetSessionScope(message) {
     timeline,
     olderCursor: snapshot.timelineWindow?.olderCursor || null,
   });
+  state.cursor = message.barrier.cursor;
+  state.currentScopes.delete(`session:${scope.sessionId}`);
+  await persistWorkingSet();
+  state.currentScopes.add(`session:${scope.sessionId}`);
   setCurrent(true, "Current");
   renderCurrentView();
+}
+
+function installHostReset(message) {
+  Object.assign(state, message.snapshot);
+  state.cursor = message.barrier.cursor;
+  state.currentScopes.delete("host");
+  renderCatalogControls();
+  route();
 }
 
 function applyTimelineChange(message) {
@@ -368,7 +411,14 @@ function applyHostChange(change) {
 function setCurrent(current, label) {
   state.current = current;
   $("#connection-state").textContent = label;
+  const lastSync = $("#last-sync");
+  if (lastSync) {
+    lastSync.textContent = state.lastSuccessfulSync
+      ? `Last sync ${new Date(state.lastSuccessfulSync).toLocaleString()}`
+      : "Never synchronized on this Device";
+  }
   document.body.classList.toggle("stale", !current);
+  $("#new-session").disabled = !current || !state.currentScopes.has("host");
   renderCurrentView();
 }
 
@@ -437,11 +487,7 @@ function route() {
   if (selectedSessionId && socket?.readyState === WebSocket.OPEN) {
     state.current = false;
     $("#connection-state").textContent = "Reconciling Session";
-    socket.send(JSON.stringify({
-      type: "scope.set",
-      sessionIds: [selectedSessionId],
-      protocolVersion: "1.1",
-    }));
+    sendScopeSet(selectedSessionId);
   }
   renderCurrentView();
 }
@@ -611,7 +657,7 @@ function renderTimeline(scope) {
 
 function wireComposer(session, executingRun) {
   const input = $("#run-input");
-  input.disabled = !state.current;
+  input.disabled = !targetScopesCurrent(session.sessionId);
   $("#composer-state").textContent = state.current
     ? sessionCue(session)
     : $("#connection-state").textContent;
@@ -743,6 +789,7 @@ function renderInteractions(interactions) {
     const control = createInteractionControl(interaction);
     const respondButton = document.createElement("button");
     respondButton.textContent = "Respond";
+    respondButton.disabled = !targetScopesCurrent(interaction.sessionId);
     respondButton.onclick = () => {
       send({
         type: "interaction.resolve",
@@ -756,6 +803,7 @@ function renderInteractions(interactions) {
 
     const dismissButton = document.createElement("button");
     dismissButton.textContent = "Dismiss";
+    dismissButton.disabled = !targetScopesCurrent(interaction.sessionId);
     dismissButton.onclick = () => send({
       type: "interaction.resolve",
       interactionId: interaction.interactionId,
@@ -820,7 +868,7 @@ function createTimelineEntry(entry) {
   metadata.className = "entry-meta";
   metadata.textContent = entry.finalized
     ? entry.kind
-    : `${entry.kind} · streaming`;
+    : `${entry.kind} · last observed · incomplete`;
 
   const text = document.createElement("div");
   text.textContent = entry.text;
@@ -842,11 +890,14 @@ async function loadOlder(sessionId, scope) {
   const page = await response.json();
   scope.timeline = [...page.entries, ...scope.timeline];
   scope.olderCursor = page.olderCursor;
+  await persistFinalizedPage(sessionId, encodedCursor, page);
+  await persistWorkingSet();
   renderCurrentView();
 }
 
 function can(capabilityId) {
-  return state.current &&
+  const sessionId = currentSessionId();
+  return targetScopesCurrent(sessionId) &&
     state.capabilities.has(capabilityId) &&
     !state.pending.size;
 }
@@ -908,6 +959,202 @@ function bytesToBase64Url(bytes) {
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replace(/=+$/, "");
+}
+
+function targetScopesCurrent(sessionId) {
+  return state.current && state.currentScopes.has("host") &&
+    (!sessionId || state.currentScopes.has(`session:${sessionId}`));
+}
+
+function sendScopeSet(sessionId) {
+  const session = [...state.sessions, ...state.archivedSessions]
+    .find(item => item.sessionId === sessionId);
+  const resourceRevisions = session ? {
+    [session.sessionId]: session.metadataRevision,
+    [`timeline:${session.sessionId}`]: session.timelineRevision,
+  } : {};
+  socket.send(JSON.stringify({
+    type: "scope.set",
+    sessionIds: sessionId ? [sessionId] : [],
+    cursor: state.cursor || undefined,
+    resourceRevisions,
+    protocolVersion: PROTOCOL_BASIS,
+  }));
+}
+
+function scopeKey(scope) {
+  return scope.kind === "host" ? "host" : `session:${scope.sessionId}`;
+}
+
+function cacheDatabaseName(hostId) {
+  return `pidex-cache-${encodeURIComponent(hostId)}`;
+}
+
+function openCache(hostId) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(cacheDatabaseName(hostId), CACHE_SCHEMA_VERSION);
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      for (const name of [
+        "metadata",
+        "discovery",
+        "session-projections",
+        "finalized-pages",
+        "immutable-blobs",
+      ]) {
+        if (!database.objectStoreNames.contains(name)) {
+          database.createObjectStore(name);
+        }
+      }
+    };
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+function requestValue(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function transactionDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+function cacheBasis(scope, resourceRevisions = {}) {
+  return {
+    hostId: state.hostId,
+    epoch: state.epoch,
+    cursor: state.cursor,
+    protocolBasis: PROTOCOL_BASIS,
+    cacheSchemaBasis: CACHE_SCHEMA_VERSION,
+    scope,
+    resourceRevisions,
+    lastSuccessfulSync: state.lastSuccessfulSync,
+  };
+}
+
+async function persistWorkingSet() {
+  if (!state.hostId || !state.cursor) {
+    return;
+  }
+  state.lastSuccessfulSync = new Date().toISOString();
+  const database = await openCache(state.hostId);
+  const transaction = database.transaction(
+    ["metadata", "discovery", "session-projections"],
+    "readwrite",
+  );
+  transaction.objectStore("metadata").put(cacheBasis("host"), "basis");
+  transaction.objectStore("discovery").put({
+    ...cacheBasis("host", Object.fromEntries(
+      [...state.sessions, ...state.archivedSessions].map(session => [
+        session.sessionId,
+        session.metadataRevision,
+      ]),
+    )),
+    projects: state.projects,
+    workspaces: state.workspaces,
+    sessions: state.sessions,
+    archivedSessions: state.archivedSessions,
+  }, "catalog");
+  const projections = transaction.objectStore("session-projections");
+  for (const [sessionId, projection] of [...state.scopes].slice(-MAX_CACHED_SESSION_PROJECTIONS)) {
+    const session = [...state.sessions, ...state.archivedSessions]
+      .find(item => item.sessionId === sessionId);
+    projections.put({
+      ...cacheBasis(`session:${sessionId}`, {
+        metadata: session?.metadataRevision,
+        timeline: session?.timelineRevision,
+      }),
+      projection,
+      lastViewed: new Date().toISOString(),
+    }, sessionId);
+  }
+  await transactionDone(transaction);
+  database.close();
+  setCurrent(state.current, state.current ? "Current" : $("#connection-state").textContent);
+}
+
+async function persistFinalizedPage(sessionId, pageCursor, page) {
+  if (!state.hostId || page.entries.some(entry => !entry.finalized)) {
+    return;
+  }
+  const database = await openCache(state.hostId);
+  const transaction = database.transaction("finalized-pages", "readwrite");
+  const store = transaction.objectStore("finalized-pages");
+  store.put({
+    ...cacheBasis(`session:${sessionId}`, { timeline: page.timelineRevision }),
+    page,
+    fetchedAt: new Date().toISOString(),
+  }, `${sessionId}:${pageCursor}`);
+  const keys = await requestValue(store.getAllKeys());
+  for (const key of keys.slice(0, Math.max(0, keys.length - MAX_FINALIZED_PAGES))) {
+    store.delete(key);
+  }
+  await transactionDone(transaction);
+  database.close();
+}
+
+// Immutable HTTP bodies enter this store only after application-level identity
+// verification; authenticated responses are never delegated to an HTTP cache.
+async function persistVerifiedImmutableBlob(identity, body, verifiedMetadata) {
+  if (!state.hostId || verifiedMetadata.hostId !== state.hostId) return;
+  const database = await openCache(state.hostId);
+  const transaction = database.transaction("immutable-blobs", "readwrite");
+  transaction.objectStore("immutable-blobs").put({
+    ...cacheBasis(verifiedMetadata.scope, verifiedMetadata.resourceRevisions),
+    identity,
+    body,
+  }, identity);
+  await transactionDone(transaction);
+  database.close();
+}
+
+async function loadCachedWorkingSet() {
+  const hostId = localStorage.getItem(EXPECTED_HOST_ID_KEY);
+  if (!hostId) return;
+  try {
+    const database = await openCache(hostId);
+    const transaction = database.transaction(
+      ["metadata", "discovery", "session-projections"],
+      "readonly",
+    );
+    const [basis, discovery, projections] = await Promise.all([
+      requestValue(transaction.objectStore("metadata").get("basis")),
+      requestValue(transaction.objectStore("discovery").get("catalog")),
+      requestValue(transaction.objectStore("session-projections").getAll()),
+    ]);
+    await transactionDone(transaction);
+    database.close();
+    if (!basis || !discovery || basis.hostId !== hostId ||
+        basis.cacheSchemaBasis !== CACHE_SCHEMA_VERSION ||
+        basis.protocolBasis !== PROTOCOL_BASIS) return;
+    Object.assign(state, {
+      hostId,
+      epoch: basis.epoch,
+      cursor: basis.cursor,
+      lastSuccessfulSync: basis.lastSuccessfulSync,
+      projects: discovery.projects,
+      workspaces: discovery.workspaces,
+      sessions: discovery.sessions,
+      archivedSessions: discovery.archivedSessions,
+    });
+    state.scopes = new Map(projections.map(item => [
+      item.projection.session?.sessionId || item.scope.slice(8),
+      item.projection,
+    ]));
+    renderCatalogControls();
+    route();
+    setCurrent(false, OFFLINE_STATUS);
+  } catch {
+    // Browser eviction and incompatible disposable cache generations are safe.
+  }
 }
 
 function deviceStore(mode) {

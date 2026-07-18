@@ -419,6 +419,7 @@
         <nav class="sessions" id="sessions" aria-label="Sessions"></nav>
         <div class="host-card">
           <strong id="connection-state">Connecting</strong><br>
+          <span id="last-sync">Never synchronized on this Device</span><br>
           <span id="device-state">Device authentication</span><br>
           <button
             id="settings"
@@ -433,6 +434,11 @@
         <section id="pairing" hidden class="view">
           <h1>Pair this Device</h1>
           <p>This Device gains complete Pidex and Host-user authority.</p>
+          <p class="danger">
+            Cached data can be incomplete and may contain sensitive prompts,
+            paths, source, model output, and tool data. Pidex uses your browser
+            profile and Device lock; it adds no separate content-unlock secret.
+          </p>
           <button id="pair-device">Pair Device</button>
         </section>
         <section id="content" class="view">
