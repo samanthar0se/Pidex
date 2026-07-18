@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Install and autostart the canonical Host
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `_pidex._tcp.local` advertises only on Windows Private-classified interfaces and includes only canonical location, friendly label, discovery protocol version, and Host fingerprint.
 - [ ] QR, canonical hostname, and manual IP/bootstrap fallbacks converge product use on the canonical HTTPS origin.
