@@ -556,8 +556,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
     const status = store.status(RELEASE_ID, warnings);
+    const allSessions = [
+      ...projection.sessions,
+      ...projection.archivedSessions,
+    ];
     const sessionsById = new Map(
-      [...projection.sessions, ...projection.archivedSessions].map(session => [session.sessionId, session]),
+      allSessions.map(session => [session.sessionId, session]),
     );
     const basis = request.cursor ? store.cursorBasis(request.cursor) : undefined;
     const protocolCompatible = request.protocolVersion === protocolVersion;
@@ -604,7 +608,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           scope: { kind: "host" },
           cursor: status.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
-            [...projection.sessions, ...projection.archivedSessions].map(session => [
+            allSessions.map(session => [
               session.sessionId,
               session.metadataRevision,
             ]),
@@ -827,11 +831,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         outcome: "accepted",
       });
 
-      const sessionJob = sessionJobs.get(command.sessionId);
-      sessionJob?.close();
-      sessionJobs.delete(command.sessionId);
-      workers.delete(command.sessionId);
-      workerGenerations.delete(command.sessionId);
+      closeSessionWorker(command.sessionId);
 
       const changeSet: ServerMessage = {
         type: "host.change-set",
@@ -853,26 +853,67 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  function handleSessionAvailability(client: WebSocket, command: SessionAvailabilityMessage): void {
+  function handleSessionAvailability(
+    client: WebSocket,
+    command: SessionAvailabilityMessage,
+  ): void {
     const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) return;
+    if (!deviceId) {
+      return;
+    }
+
     try {
       adapters.storage.beforeCommit();
-      const result = store.changeSessionAvailability(deviceId, command,
-        command.type === "session.archive" ? "archived" : "available", adapters.clock.now());
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId,
-        outcome: result.kind === "accepted" || result.kind === "replayed" && !result.error ? "accepted" : "rejected",
-        ...(result.error ? { error: result.error } : {}) });
-      if (result.kind === "accepted" && result.session) {
+      const availability = command.type === "session.archive"
+        ? "archived"
+        : "available";
+      const result = store.changeSessionAvailability(
+        deviceId,
+        command,
+        availability,
+        adapters.clock.now(),
+      );
+      const error = "error" in result ? result.error : undefined;
+      const accepted = result.kind === "accepted" ||
+        (result.kind === "replayed" && !error);
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: accepted ? "accepted" : "rejected",
+        ...(error ? { error } : {}),
+      });
+
+      if (result.kind === "accepted") {
         if (command.type === "session.archive") {
-          sessionJobs.get(command.sessionId)?.close();
-          sessionJobs.delete(command.sessionId); workers.delete(command.sessionId); workerGenerations.delete(command.sessionId);
+          closeSessionWorker(command.sessionId);
         }
-        const changeSet: ServerMessage = { type: "host.change-set", cursor: result.cursor,
-          changes: [{ type: command.type === "session.archive" ? "session.archived" : "session.restored", session: result.session }] };
-        for (const socket of admittedClients) sendServerMessage(socket, changeSet);
+        const changeType = command.type === "session.archive"
+          ? "session.archived"
+          : "session.restored";
+        const changeSet: ServerMessage = {
+          type: "host.change-set",
+          cursor: result.cursor,
+          changes: [{ type: changeType, session: result.session }],
+        };
+        for (const socket of admittedClients) {
+          sendServerMessage(socket, changeSet);
+        }
       }
-    } catch { sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "commit-failed" }); }
+    } catch {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "commit-failed",
+      });
+    }
+  }
+
+  function closeSessionWorker(sessionId: string): void {
+    sessionJobs.get(sessionId)?.close();
+    sessionJobs.delete(sessionId);
+    workers.delete(sessionId);
+    workerGenerations.delete(sessionId);
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
@@ -1905,12 +1946,21 @@ function isSessionSleepMessage(value: unknown): value is SessionSleepMessage {
   );
 }
 
-function isSessionAvailabilityMessage(value: unknown): value is SessionAvailabilityMessage {
-  if (!value || typeof value !== "object") return false;
+function isSessionAvailabilityMessage(
+  value: unknown,
+): value is SessionAvailabilityMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return (item.type === "session.archive" || item.type === "session.restore") &&
-    typeof item.commandId === "string" && typeof item.sessionId === "string" &&
-    Number.isSafeInteger(item.observedMetadataRevision) && Number(item.observedMetadataRevision) > 0;
+  return (
+    (item.type === "session.archive" || item.type === "session.restore") &&
+    typeof item.commandId === "string" &&
+    typeof item.sessionId === "string" &&
+    Number.isSafeInteger(item.observedMetadataRevision) &&
+    Number(item.observedMetadataRevision) > 0
+  );
 }
 
 function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {

@@ -84,9 +84,13 @@ submitRunButton.addEventListener("click", () => sendRun("run.submit"));
 followUpButton.addEventListener("click", () => sendRun("run.follow-up"));
 stopRunButton.addEventListener("click", sendStop);
 archiveSessionButton.addEventListener("click", () => {
-  const id = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
-  const session = projection.sessions.find(item => item.sessionId === id);
-  if (session) controlSocket.send(JSON.stringify({ type: "session.archive", commandId: crypto.randomUUID(), sessionId: id, observedMetadataRevision: session.metadataRevision }));
+  const selectedSessionId = currentSessionId();
+  const session = projection.sessions.find(
+    item => item.sessionId === selectedSessionId,
+  );
+  if (session) {
+    sendSessionAvailability("session.archive", session);
+  }
 });
 
 function sendStop() {
@@ -107,7 +111,7 @@ function sendStop() {
 }
 
 function sendRun(type) {
-  const sessionId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
+  const sessionId = currentSessionId();
   if (!sessionId || !runInput.value.trim()) {
     return;
   }
@@ -391,20 +395,29 @@ function showControlUnavailable(readiness) {
 
 function applyHostChanges(changes) {
   for (const change of changes) {
-    if (change.type === "session.created") {
-      projection.sessions.push(change.session);
-    } else if (change.type === "session.renamed") {
-      projection.sessions = projection.sessions.map(session =>
-        session.sessionId === change.session.sessionId
-          ? change.session
-          : session,
-      );
-    } else if (change.type === "session.archived") {
-      projection.sessions = projection.sessions.filter(item => item.sessionId !== change.session.sessionId);
-      projection.archivedSessions.push(change.session);
-    } else if (change.type === "session.restored") {
-      projection.archivedSessions = projection.archivedSessions.filter(item => item.sessionId !== change.session.sessionId);
-      projection.sessions.push(change.session);
+    switch (change.type) {
+      case "session.created":
+        projection.sessions.push(change.session);
+        break;
+      case "session.renamed":
+        projection.sessions = projection.sessions.map(session =>
+          session.sessionId === change.session.sessionId
+            ? change.session
+            : session,
+        );
+        break;
+      case "session.archived":
+        projection.sessions = projection.sessions.filter(
+          item => item.sessionId !== change.session.sessionId,
+        );
+        projection.archivedSessions.push(change.session);
+        break;
+      case "session.restored":
+        projection.archivedSessions = projection.archivedSessions.filter(
+          item => item.sessionId !== change.session.sessionId,
+        );
+        projection.sessions.push(change.session);
+        break;
     }
   }
   renderSessions();
@@ -442,9 +455,7 @@ function renderHostSnapshot(message) {
   );
   workspaceSelect.replaceChildren(new Option("No Workspace", ""));
   renderSessions();
-  const selectedSessionId = location.pathname.match(
-    /^\/sessions\/([^/]+)$/,
-  )?.[1];
+  const selectedSessionId = currentSessionId();
   if (selectedSessionId) {
     controlSocket.send(JSON.stringify({
       type: "scope.set",
@@ -561,14 +572,12 @@ function sendInteractionResolution(interaction, control, dismiss) {
 
 function renderSessions() {
   archivedView.hidden = location.pathname !== "/archived";
-  archivedList.replaceChildren(...projection.archivedSessions.map(session => {
-    const button = document.createElement("button");
-    button.textContent = `Restore ${session.name}`;
-    button.addEventListener("click", () => controlSocket.send(JSON.stringify({ type: "session.restore", commandId: crypto.randomUUID(), sessionId: session.sessionId, observedMetadataRevision: session.metadataRevision })));
-    return button;
-  }));
-  const selectedId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
-  archiveSessionButton.hidden = !selectedId || !admittedCapabilities.has("session.archive");
+  archivedList.replaceChildren(
+    ...projection.archivedSessions.map(createRestoreSessionButton),
+  );
+  const selectedSessionId = currentSessionId();
+  archiveSessionButton.hidden =
+    !selectedSessionId || !admittedCapabilities.has("session.archive");
   const groups = new Map();
   for (const session of projection.sessions) {
     const groupName = sessionGroupName(session);
@@ -583,6 +592,28 @@ function renderSessions() {
     return [heading, ...sessions.map(createSessionLink)];
   });
   sessionsNav.replaceChildren(...sessionGroups);
+}
+
+function createRestoreSessionButton(session) {
+  const button = document.createElement("button");
+  button.textContent = `Restore ${session.name}`;
+  button.addEventListener("click", () => {
+    sendSessionAvailability("session.restore", session);
+  });
+  return button;
+}
+
+function sendSessionAvailability(type, session) {
+  controlSocket.send(JSON.stringify({
+    type,
+    commandId: crypto.randomUUID(),
+    sessionId: session.sessionId,
+    observedMetadataRevision: session.metadataRevision,
+  }));
+}
+
+function currentSessionId() {
+  return location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
 }
 
 function sessionGroupName(session) {
