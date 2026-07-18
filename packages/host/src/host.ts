@@ -18,6 +18,7 @@ import {
   protocolVersion,
   type ClientHello,
   type HostStatus,
+  type RunRecord,
   type ServerMessage,
   type TimelineChange,
 } from "../../protocol/src/status.js";
@@ -536,7 +537,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           protocolBasis: protocolVersion,
           capabilities: ["session.rename"],
         },
-        snapshot: { session, timeline: store.timeline(sessionId), runs: store.runs(sessionId) },
+        snapshot: {
+          session,
+          timeline: store.timeline(sessionId),
+          runs: store.runs(sessionId),
+        },
       });
     }
   }
@@ -720,7 +725,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             entry: promptEntry,
           });
         }
-        if (outcome.run.state === "executing") dispatchRun(outcome.run);
+        if (outcome.run.state === "executing") {
+          dispatchRun(outcome.run);
+        }
       }
     } catch {
       sendServerMessage(client, {
@@ -732,48 +739,64 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  function handleRunQueueAction(client: WebSocket, command: RunQueueActionMessage): void {
+  function handleRunQueueAction(
+    client: WebSocket,
+    command: RunQueueActionMessage,
+  ): void {
     try {
       adapters.storage.beforeCommit();
-      const run = command.type === "run.release"
-        ? store.releaseRun(command.runId)
-        : store.cancelQueuedRun(command.runId, adapters.clock.now());
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted", runId: run.runId });
-      if (run.state === "executing") dispatchRun(run);
+      let run: RunRecord;
+      if (command.type === "run.release") {
+        run = store.releaseRun(command.runId);
+      } else {
+        run = store.cancelQueuedRun(command.runId, adapters.clock.now());
+      }
+
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+        runId: run.runId,
+      });
+      if (run.state === "executing") {
+        dispatchRun(run);
+      }
     } catch (error) {
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: error instanceof Error ? error.message : "queue-action-failed" });
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error:
+          error instanceof Error ? error.message : "queue-action-failed",
+      });
     }
   }
 
-  function dispatchRun(run: import("../../protocol/src/status.js").RunRecord): void {
-    const worker = workers.get(run.sessionId) ?? new PiSessionWorker(run.sessionId, adapters.pi);
+  function dispatchRun(run: RunRecord): void {
+    const worker =
+      workers.get(run.sessionId) ??
+      new PiSessionWorker(run.sessionId, adapters.pi);
     workers.set(run.sessionId, worker);
-    dispatchAcceptedRun(worker, run.sessionId, run.runId, run.prompt);
-  }
-
-  function dispatchAcceptedRun(
-    worker: PiSessionWorker,
-    sessionId: string,
-    runId: string,
-    prompt: string,
-  ): void {
     void worker
-      .execute(prompt, event => {
+      .execute(run.prompt, event => {
         const change = store.applyTimelineEvent(
-          sessionId,
-          runId,
+          run.sessionId,
+          run.runId,
           event,
           adapters.clock.now(),
         );
-        publishTimelineChange(sessionId, change);
+        publishTimelineChange(run.sessionId, change);
       })
       .then(executionResult => {
-        const finalAssistant = store.finalizeAssistant(sessionId, runId);
+        const finalAssistant = store.finalizeAssistant(
+          run.sessionId,
+          run.runId,
+        );
         if (finalAssistant) {
-          publishTimelineChange(sessionId, finalAssistant);
+          publishTimelineChange(run.sessionId, finalAssistant);
         }
         const completed = store.completeRun(
-          runId,
+          run.runId,
           executionResult.text,
           executionResult.checkpoint,
           adapters.clock.now(),
@@ -785,15 +808,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         for (const socket of admittedClients) {
           sendServerMessage(socket, message);
         }
-        const next = store.dispatchNext(sessionId);
-        if (next) dispatchRun(next);
+        const nextRun = store.dispatchNext(run.sessionId);
+        if (nextRun) {
+          dispatchRun(nextRun);
+        }
       })
       .catch(error => {
         try {
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
           const failed = store.settleRun(
-            runId,
+            run.runId,
             "failed",
             `Pi execution failed: ${errorDetail}`,
             null,
@@ -802,7 +827,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           for (const socket of admittedClients) {
             sendServerMessage(socket, { type: "run.completed", ...failed });
           }
-          store.holdQueued(sessionId);
+          store.holdQueued(run.sessionId);
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
@@ -987,10 +1012,16 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
 }
 
 function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return (item.type === "run.release" || item.type === "run.cancel") &&
-    typeof item.commandId === "string" && typeof item.runId === "string";
+  return (
+    (item.type === "run.release" || item.type === "run.cancel") &&
+    typeof item.commandId === "string" &&
+    typeof item.runId === "string"
+  );
 }
 
 function isCapabilityBasisRequirement(

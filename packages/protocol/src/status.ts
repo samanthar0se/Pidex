@@ -117,20 +117,18 @@ const terminalRunStateSchema = z.enum([
   "cancelled",
   "interrupted",
 ]);
+const activeRunStateSchema = z.enum(["queued", "executing", "held"]);
 
 export const runRecordSchema = z.object({
   runId: z.string(),
   sessionId: z.string(),
   sessionOrder: z.number(),
   prompt: z.string(),
-  state: z.union([
-    z.enum(["queued", "executing", "held"]),
-    terminalRunStateSchema,
-  ]),
+  state: z.union([activeRunStateSchema, terminalRunStateSchema]),
 });
 
 export const acceptedRunSchema = runRecordSchema.extend({
-  state: z.enum(["queued", "executing", "held"]),
+  state: activeRunStateSchema,
 });
 
 export const completedRunSchema = runRecordSchema.extend({

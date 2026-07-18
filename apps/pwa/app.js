@@ -72,10 +72,16 @@ followUpButton.addEventListener("click", () => sendRun("run.follow-up"));
 
 function sendRun(type) {
   const sessionId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
-  if (!sessionId || !runInput.value.trim()) return;
+  if (!sessionId || !runInput.value.trim()) {
+    return;
+  }
+
   controlSocket.send(JSON.stringify({
-    type, commandId: crypto.randomUUID(), sessionId,
-    prompt: runInput.value, requiredCapability: type,
+    type,
+    commandId: crypto.randomUUID(),
+    sessionId,
+    prompt: runInput.value,
+    requiredCapability: type,
   }));
   runInput.value = "";
 }
@@ -188,9 +194,11 @@ function renderRuntimeControls() {
     }
   }
   runInput.disabled = !admittedCapabilities.has("pi.input.text");
-  const onSession = /^\/sessions\/[^/]+$/.test(location.pathname);
-  submitRunButton.disabled = !onSession || !admittedCapabilities.has("run.submit");
-  followUpButton.disabled = !onSession || !admittedCapabilities.has("run.follow-up");
+  const isSessionRoute = /^\/sessions\/[^/]+$/.test(location.pathname);
+  submitRunButton.disabled =
+    !isSessionRoute || !admittedCapabilities.has("run.submit");
+  followUpButton.disabled =
+    !isSessionRoute || !admittedCapabilities.has("run.follow-up");
 }
 
 function sendClientHello(hostId) {
