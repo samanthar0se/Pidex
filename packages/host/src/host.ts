@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
@@ -8,6 +8,7 @@ import {
   adaptersFor,
   executePidexFirewallOperation,
   type HostAdapters,
+  type PiPresentationEffect,
   type WindowsPlatformAdapter,
 } from "../../adapters/src/index.js";
 import {
@@ -49,6 +50,7 @@ const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
+const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
@@ -85,9 +87,20 @@ interface CapabilityBasisRequirement {
   version: number;
 }
 
+interface ViewIdentity {
+  viewId: string;
+  draftRevision: number;
+}
+
 interface RunSubmitMessage extends SubmitCommand {
   type: "run.submit";
   requiredCapabilityBasis?: CapabilityBasisRequirement[];
+  invokingView?: ViewIdentity;
+}
+
+interface ViewObserveMessage extends ViewIdentity {
+  type: "view.observe";
+  sessionId: string;
 }
 
 interface ScopeSetMessage {
@@ -238,6 +251,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
   const workers = new Map<string, PiSessionWorker>();
+  const workerGenerations = new Map<string, string>();
+  const viewsByClient = new Map<WebSocket, Map<string, ViewIdentity>>();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
     if (client.readyState !== client.OPEN) {
@@ -347,6 +362,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       admittedCapabilityBasisByClient.delete(webSocket);
       scopedSessionIdsByClient.delete(webSocket);
       deliveries.delete(webSocket);
+      viewsByClient.delete(webSocket);
     });
     webSocket.on("message", bytes => {
       try {
@@ -362,6 +378,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionRename(webSocket, message);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
+        } else if (isViewObserveMessage(message)) {
+          observeView(webSocket, message);
         } else if (isScopeSetMessage(message)) {
           synchronize(webSocket, message);
         }
@@ -706,6 +724,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     try {
+      if (command.invokingView) {
+        observeView(client, {
+          type: "view.observe",
+          sessionId: command.sessionId,
+          ...command.invokingView,
+        });
+      }
       adapters.storage.beforeCommit();
       const result = store.submitRun(deviceId, command, adapters.clock.now());
       if (result.kind === "command-id-conflict") {
@@ -737,11 +762,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           workers.get(command.sessionId) ??
           new PiSessionWorker(command.sessionId, adapters.pi);
         workers.set(command.sessionId, worker);
+        const workerGeneration =
+          workerGenerations.get(command.sessionId) ?? randomUUID();
+        workerGenerations.set(command.sessionId, workerGeneration);
         dispatchAcceptedRun(
           worker,
           command.sessionId,
           outcome.run.runId,
           command.prompt,
+          workerGeneration,
+          client,
+          command.invokingView,
         );
       }
     } catch {
@@ -759,17 +790,31 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sessionId: string,
     runId: string,
     prompt: string,
+    workerGeneration: string,
+    invokingClient: WebSocket,
+    invokingView: RunSubmitMessage["invokingView"],
   ): void {
     void worker
-      .execute(prompt, event => {
-        const change = store.applyTimelineEvent(
-          sessionId,
-          runId,
-          event,
-          adapters.clock.now(),
-        );
-        publishTimelineChange(sessionId, change);
-      })
+      .execute(
+        prompt,
+        event => {
+          const change = store.applyTimelineEvent(
+            sessionId,
+            runId,
+            event,
+            adapters.clock.now(),
+          );
+          publishTimelineChange(sessionId, change);
+        },
+        effect =>
+          publishPresentationEffect(
+            sessionId,
+            workerGeneration,
+            effect,
+            invokingClient,
+            invokingView,
+          ),
+      )
       .then(executionResult => {
         const finalAssistant = store.finalizeAssistant(sessionId, runId);
         if (finalAssistant) {
@@ -784,6 +829,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         publishRunCompletion(sessionId, completed.run);
       })
       .catch(error => {
+        invalidateWorkerGeneration(sessionId, workerGeneration);
         try {
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
@@ -810,6 +856,104 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     for (const socket of admittedClients) {
       sendServerMessage(socket, message);
     }
+  }
+
+  function publishPresentationEffect(
+    sessionId: string,
+    workerGeneration: string,
+    effect: PiPresentationEffect,
+    invokingClient: WebSocket,
+    invokingView: RunSubmitMessage["invokingView"],
+  ): void {
+    if (workerGenerations.get(sessionId) !== workerGeneration) {
+      return;
+    }
+
+    if (effect.type === "editor-text") {
+      if (!clientSupportsPresentationEffects(invokingClient)) {
+        return;
+      }
+
+      const current = viewsByClient.get(invokingClient)?.get(sessionId);
+      const matches = invokingView !== undefined &&
+        current !== undefined &&
+        current.viewId === invokingView.viewId &&
+        current.draftRevision === invokingView.draftRevision;
+      sendServerMessage(invokingClient, {
+        type: "presentation.effect",
+        sessionId,
+        workerGeneration,
+        effect: {
+          ...effect,
+          disposition: matches ? "inject" : "suggest",
+          viewId: invokingView?.viewId,
+          draftRevision: invokingView?.draftRevision,
+        },
+      });
+      return;
+    }
+
+    for (const socket of admittedClients) {
+      if (clientObservesPresentation(socket, sessionId)) {
+        sendServerMessage(socket, {
+          type: "presentation.effect",
+          sessionId,
+          workerGeneration,
+          effect,
+        });
+      }
+    }
+  }
+
+  function invalidateWorkerGeneration(
+    sessionId: string,
+    workerGeneration: string,
+  ): void {
+    if (workerGenerations.get(sessionId) !== workerGeneration) {
+      return;
+    }
+
+    workerGenerations.delete(sessionId);
+    workers.delete(sessionId);
+    for (const socket of admittedClients) {
+      if (clientObservesPresentation(socket, sessionId)) {
+        sendServerMessage(socket, {
+          type: "presentation.reset",
+          sessionId,
+          workerGeneration,
+        });
+      }
+    }
+  }
+
+  function clientObservesPresentation(
+    client: WebSocket,
+    sessionId: string,
+  ): boolean {
+    return (
+      scopedSessionIdsByClient.get(client)?.has(sessionId) === true &&
+      clientSupportsPresentationEffects(client)
+    );
+  }
+
+  function clientSupportsPresentationEffects(client: WebSocket): boolean {
+    return (
+      admittedCapabilityBasisByClient
+        .get(client)
+        ?.has(PRESENTATION_EFFECTS_CAPABILITY) === true
+    );
+  }
+
+  function observeView(client: WebSocket, message: ViewObserveMessage): void {
+    let views = viewsByClient.get(client);
+    if (!views) {
+      views = new Map();
+      viewsByClient.set(client, views);
+    }
+    views.set(message.sessionId, {
+      viewId: message.viewId,
+      draftRevision: message.draftRevision,
+    });
   }
 
   function publishTimelineChange(
@@ -983,9 +1127,38 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
     item.prompt.trim().length > 0 &&
     item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
     item.requiredCapability === "run.submit" &&
+    (item.invokingView === undefined || isInvokingView(item.invokingView)) &&
     (item.requiredCapabilityBasis === undefined ||
       (Array.isArray(item.requiredCapabilityBasis) &&
         item.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
+  );
+}
+
+function isInvokingView(value: unknown): value is ViewIdentity {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.viewId === "string" &&
+    item.viewId.length > 0 &&
+    item.viewId.length <= 200 &&
+    Number.isSafeInteger(item.draftRevision) &&
+    Number(item.draftRevision) >= 0
+  );
+}
+
+function isViewObserveMessage(value: unknown): value is ViewObserveMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const item = value as Record<string, unknown>;
+  return (
+    item.type === "view.observe" &&
+    typeof item.sessionId === "string" &&
+    isInvokingView(item)
   );
 }
 
