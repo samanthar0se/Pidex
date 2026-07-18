@@ -126,6 +126,17 @@ const CREATE_AUTHORITY_SCHEMA = `
     created_at INTEGER NOT NULL,
     UNIQUE(session_id, worker_generation, correlation_id)
   );
+  CREATE TABLE IF NOT EXISTS steering (
+    command_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(run_id),
+    worker_generation TEXT NOT NULL,
+    text TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('accepted','applied','unapplied')),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(device_id, command_id)
+  );
 `;
 
 export interface SubmitCommand {
@@ -134,6 +145,19 @@ export interface SubmitCommand {
   prompt: string;
   requiredCapability: "run.submit" | "run.follow-up";
 }
+
+export interface SteerCommand {
+  commandId: string;
+  sessionId: string;
+  runId: string;
+  workerGeneration: string;
+  observedTimelineRevision: number;
+  text: string;
+}
+
+export type SteerResult =
+  | { kind: "accepted" | "replayed"; entry: TimelineEntry; cursor: string }
+  | { kind: "rejected"; error: "stale-execution"; cursor: string };
 
 const submitOutcomeSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -671,6 +695,80 @@ export class AuthorityStore {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  /** Atomically records steering before the Host attempts worker delivery. */
+  acceptSteering(
+    deviceId: string,
+    command: SteerCommand,
+    currentWorkerGeneration: string | undefined,
+    now: number,
+  ): SteerResult {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const prior = this.#db.prepare(
+        "SELECT entry_id AS entryId FROM steering WHERE device_id = ? AND command_id = ?",
+      ).get(deviceId, command.commandId) as { entryId?: string } | undefined;
+      if (prior?.entryId) {
+        const entry = timelineEntrySchema.parse(this.#db.prepare(
+          `SELECT ${TIMELINE_ENTRY_PROJECTION} FROM timeline_entries WHERE entry_id = ?`,
+        ).get(prior.entryId));
+        this.#db.exec("COMMIT");
+        return { kind: "replayed", entry, cursor: this.status("").synchronization.cursor };
+      }
+      const run = this.#db.prepare(
+        `SELECT ${RUN_RECORD_PROJECTION} FROM runs WHERE run_id = ? AND session_id = ?`,
+      ).get(command.runId, command.sessionId);
+      const session = this.#db.prepare(
+        "SELECT timeline_revision AS timelineRevision FROM sessions WHERE session_id = ?",
+      ).get(command.sessionId) as { timelineRevision?: number } | undefined;
+      const cursor = this.status("").synchronization.cursor;
+      if (!run || runRecordSchema.parse(run).state !== "executing" ||
+          currentWorkerGeneration !== command.workerGeneration ||
+          session?.timelineRevision !== command.observedTimelineRevision) {
+        this.#db.exec("COMMIT");
+        return { kind: "rejected", error: "stale-execution", cursor };
+      }
+      const entryId = `entry_${randomUUID()}`;
+      this.#db.prepare(
+        `INSERT INTO timeline_entries
+         (entry_id, session_id, run_id, entry_order, kind, text, created_at)
+         VALUES (?, ?, ?, ?, 'steering', ?, ?)`,
+      ).run(entryId, command.sessionId, command.runId,
+        this.nextTimelineOrder(command.sessionId), command.text, now);
+      this.#db.prepare(
+        `INSERT INTO steering
+         (command_id, device_id, run_id, worker_generation, text, entry_id, state, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
+      ).run(command.commandId, deviceId, command.runId,
+        command.workerGeneration, command.text, entryId, now);
+      this.#db.prepare(
+        "UPDATE sessions SET timeline_revision = timeline_revision + 1 WHERE session_id = ?",
+      ).run(command.sessionId);
+      this.#db.prepare(
+        "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
+      ).run(now);
+      const entry = timelineEntrySchema.parse(this.#db.prepare(
+        `SELECT ${TIMELINE_ENTRY_PROJECTION} FROM timeline_entries WHERE entry_id = ?`,
+      ).get(entryId));
+      this.#db.exec("COMMIT");
+      return { kind: "accepted", entry, cursor: this.status("").synchronization.cursor };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  markSteering(commandId: string, deviceId: string, applied: boolean): void {
+    this.#db.prepare(
+      "UPDATE steering SET state = ? WHERE command_id = ? AND device_id = ? AND state = 'accepted'",
+    ).run(applied ? "applied" : "unapplied", commandId, deviceId);
+  }
+
+  markRunSteeringUnapplied(runId: string): void {
+    this.#db.prepare(
+      "UPDATE steering SET state = 'unapplied' WHERE run_id = ? AND state = 'accepted'",
+    ).run(runId);
   }
 
   completeRun(

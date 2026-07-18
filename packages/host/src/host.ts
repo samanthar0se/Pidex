@@ -43,6 +43,7 @@ import {
   type RenameOutcome,
   type SubmitCommand,
   type SubmitOutcome,
+  type SteerCommand,
 } from "./store.js";
 
 const DEFAULT_PORT = 7443;
@@ -123,6 +124,11 @@ interface RunQueueActionMessage {
   type: "run.release" | "run.cancel";
   commandId: string;
   runId: string;
+}
+
+interface RunSteerMessage extends SteerCommand {
+  type: "run.steer";
+  requiredCapability: "run.steer";
 }
 
 interface RunPresentationContext {
@@ -412,6 +418,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionRename(webSocket, message);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
+        } else if (isRunSteerMessage(message)) {
+          handleRunSteer(webSocket, message);
         } else if (isViewObserveMessage(message)) {
           observeView(webSocket, message);
         } else if (isRunQueueActionMessage(message)) {
@@ -852,6 +860,47 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
+  function handleRunSteer(client: WebSocket, command: RunSteerMessage): void {
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      const result = store.acceptSteering(
+        deviceId,
+        command,
+        workerGenerations.get(command.sessionId),
+        adapters.clock.now(),
+      );
+      if (result.kind === "rejected") {
+        sendServerMessage(client, {
+          type: "command.outcome", commandId: command.commandId,
+          outcome: "rejected", error: result.error,
+          reconciliationCursor: result.cursor, runId: command.runId,
+        });
+        return;
+      }
+      sendServerMessage(client, {
+        type: "command.outcome", commandId: command.commandId,
+        outcome: "accepted", reconciliationCursor: result.cursor,
+        runId: command.runId,
+      });
+      if (result.kind === "accepted") {
+        publishTimelineChange(command.sessionId, {
+          baseRevision: command.observedTimelineRevision,
+          revision: command.observedTimelineRevision + 1,
+          entry: result.entry,
+        });
+        const worker = workers.get(command.sessionId);
+        void worker?.steer(command.text).then(
+          () => store.markSteering(command.commandId, deviceId, true),
+          () => store.markSteering(command.commandId, deviceId, false),
+        );
+      }
+    } catch {
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId,
+        outcome: "rejected", error: "commit-failed" });
+    }
+  }
+
   function dispatchRun(run: RunRecord): void {
     const worker =
       workers.get(run.sessionId) ??
@@ -905,6 +954,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         }
       })
       .catch(error => {
+        store.markRunSteeringUnapplied(run.runId);
         invalidateWorkerGeneration(run.sessionId, workerGeneration);
         try {
           const errorDetail =
@@ -1359,6 +1409,17 @@ function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage
     typeof item.commandId === "string" &&
     typeof item.runId === "string"
   );
+}
+
+function isRunSteerMessage(value: unknown): value is RunSteerMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "run.steer" && item.requiredCapability === "run.steer" &&
+    typeof item.commandId === "string" && typeof item.sessionId === "string" &&
+    typeof item.runId === "string" && typeof item.workerGeneration === "string" &&
+    Number.isSafeInteger(item.observedTimelineRevision) &&
+    Number(item.observedTimelineRevision) > 0 && typeof item.text === "string" &&
+    item.text.trim().length > 0 && item.text.length <= MAX_RUN_PROMPT_LENGTH;
 }
 
 function isInteractionResolveMessage(

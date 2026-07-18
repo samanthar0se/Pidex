@@ -147,6 +147,15 @@ export class PiSessionWorker {
   readonly #sessionId: string;
   readonly #pi: PiAdapter;
   #running = false;
+  #steeringReceiver?: (text: string) => Promise<void>;
+  #capabilities = new Set<string>();
+
+  async steer(text: string): Promise<void> {
+    if (!this.#running || !this.#capabilities.has("runtime.steer") || !this.#steeringReceiver) {
+      throw new Error("steering-unavailable");
+    }
+    await this.#steeringReceiver(text);
+  }
 
   constructor(sessionId: string, pi: PiAdapter) {
     this.#sessionId = sessionId;
@@ -204,6 +213,7 @@ export class PiSessionWorker {
     try {
       const capabilities = await PiSessionWorker.probe(this.#pi);
       const capabilityIds = new Set(capabilities.map(item => item.id));
+      this.#capabilities = capabilityIds;
       const execute = this.#pi.execute;
       if (!execute) {
         throw new WorkerReadinessError("pi-sdk-unavailable");
@@ -236,6 +246,9 @@ export class PiSessionWorker {
             }
             return onInteraction(interactionRequestSchema.parse(request));
           },
+          registerSteeringReceiver: receiver => {
+            this.#steeringReceiver = receiver;
+          },
         }),
       );
       if (!this.#pi.flushCheckpoint) {
@@ -250,6 +263,8 @@ export class PiSessionWorker {
       }
       return executionResult;
     } finally {
+      this.#steeringReceiver = undefined;
+      this.#capabilities.clear();
       this.#running = false;
     }
   }

@@ -38,6 +38,8 @@ export interface PiExecuteRequest {
   onInteraction?: (
     request: PiInteractionRequest,
   ) => Promise<PiInteractionResult>;
+  /** The runtime registers the receiver belonging to this exact execution. */
+  registerSteeringReceiver?: (receiver: (text: string) => Promise<void>) => void;
 }
 
 export type PiPresentationEffect =
@@ -242,6 +244,7 @@ function deterministicPiAdapter(): PiAdapter {
           constraints: { maximumBytes: 100_000 },
         },
         { id: "runtime.cancel", version: 1 },
+        { id: "runtime.steer", version: 1 },
         { id: "presentation.notification", version: 1 },
         { id: "presentation.status", version: 1 },
         { id: "presentation.widget", version: 1 },

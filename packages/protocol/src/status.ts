@@ -12,6 +12,7 @@ export const protocolCapabilities = [
   { id: "run.submit", version: 1 },
   { id: "presentation.effects", version: 1 },
   { id: "run.follow-up", version: 1 },
+  { id: "run.steer", version: 1 },
   { id: "run.release", version: 1 },
   { id: "run.cancel", version: 1 },
 ] as const;
@@ -153,6 +154,7 @@ export const timelineEntrySchema = z.object({
     "outcome",
     "lifecycle",
     "interaction",
+    "steering",
   ]),
   text: z.string(),
   blobId: z.string().nullable().optional(),
