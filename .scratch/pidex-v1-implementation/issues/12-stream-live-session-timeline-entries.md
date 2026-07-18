@@ -4,7 +4,7 @@
 
 **Blocked by:** 11 — Settle every Run outcome durably
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Timeline entries have stable identities, order keys, optional Run association, monotonic revisions, and schema-defined content rather than Pi SDK objects.
 - [ ] Prompts, model/assistant output, tool activity, Run boundaries, outcomes, and user-visible lifecycle/recovery facts share one ordered product projection.
