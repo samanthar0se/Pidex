@@ -5,6 +5,8 @@ import {
   PROMOTION_GATES,
   ReleasePromotion,
   SOAK_CAPACITY_TIERS,
+  type DailyDriverResult,
+  type SoakResult,
 } from "../packages/host/src/release-promotion.js";
 
 const trace = {
@@ -14,38 +16,59 @@ const trace = {
   artifacts: ["trace.json#sha256:trace"],
 };
 
-function passingPromotion(): ReleasePromotion {
-  const promotion = new ReleasePromotion("sha256:release");
-  for (const tier of SOAK_CAPACITY_TIERS) {
-    promotion.recordSoak({
-      ...trace,
-      tier,
-      durationHours: 72,
-      invariantViolations: 0,
-      daemonCrashes: 0,
-      stuckAcceptedWork: 0,
-      convergenceFailures: 0,
-      unboundedQueueGrowth: false,
-      resourceLimitFailures: 0,
-      equivalentQuiescence: true,
-      memoryGrowthPercent: 10,
-      handleSamples: [100, 102, 101],
-      diagnosticBytes: 1024,
-    });
-  }
-  promotion.recordDailyDriver({
+type SoakTier = (typeof SOAK_CAPACITY_TIERS)[number];
+
+function passingSoak(tier: SoakTier): SoakResult {
+  return {
+    ...trace,
+    tier,
+    durationHours: 72,
+    invariantViolations: 0,
+    daemonCrashes: 0,
+    stuckAcceptedWork: 0,
+    convergenceFailures: 0,
+    unboundedQueueGrowth: false,
+    resourceLimitFailures: 0,
+    equivalentQuiescence: true,
+    memoryGrowthPercent: 10,
+    handleSamples: [100, 102, 101],
+    diagnosticBytes: 1024,
+  };
+}
+
+function dailyDriverOperations(
+  operationCount = 2,
+  settledStopCount = operationCount,
+): DailyDriverResult["operations"] {
+  return Object.fromEntries(
+    DAILY_DRIVER_OPERATIONS.map(operation => [
+      operation,
+      {
+        accepted: operationCount,
+        settled: operation === "stop" ? settledStopCount : operationCount,
+        unique: operationCount,
+      },
+    ]),
+  );
+}
+
+function passingDailyDriver(): DailyDriverResult {
+  return {
     ...trace,
     durationDays: 7,
     desktopUsed: true,
     mobileUsed: true,
     otherPiUiCoreActions: 0,
-    operations: Object.fromEntries(
-      DAILY_DRIVER_OPERATIONS.map(operation => [
-        operation,
-        { accepted: 2, settled: 2, unique: 2 },
-      ]),
-    ),
-  });
+    operations: dailyDriverOperations(),
+  };
+}
+
+function passingPromotion(): ReleasePromotion {
+  const promotion = new ReleasePromotion("sha256:release");
+  for (const tier of SOAK_CAPACITY_TIERS) {
+    promotion.recordSoak(passingSoak(tier));
+  }
+  promotion.recordDailyDriver(passingDailyDriver());
   for (const gate of PROMOTION_GATES) {
     promotion.recordGate({ ...trace, gate, passed: true });
   }
@@ -95,36 +118,38 @@ test("hard failures, defects, invalid waivers, and stale impacted evidence block
 test("soak and daily-driver evidence fails closed on resource and operation loss", () => {
   const promotion = passingPromotion();
   promotion.recordSoak({
-    ...trace,
-    tier: "8-gib",
+    ...passingSoak("8-gib"),
     durationHours: 71,
     invariantViolations: 1,
-    daemonCrashes: 0,
-    stuckAcceptedWork: 0,
-    convergenceFailures: 0,
-    unboundedQueueGrowth: false,
-    resourceLimitFailures: 0,
-    equivalentQuiescence: true,
     memoryGrowthPercent: 11,
     handleSamples: [1, 2, 3],
     diagnosticBytes: 1,
   });
   promotion.recordDailyDriver({
-    ...trace,
-    durationDays: 7,
-    desktopUsed: true,
-    mobileUsed: true,
-    otherPiUiCoreActions: 0,
-    operations: Object.fromEntries(
-      DAILY_DRIVER_OPERATIONS.map(operation => [
-        operation,
-        { accepted: 1, settled: operation === "stop" ? 0 : 1, unique: 1 },
-      ]),
-    ),
+    ...passingDailyDriver(),
+    operations: dailyDriverOperations(1, 0),
   });
   const evidence = promotion.evaluate();
   assert.equal(evidence.passed, false);
   assert.ok(evidence.failures.includes("soak:8-gib:duration<72h"));
   assert.ok(evidence.failures.includes("soak:8-gib:handles-monotonic"));
   assert.ok(evidence.failures.includes("daily-driver:stop:lost-or-outcome-less"));
+});
+
+test("successful reruns cannot erase failed evidence for the same build", () => {
+  const promotion = passingPromotion();
+
+  promotion.recordSoak({ ...passingSoak("8-gib"), durationHours: 71 });
+  promotion.recordDailyDriver({ ...passingDailyDriver(), durationDays: 6 });
+  promotion.recordGate({ ...trace, gate: "pi-contracts", passed: false });
+
+  promotion.recordSoak(passingSoak("8-gib"));
+  promotion.recordDailyDriver(passingDailyDriver());
+  promotion.recordGate({ ...trace, gate: "pi-contracts", passed: true });
+
+  const evidence = promotion.evaluate();
+  assert.equal(evidence.passed, false);
+  assert.ok(evidence.failures.includes("soak:8-gib:duration<72h"));
+  assert.ok(evidence.failures.includes("daily-driver:duration<7d"));
+  assert.ok(evidence.failures.includes("gate:pi-contracts:failed"));
 });
