@@ -4,7 +4,7 @@
 
 **Blocked by:** 34 — Migrate versioned data and Pi artifacts safely; 35 — Protect accepted work under storage pressure
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Low-priority incremental scrubbing covers SQLite, immutable blobs, Pi checkpoint evidence, data generations, recovery objects/manifests, and backup catalog with monthly online retained-byte coverage.
 - [ ] A missing/corrupt immutable object repairs automatically only from independently verified provenance and cryptographic byte identity.
