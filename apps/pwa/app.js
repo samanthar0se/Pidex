@@ -13,7 +13,7 @@ const runInput = document.querySelector("#run-input");
 const submitRunButton = document.querySelector("#submit-run");
 const followUpButton = document.querySelector("#follow-up");
 const interactionArea = document.querySelector("#interaction");
-const openInteractions = new Map();
+const activeInteractions = new Map();
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -376,20 +376,34 @@ function renderHostSnapshot(message) {
 }
 
 function renderInteraction(interaction) {
-  if (!["open", "resolving"].includes(interaction.state)) {
-    openInteractions.delete(interaction.interactionId);
+  const isActive = interaction.state === "open" ||
+    interaction.state === "resolving";
+  if (isActive) {
+    activeInteractions.set(interaction.interactionId, interaction);
   } else {
-    openInteractions.set(interaction.interactionId, interaction);
+    activeInteractions.delete(interaction.interactionId);
   }
 
-  const ordered = [...openInteractions.values()].sort((a, b) => {
-    if (a.deadlineAt !== null && b.deadlineAt !== null) return a.deadlineAt - b.deadlineAt || a.createdAt - b.createdAt;
-    if (a.deadlineAt !== null) return -1;
-    if (b.deadlineAt !== null) return 1;
-    return a.createdAt - b.createdAt;
-  });
-  interactionArea.replaceChildren(...ordered.map(createInteractionPanel));
-  interactionArea.hidden = ordered.length === 0;
+  const orderedInteractions = [...activeInteractions.values()]
+    .sort(compareInteractionPriority);
+  interactionArea.replaceChildren(
+    ...orderedInteractions.map(createInteractionPanel),
+  );
+  interactionArea.hidden = orderedInteractions.length === 0;
+}
+
+function compareInteractionPriority(left, right) {
+  if (left.deadlineAt !== null && right.deadlineAt !== null) {
+    return left.deadlineAt - right.deadlineAt ||
+      left.createdAt - right.createdAt;
+  }
+  if (left.deadlineAt !== null) {
+    return -1;
+  }
+  if (right.deadlineAt !== null) {
+    return 1;
+  }
+  return left.createdAt - right.createdAt;
 }
 
 function createInteractionPanel(interaction) {

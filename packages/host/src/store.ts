@@ -186,8 +186,22 @@ const INTERACTION_PROJECTION = `
 
 type NewInteraction = Omit<
   Interaction,
-  "interactionId" | "state" | "revision" | "terminalCause" | "respondedAt" |
-    "respondingDeviceLabel" | "applicationProven"
+  | "interactionId"
+  | "state"
+  | "revision"
+  | "terminalCause"
+  | "respondedAt"
+  | "respondingDeviceLabel"
+  | "applicationProven"
+>;
+
+type ActiveInteractionState = Extract<
+  Interaction["state"],
+  "open" | "resolving"
+>;
+type TerminalInteractionState = Exclude<
+  Interaction["state"],
+  ActiveInteractionState
 >;
 
 interface CreatedInteraction {
@@ -1017,45 +1031,50 @@ export class AuthorityStore {
     }
   }
 
-  transitionInteraction(
+  reserveInteraction(
     interactionId: string,
-    from: Interaction["state"],
-    to: Interaction["state"],
+    revision: number,
+    deviceLabel: string,
   ): Interaction | undefined {
     const changed = this.#db
       .prepare(
-        `UPDATE interactions SET state = ?, revision = revision + 1
-         WHERE interaction_id = ? AND state = ?`,
+        `UPDATE interactions
+         SET state = 'resolving', revision = revision + 1,
+             responding_device_label = ?
+         WHERE interaction_id = ? AND state = 'open' AND revision = ?`,
       )
-      .run(to, interactionId, from);
-    if (changed.changes !== 1) {
-      return undefined;
-    }
-    return this.loadInteraction(interactionId);
-  }
-
-  reserveInteraction(interactionId: string, revision: number, deviceLabel: string): Interaction | undefined {
-    const changed = this.#db.prepare(
-      `UPDATE interactions SET state = 'resolving', revision = revision + 1,
-       responding_device_label = ? WHERE interaction_id = ? AND state = 'open' AND revision = ?`,
-    ).run(deviceLabel, interactionId, revision);
-    return changed.changes === 1 ? this.loadInteraction(interactionId) : undefined;
+      .run(deviceLabel, interactionId, revision);
+    return changed.changes === 1
+      ? this.loadInteraction(interactionId)
+      : undefined;
   }
 
   settleInteraction(
     interactionId: string,
-    from: "open" | "resolving",
-    state: "responded" | "dismissed" | "expired" | "withdrawn",
+    from: ActiveInteractionState,
+    state: TerminalInteractionState,
     cause: string,
     at: number,
     applicationProven: boolean,
   ): Interaction | undefined {
-    const changed = this.#db.prepare(
-      `UPDATE interactions SET state = ?, revision = revision + 1,
-       terminal_cause = ?, responded_at = ?, application_proven = ?
-       WHERE interaction_id = ? AND state = ?`,
-    ).run(state, cause, at, applicationProven ? 1 : 0, interactionId, from);
-    return changed.changes === 1 ? this.loadInteraction(interactionId) : undefined;
+    const changed = this.#db
+      .prepare(
+        `UPDATE interactions
+         SET state = ?, revision = revision + 1,
+             terminal_cause = ?, responded_at = ?, application_proven = ?
+         WHERE interaction_id = ? AND state = ?`,
+      )
+      .run(
+        state,
+        cause,
+        at,
+        applicationProven ? 1 : 0,
+        interactionId,
+        from,
+      );
+    return changed.changes === 1
+      ? this.loadInteraction(interactionId)
+      : undefined;
   }
 
   loadInteraction(interactionId: string): Interaction {
@@ -1714,6 +1733,8 @@ function interactionFromRow(row: Record<string, unknown>): Interaction {
     ...row,
     payload: JSON.parse(String(row.payloadJson)),
     provenance: row.provenance ?? undefined,
-    applicationProven: row.applicationProven == null ? null : Boolean(row.applicationProven),
+    applicationProven: row.applicationProven == null
+      ? null
+      : Boolean(row.applicationProven),
   });
 }

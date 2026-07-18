@@ -58,6 +58,11 @@ const timelineEventSchema = z.discriminatedUnion("type", [
     })
     .strict(),
 ]);
+const interactionTimeoutSchema = z.number()
+  .int()
+  .nonnegative()
+  .max(2_147_483_647)
+  .optional();
 const interactionRequestSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -66,7 +71,7 @@ const interactionRequestSchema = z.discriminatedUnion("kind", [
       message: z.string().max(4000),
       options: z.array(z.string().max(1000)).min(1).max(100),
       provenance: z.string().max(500).optional(),
-      timeoutMs: z.number().int().nonnegative().max(2_147_483_647).optional(),
+      timeoutMs: interactionTimeoutSchema,
     })
     .strict(),
   z
@@ -76,7 +81,7 @@ const interactionRequestSchema = z.discriminatedUnion("kind", [
       message: z.string().max(4000),
       defaultValue: z.boolean().optional(),
       provenance: z.string().max(500).optional(),
-      timeoutMs: z.number().int().nonnegative().max(2_147_483_647).optional(),
+      timeoutMs: interactionTimeoutSchema,
     })
     .strict(),
   z
@@ -86,7 +91,7 @@ const interactionRequestSchema = z.discriminatedUnion("kind", [
       message: z.string().max(4000),
       defaultValue: z.string().max(100_000).optional(),
       provenance: z.string().max(500).optional(),
-      timeoutMs: z.number().int().nonnegative().max(2_147_483_647).optional(),
+      timeoutMs: interactionTimeoutSchema,
     })
     .strict(),
 ]);

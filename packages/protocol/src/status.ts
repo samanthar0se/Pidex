@@ -195,7 +195,14 @@ export const interactionSchema = z.object({
     })
     .strict(),
   provenance: z.string().optional(),
-  state: z.enum(["open", "resolving", "responded", "dismissed", "expired", "withdrawn"]),
+  state: z.enum([
+    "open",
+    "resolving",
+    "responded",
+    "dismissed",
+    "expired",
+    "withdrawn",
+  ]),
   revision: z.number().int().positive(),
   createdAt: z.number(),
   deadlineAt: z.number().nullable(),
