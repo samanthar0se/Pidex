@@ -318,6 +318,10 @@
         color: var(--danger);
       }
 
+      .draft-warning {
+        color: var(--danger);
+      }
+
       [hidden] {
         display: none !important;
       }
@@ -523,7 +527,7 @@
             placeholder="Ask Pi…"
           ></textarea>
           <div class="composer-row">
-            <span class="sync-label" id="composer-state"></span>
+            <span class="sync-label" id="composer-state" aria-live="polite"></span>
             <button id="release-run" hidden>Release held</button>
             <button id="cancel-run" hidden>Cancel queued</button>
             <button id="stop-run" hidden>Stop</button>

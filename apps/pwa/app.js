@@ -1,7 +1,10 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 
 const EXPECTED_HOST_ID_KEY = "pidex.expectedHostId";
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
+const DEVICE_SCHEMA_VERSION = 2;
+const DEVICE_DATABASE = "pidex-device";
+const DRAFT_STORE = "drafts";
 const PROTOCOL_BASIS = "1.1";
 const MAX_CACHED_SESSION_PROJECTIONS = 10;
 const MAX_FINALIZED_PAGES = 25;
@@ -58,6 +61,8 @@ const state = {
   cursor: null,
   lastSuccessfulSync: null,
   currentScopes: new Set(),
+  drafts: new Map(),
+  draftFailures: new Map(),
 };
 
 const pairingSecret = new URL(location.href).searchParams.get("pair");
@@ -159,6 +164,7 @@ if (pairingSecret) {
   $("#content").hidden = true;
   $("#pair-device").onclick = pairDevice;
 } else {
+  registerServiceWorker();
   loadCachedWorkingSet().finally(authenticateStoredDevice);
 }
 
@@ -674,10 +680,20 @@ function renderTimeline(scope) {
 
 function wireComposer(session, executingRun) {
   const input = $("#run-input");
-  input.disabled = !targetScopesCurrent(session.sessionId);
-  $("#composer-state").textContent = state.current
-    ? sessionCue(session)
-    : $("#connection-state").textContent;
+  const draftKey = deviceDraftKey(session.sessionId);
+  input.value = state.drafts.get(draftKey) || "";
+  input.oninput = () => {
+    state.drafts.set(draftKey, input.value);
+    persistDraft(draftKey, input.value).then(() => {
+      state.draftFailures.delete(draftKey);
+      renderComposerState(session, draftKey);
+    }).catch(() => {
+      state.draftFailures.set(draftKey, "Draft is only in memory · save failed");
+      renderComposerState(session, draftKey);
+    });
+  };
+  loadDraft(draftKey, input, session);
+  renderComposerState(session, draftKey);
 
   const commandType = executingRun ? "run.follow-up" : "run.submit";
   const submitButton = $("#submit-run");
@@ -696,8 +712,48 @@ function wireComposer(session, executingRun) {
     });
     if (sent) {
       input.value = "";
+      state.drafts.set(draftKey, "");
+      persistDraft(draftKey, "").catch(() => {
+        state.draftFailures.set(draftKey, "Sent, but saved draft cleanup failed");
+        renderComposerState(session, draftKey);
+      });
     }
   };
+}
+
+function renderComposerState(session, draftKey) {
+  const label = $("#composer-state");
+  if (!label) return;
+  const failure = state.draftFailures.get(draftKey);
+  label.classList.toggle("draft-warning", Boolean(failure));
+  label.textContent = failure || (state.current
+    ? sessionCue(session)
+    : `${$("#connection-state").textContent} · draft local and unsent`);
+}
+
+function deviceDraftKey(sessionId) {
+  return `${state.hostId || localStorage.getItem(EXPECTED_HOST_ID_KEY) || "unpaired"}:${sessionId}`;
+}
+
+async function loadDraft(key, input, session) {
+  if (state.drafts.has(key)) return;
+  try {
+    const value = await withDeviceStore(DRAFT_STORE, "readonly", store =>
+      requestValue(store.get(key))
+    );
+    if (state.drafts.has(key)) return; // Never overwrite newer in-memory text.
+    state.drafts.set(key, value?.text || "");
+    if (input.isConnected && !input.value) input.value = value?.text || "";
+  } catch {
+    state.draftFailures.set(key, "Draft storage unavailable · text remains in memory");
+    renderComposerState(session, key);
+  }
+}
+
+function persistDraft(key, text) {
+  return withDeviceStore(DRAFT_STORE, "readwrite", store =>
+    requestValue(store.put({ text, updatedAt: new Date().toISOString() }, key))
+  );
 }
 
 function wireRunControls(session, executingRun, queuedRun, heldRun) {
@@ -1266,8 +1322,19 @@ async function loadCachedWorkingSet() {
     route();
     setCurrent(false, OFFLINE_STATUS);
   } catch {
-    // Browser eviction and incompatible disposable cache generations are safe.
+    // Projection schemas are replaceable. Device identity, preferences, and
+    // drafts live in another database and are never part of this reset.
+    await resetDisposableCache(hostId).catch(() => {});
   }
+}
+
+function resetDisposableCache(hostId) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(cacheDatabaseName(hostId));
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(Error("projection reset blocked"));
+  });
 }
 
 function cacheIsCompatible(basis, discovery, hostId) {
@@ -1280,19 +1347,69 @@ function cacheIsCompatible(basis, discovery, hostId) {
   );
 }
 
-function deviceStore(mode) {
+function openDeviceDatabase() {
   return new Promise((resolve, reject) => {
-    const openRequest = indexedDB.open("pidex-device", 1);
+    const openRequest = indexedDB.open(DEVICE_DATABASE, DEVICE_SCHEMA_VERSION);
     openRequest.onupgradeneeded = () => {
-      openRequest.result.createObjectStore("identity");
+      for (const name of ["identity", DRAFT_STORE, "preferences"]) {
+        if (!openRequest.result.objectStoreNames.contains(name)) {
+          openRequest.result.createObjectStore(name);
+        }
+      }
     };
     openRequest.onerror = () => reject(openRequest.error);
-    openRequest.onsuccess = () => {
-      const transaction = openRequest.result.transaction("identity", mode);
-      resolve(transaction.objectStore("identity"));
-    };
+    openRequest.onsuccess = () => resolve(openRequest.result);
   });
 }
+
+
+async function withDeviceStore(name, mode, operation) {
+  const database = await openDeviceDatabase();
+  try {
+    const transaction = database.transaction(name, mode);
+    const result = await operation(transaction.objectStore(name));
+    await transactionDone(transaction);
+    return result;
+  } finally {
+    database.close();
+  }
+}
+
+function deviceStore(mode) {
+  return openDeviceDatabase().then(database =>
+    database.transaction("identity", mode).objectStore("identity")
+  );
+}
+
+async function persistAllDrafts() {
+  await Promise.all([...state.drafts].map(([key, text]) => persistDraft(key, text)));
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  const registration = await navigator.serviceWorker.register("/service-worker.js");
+  const offerUpdate = worker => {
+    if (!worker || !confirm("A complete Pidex update is ready. Save drafts and reload?")) return;
+    persistAllDrafts().then(() => worker.postMessage({ type: "activate-shell" }))
+      .catch(() => alert("Update refused: a Device-owned draft could not be saved."));
+  };
+  offerUpdate(registration.waiting);
+  registration.addEventListener("updatefound", () => {
+    registration.installing?.addEventListener("statechange", event => {
+      if (event.target.state === "installed" && navigator.serviceWorker.controller) {
+        offerUpdate(registration.waiting);
+      }
+    });
+  });
+  navigator.serviceWorker.addEventListener("controllerchange", () => location.reload());
+  navigator.serviceWorker.addEventListener("message", event => {
+    if (event.data?.type === "update-refused-multiple-clients") {
+      alert("Update refused: close other Pidex windows, then reload explicitly.");
+    }
+  });
+}
+
+addEventListener("pagehide", () => { void persistAllDrafts(); });
 
 async function saveDevice(value) {
   const store = await deviceStore("readwrite");
