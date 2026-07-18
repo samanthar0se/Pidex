@@ -13,6 +13,7 @@ const runInput = document.querySelector("#run-input");
 const submitRunButton = document.querySelector("#submit-run");
 const followUpButton = document.querySelector("#follow-up");
 const interactionArea = document.querySelector("#interaction");
+const openInteractions = new Map();
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 const expectedHostIdKey = "pidex.expectedHostId";
 const supportedCapabilities = [
@@ -376,10 +377,23 @@ function renderHostSnapshot(message) {
 
 function renderInteraction(interaction) {
   if (!["open", "resolving"].includes(interaction.state)) {
-    interactionArea.hidden = true;
-    interactionArea.replaceChildren();
-    return;
+    openInteractions.delete(interaction.interactionId);
+  } else {
+    openInteractions.set(interaction.interactionId, interaction);
   }
+
+  const ordered = [...openInteractions.values()].sort((a, b) => {
+    if (a.deadlineAt !== null && b.deadlineAt !== null) return a.deadlineAt - b.deadlineAt || a.createdAt - b.createdAt;
+    if (a.deadlineAt !== null) return -1;
+    if (b.deadlineAt !== null) return 1;
+    return a.createdAt - b.createdAt;
+  });
+  interactionArea.replaceChildren(...ordered.map(createInteractionPanel));
+  interactionArea.hidden = ordered.length === 0;
+}
+
+function createInteractionPanel(interaction) {
+  const panel = document.createElement("div");
 
   const message = document.createElement("p");
   // Keep extension-provided content inert rather than interpreting it as markup.
@@ -403,13 +417,13 @@ function renderInteraction(interaction) {
     dismissButton.disabled = true;
   }
 
-  interactionArea.replaceChildren(
+  panel.replaceChildren(
     message,
     control,
     respondButton,
     dismissButton,
   );
-  interactionArea.hidden = false;
+  return panel;
 }
 
 function createInteractionControl(interaction) {
