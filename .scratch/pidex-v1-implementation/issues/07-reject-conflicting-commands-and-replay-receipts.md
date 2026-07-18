@@ -4,7 +4,7 @@
 
 **Blocked by:** 06 — Create and discover scoped Sessions
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Every mutation carries a Device-scoped unique Command ID, exact target, required capability basis, and command-specific observed preconditions.
 - [ ] The Host serializes commits, accepts changes through unrelated revisions where safe, and rejects intent invalidated by a relevant race.
