@@ -107,7 +107,9 @@ export interface PiAdapter {
     childSessionId: string,
   ): Promise<string>;
   /** Copy-migrates an artifact owned by an older pinned Pi runtime. */
-  migrateArtifact?(request: PiArtifactMigrationRequest): Promise<PiArtifactMigrationResult>;
+  migrateArtifact?(
+    request: PiArtifactMigrationRequest,
+  ): Promise<PiArtifactMigrationResult>;
 }
 
 export interface PiArtifactMigrationRequest {
