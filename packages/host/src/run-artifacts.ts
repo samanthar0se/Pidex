@@ -105,11 +105,19 @@ export class RunArtifactStore {
 
   readBlob(blobId: string): Buffer | null {
     const digest = /^sha256:([a-f0-9]{64})$/.exec(blobId)?.[1];
-    if (!digest) return null;
+    if (!digest) {
+      return null;
+    }
+
     const path = join(this.#dataDir, "blobs", digest);
-    if (!existsSync(path)) return null;
+    if (!existsSync(path)) {
+      return null;
+    }
+
     const bytes = readFileSync(path);
-    if (sha256(bytes) !== digest) throw new Error("blob-verification-failed");
+    if (sha256(bytes) !== digest) {
+      throw new Error("blob-verification-failed");
+    }
     return bytes;
   }
 

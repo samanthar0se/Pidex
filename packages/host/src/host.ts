@@ -19,6 +19,7 @@ import {
   type ClientHello,
   type HostStatus,
   type ServerMessage,
+  type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
@@ -44,6 +45,9 @@ const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_RUN_PROMPT_LENGTH = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
+const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
+const BLOB_API_PATH =
+  /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
@@ -203,47 +207,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         return;
       }
 
-
       if (request.url?.startsWith("/api/")) {
-        if (!hasValidAuthorization(request.headers.authorization, options.authorization, pairing)) {
-          response.writeHead(401, { "cache-control": "no-store" }).end();
-          return;
-        }
-        const url = new URL(request.url, "https://pidex.invalid");
-        const timelineMatch = /^\/api\/sessions\/([^/]+)\/timeline$/.exec(url.pathname);
-        if (request.method === "GET" && timelineMatch) {
-          const cursor = url.searchParams.get("cursor");
-          const limit = Number(url.searchParams.get("limit") ?? DEFAULT_TIMELINE_PAGE_SIZE);
-          const page = cursor && Number.isSafeInteger(limit)
-            ? store.timelinePage(decodeURIComponent(timelineMatch[1]!), cursor, limit)
-            : null;
-          if (!page) {
-            response.writeHead(409, { "cache-control": "no-store", "content-type": "application/json" })
-              .end(JSON.stringify({ error: "invalid-or-expired-cursor" }));
-            return;
-          }
-          response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" })
-            .end(JSON.stringify(page));
-          return;
-        }
-        const blobMatch = /^\/api\/blobs\/(sha256%3A|sha256:)([a-f0-9]{64})$/.exec(url.pathname);
-        if (request.method === "GET" && blobMatch) {
-          const blobId = `sha256:${blobMatch[2]}`;
-          try {
-            const bytes = store.readReferencedBlob(blobId);
-            if (!bytes) {
-              response.writeHead(404, { "cache-control": "no-store" }).end();
-              return;
-            }
-            response.writeHead(200, { "cache-control": "no-store", "content-type": "application/octet-stream",
-              "content-length": bytes.length, "x-content-id": blobId, digest: `sha-256=${Buffer.from(blobMatch[2]!, "hex").toString("base64")}` }).end(bytes);
-          } catch {
-            response.writeHead(500, { "cache-control": "no-store", "content-type": "application/json" })
-              .end(JSON.stringify({ error: "content-verification-failed", blobId }));
-          }
-          return;
-        }
-        response.writeHead(404, { "cache-control": "no-store" }).end();
+        handleApiRequest(
+          request.url,
+          request,
+          response,
+          store,
+          options.authorization,
+          pairing,
+        );
         return;
       }
 
@@ -576,7 +548,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         snapshot: {
           session,
           timelineWindow: store.timelineWindow(sessionId),
-          runs: store.runs(sessionId),
+          runs: store.acceptedRunsForSession(sessionId),
         },
       });
     }
@@ -809,14 +781,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           executionResult.checkpoint,
           adapters.clock.now(),
         );
-        const message: ServerMessage = {
-          type: "run.completed",
-          run: completed.run,
-          timeline: store.timelineWindow(sessionId).entries,
-        };
-        for (const socket of admittedClients) {
-          sendServerMessage(socket, message);
-        }
+        publishRunCompletion(sessionId, completed.run);
       })
       .catch(error => {
         try {
@@ -829,17 +794,22 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             null,
             adapters.clock.now(),
           );
-          for (const socket of admittedClients) {
-            sendServerMessage(socket, {
-              type: "run.completed",
-              run: failed.run,
-              timeline: store.timelineWindow(sessionId).entries,
-            });
-          }
+          publishRunCompletion(sessionId, failed.run);
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
       });
+  }
+
+  function publishRunCompletion(sessionId: string, run: TerminalRun): void {
+    const message: ServerMessage = {
+      type: "run.completed",
+      run,
+      timeline: store.timelineWindow(sessionId).entries,
+    };
+    for (const socket of admittedClients) {
+      sendServerMessage(socket, message);
+    }
   }
 
   function publishTimelineChange(
@@ -1107,6 +1077,94 @@ function renameOutcomeMessage(
     error: outcome.error,
     receipt,
   };
+}
+
+function handleApiRequest(
+  path: string,
+  request: IncomingMessage,
+  response: ServerResponse,
+  store: AuthorityStore,
+  expectedAuthorization: string | undefined,
+  pairing: PairingAuthority,
+): void {
+  if (
+    !hasValidAuthorization(
+      request.headers.authorization,
+      expectedAuthorization,
+      pairing,
+    )
+  ) {
+    response.writeHead(401, { "cache-control": "no-store" }).end();
+    return;
+  }
+
+  const url = new URL(path, "https://pidex.invalid");
+  const timelineMatch = TIMELINE_API_PATH.exec(url.pathname);
+  if (request.method === "GET" && timelineMatch) {
+    const cursor = url.searchParams.get("cursor");
+    const requestedLimit = Number(
+      url.searchParams.get("limit") ?? DEFAULT_TIMELINE_PAGE_SIZE,
+    );
+    let page = null;
+    if (cursor && Number.isSafeInteger(requestedLimit)) {
+      page = store.timelinePage(
+        decodeURIComponent(timelineMatch[1]),
+        cursor,
+        requestedLimit,
+      );
+    }
+
+    if (!page) {
+      response
+        .writeHead(409, {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        })
+        .end(JSON.stringify({ error: "invalid-or-expired-cursor" }));
+      return;
+    }
+
+    response
+      .writeHead(200, {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+      })
+      .end(JSON.stringify(page));
+    return;
+  }
+
+  const blobMatch = BLOB_API_PATH.exec(url.pathname);
+  if (request.method === "GET" && blobMatch) {
+    const digest = blobMatch[1];
+    const blobId = `sha256:${digest}`;
+    try {
+      const bytes = store.readReferencedBlob(blobId);
+      if (!bytes) {
+        response.writeHead(404, { "cache-control": "no-store" }).end();
+        return;
+      }
+
+      response
+        .writeHead(200, {
+          "cache-control": "no-store",
+          "content-type": "application/octet-stream",
+          "content-length": bytes.length,
+          "x-content-id": blobId,
+          digest: `sha-256=${Buffer.from(digest, "hex").toString("base64")}`,
+        })
+        .end(bytes);
+    } catch {
+      response
+        .writeHead(500, {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        })
+        .end(JSON.stringify({ error: "content-verification-failed", blobId }));
+    }
+    return;
+  }
+
+  response.writeHead(404, { "cache-control": "no-store" }).end();
 }
 
 function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
