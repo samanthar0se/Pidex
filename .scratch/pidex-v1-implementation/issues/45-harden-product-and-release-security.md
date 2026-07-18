@@ -4,7 +4,7 @@
 
 **Blocked by:** 32 — Clean revoked Devices and manage cache storage; 40 — Reidentify verified data without trust keys; 41 — Update and roll back signed releases; 42 — Diagnose the Host and export support evidence; 44 — Prove module and future-workspace seams
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A maintained threat model states trusted Host/user/LAN assumptions, wildcard-Firewall warning behavior, equal Device authority, worker non-sandbox status, offline cache limits, and backup/recovery threats.
 - [ ] Applicable automated controls map to OWASP ASVS Level 2 and cover every authenticated/anonymous/local/privileged surface.
