@@ -103,6 +103,16 @@ export class RunArtifactStore {
     return `sha256:${digest}`;
   }
 
+  readBlob(blobId: string): Buffer | null {
+    const digest = /^sha256:([a-f0-9]{64})$/.exec(blobId)?.[1];
+    if (!digest) return null;
+    const path = join(this.#dataDir, "blobs", digest);
+    if (!existsSync(path)) return null;
+    const bytes = readFileSync(path);
+    if (sha256(bytes) !== digest) throw new Error("blob-verification-failed");
+    return bytes;
+  }
+
   private settlementDirectory(): string {
     return join(this.#dataDir, "settlements");
   }

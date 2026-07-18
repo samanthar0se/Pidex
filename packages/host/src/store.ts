@@ -23,6 +23,7 @@ import {
   type TerminalRun,
   type TimelineChange,
   type TimelineEntry,
+  type TimelineWindow,
   type WorkspaceSummary,
 } from "../../protocol/src/status.js";
 import { RunArtifactStore } from "./run-artifacts.js";
@@ -135,6 +136,7 @@ const nextRunOrderSchema = z.object({ nextOrder: z.number() });
 const acceptedRunReferenceSchema = z.object({ runId: z.string() });
 const timelineEntryReferenceSchema = z.object({ entryId: z.string() });
 const timelineOrderSchema = z.object({ value: z.number() });
+const TIMELINE_WINDOW_SIZE = 100;
 
 const TIMELINE_ENTRY_PROJECTION = `
   entry_id AS entryId, run_id AS runId,
@@ -702,6 +704,79 @@ export class AuthorityStore {
       )
       .all(sessionId);
     return timelineEntrySchema.array().parse(rows);
+  }
+
+  timelineWindow(sessionId: string): TimelineWindow {
+    const rows = this.#db.prepare(
+      `SELECT ${TIMELINE_ENTRY_PROJECTION} FROM timeline_entries
+       WHERE session_id = ? ORDER BY entry_order DESC LIMIT ?`,
+    ).all(sessionId, TIMELINE_WINDOW_SIZE).reverse();
+    const entries = timelineEntrySchema.array().parse(rows);
+    const firstOrder = entries[0]?.order;
+    return {
+      entries,
+      olderCursor: firstOrder && this.hasFinalizedBefore(sessionId, firstOrder)
+        ? this.encodeTimelineCursor(sessionId, firstOrder)
+        : null,
+    };
+  }
+
+  timelinePage(sessionId: string, cursor: string, requestedLimit: number): TimelineWindow | null {
+    const decoded = this.decodeTimelineCursor(cursor);
+    if (!decoded || decoded.sessionId !== sessionId) return null;
+    const limit = Math.max(1, Math.min(200, requestedLimit));
+    const rows = this.#db.prepare(
+      `SELECT ${TIMELINE_ENTRY_PROJECTION} FROM timeline_entries
+       WHERE session_id = ? AND finalized = 1 AND entry_order < ?
+       ORDER BY entry_order DESC LIMIT ?`,
+    ).all(sessionId, decoded.before, limit).reverse();
+    const entries = timelineEntrySchema.array().parse(rows);
+    const firstOrder = entries[0]?.order;
+    return {
+      entries,
+      olderCursor: firstOrder && this.hasFinalizedBefore(sessionId, firstOrder)
+        ? this.encodeTimelineCursor(sessionId, firstOrder)
+        : null,
+    };
+  }
+
+  runs(sessionId: string) {
+    return runRecordSchema.array().parse(this.#db.prepare(
+      `SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder,
+              prompt, state FROM runs WHERE session_id = ? AND state = 'accepted'
+       ORDER BY session_order`,
+    ).all(sessionId));
+  }
+
+  readReferencedBlob(blobId: string): Buffer | null {
+    const reference = this.#db.prepare(
+      "SELECT 1 FROM timeline_entries WHERE blob_id = ? LIMIT 1",
+    ).get(blobId);
+    if (!reference) return null;
+    return this.#runArtifacts.readBlob(blobId);
+  }
+
+  private hasFinalizedBefore(sessionId: string, before: number): boolean {
+    return Boolean(this.#db.prepare(
+      `SELECT 1 FROM timeline_entries WHERE session_id = ? AND finalized = 1
+       AND entry_order < ? LIMIT 1`,
+    ).get(sessionId, before));
+  }
+
+  private encodeTimelineCursor(sessionId: string, before: number): string {
+    const status = this.status("");
+    return Buffer.from(JSON.stringify({ hostId: status.hostId, epoch: status.synchronization.epoch,
+      sessionId, before })).toString("base64url");
+  }
+
+  private decodeTimelineCursor(cursor: string): { sessionId: string; before: number } | null {
+    try {
+      const value = JSON.parse(Buffer.from(cursor, "base64url").toString()) as Record<string, unknown>;
+      const status = this.status("");
+      if (value.hostId !== status.hostId || value.epoch !== status.synchronization.epoch ||
+          typeof value.sessionId !== "string" || !Number.isSafeInteger(value.before)) return null;
+      return { sessionId: value.sessionId, before: value.before as number };
+    } catch { return null; }
   }
 
   /** Applies one runtime fact and returns the exact revisioned projection change. */

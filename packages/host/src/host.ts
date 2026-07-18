@@ -43,6 +43,7 @@ const RELEASE_ID = "pidex@0.1.0";
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_RUN_PROMPT_LENGTH = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
+const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
@@ -199,6 +200,50 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
       if (request.method === "POST" && request.url?.startsWith("/pair/")) {
         await handlePairingRequest(request.url, request, response, pairing);
+        return;
+      }
+
+
+      if (request.url?.startsWith("/api/")) {
+        if (!hasValidAuthorization(request.headers.authorization, options.authorization, pairing)) {
+          response.writeHead(401, { "cache-control": "no-store" }).end();
+          return;
+        }
+        const url = new URL(request.url, "https://pidex.invalid");
+        const timelineMatch = /^\/api\/sessions\/([^/]+)\/timeline$/.exec(url.pathname);
+        if (request.method === "GET" && timelineMatch) {
+          const cursor = url.searchParams.get("cursor");
+          const limit = Number(url.searchParams.get("limit") ?? DEFAULT_TIMELINE_PAGE_SIZE);
+          const page = cursor && Number.isSafeInteger(limit)
+            ? store.timelinePage(decodeURIComponent(timelineMatch[1]!), cursor, limit)
+            : null;
+          if (!page) {
+            response.writeHead(409, { "cache-control": "no-store", "content-type": "application/json" })
+              .end(JSON.stringify({ error: "invalid-or-expired-cursor" }));
+            return;
+          }
+          response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" })
+            .end(JSON.stringify(page));
+          return;
+        }
+        const blobMatch = /^\/api\/blobs\/(sha256%3A|sha256:)([a-f0-9]{64})$/.exec(url.pathname);
+        if (request.method === "GET" && blobMatch) {
+          const blobId = `sha256:${blobMatch[2]}`;
+          try {
+            const bytes = store.readReferencedBlob(blobId);
+            if (!bytes) {
+              response.writeHead(404, { "cache-control": "no-store" }).end();
+              return;
+            }
+            response.writeHead(200, { "cache-control": "no-store", "content-type": "application/octet-stream",
+              "content-length": bytes.length, "x-content-id": blobId, digest: `sha-256=${Buffer.from(blobMatch[2]!, "hex").toString("base64")}` }).end(bytes);
+          } catch {
+            response.writeHead(500, { "cache-control": "no-store", "content-type": "application/json" })
+              .end(JSON.stringify({ error: "content-verification-failed", blobId }));
+          }
+          return;
+        }
+        response.writeHead(404, { "cache-control": "no-store" }).end();
         return;
       }
 
@@ -528,7 +573,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           protocolBasis: protocolVersion,
           capabilities: ["session.rename"],
         },
-        snapshot: { session, timeline: store.timeline(sessionId) },
+        snapshot: {
+          session,
+          timelineWindow: store.timelineWindow(sessionId),
+          runs: store.runs(sessionId),
+        },
       });
     }
   }
@@ -762,7 +811,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         );
         const message: ServerMessage = {
           type: "run.completed",
-          ...completed,
+          run: completed.run,
+          timeline: store.timelineWindow(sessionId).entries,
         };
         for (const socket of admittedClients) {
           sendServerMessage(socket, message);
@@ -780,7 +830,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             adapters.clock.now(),
           );
           for (const socket of admittedClients) {
-            sendServerMessage(socket, { type: "run.completed", ...failed });
+            sendServerMessage(socket, {
+              type: "run.completed",
+              run: failed.run,
+              timeline: store.timelineWindow(sessionId).entries,
+            });
           }
         } catch {
           // Host loss is reconciled as Interrupted from the accepted durable row.

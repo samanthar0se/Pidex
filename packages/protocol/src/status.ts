@@ -161,6 +161,13 @@ export type CompletedRun = z.infer<typeof completedRunSchema>;
 export type TerminalRun = z.infer<typeof terminalRunSchema>;
 export type TimelineEntry = z.infer<typeof timelineEntrySchema>;
 
+export const timelineWindowSchema = z.object({
+  entries: z.array(timelineEntrySchema),
+  /** Opaque cursor for the page immediately preceding this window. */
+  olderCursor: z.string().nullable(),
+});
+export type TimelineWindow = z.infer<typeof timelineWindowSchema>;
+
 export const timelineChangeSchema = z.object({
   baseRevision: z.number().int(),
   revision: z.number().int(),
@@ -251,6 +258,8 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
       z.object({
         session: sessionSummarySchema,
         timeline: z.array(timelineEntrySchema).optional(),
+        timelineWindow: timelineWindowSchema.optional(),
+        runs: z.array(runRecordSchema).optional(),
       }),
     ]),
   }),
