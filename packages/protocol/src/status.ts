@@ -26,11 +26,13 @@ export const projectSummarySchema = z.object({
   projectId: z.string(),
   name: z.string(),
 });
+
 export const workspaceSummarySchema = z.object({
   workspaceId: z.string(),
   projectId: z.string(),
   name: z.string(),
 });
+
 export const sessionSummarySchema = z.object({
   sessionId: z.string(),
   projectId: z.string().nullable(),
@@ -57,7 +59,12 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.change-set"),
     cursor: z.string(),
-    changes: z.array(z.object({ type: z.literal("session.created"), session: sessionSummarySchema })),
+    changes: z.array(
+      z.object({
+        type: z.literal("session.created"),
+        session: sessionSummarySchema,
+      }),
+    ),
   }),
   z.object({
     type: z.literal("command.outcome"),
@@ -72,6 +79,8 @@ export type HostSnapshot = Extract<ServerMessage, { type: "host.snapshot" }>;
 
 export function parseServerMessage(data: string): HostSnapshot {
   const message = serverMessageSchema.parse(JSON.parse(data));
-  if (message.type !== "host.snapshot") throw new Error("Expected Host snapshot");
+  if (message.type !== "host.snapshot") {
+    throw new Error("Expected Host snapshot");
+  }
   return message;
 }

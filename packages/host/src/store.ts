@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { HostStatus, ProjectSummary, SessionSummary, WorkspaceSummary } from "../../protocol/src/status.js";
 import type { HostAdapters } from "../../adapters/src/index.js";
+import {
+  projectSummarySchema,
+  sessionSummarySchema,
+  workspaceSummarySchema,
+  type HostStatus,
+  type ProjectSummary,
+  type SessionSummary,
+  type WorkspaceSummary,
+} from "../../protocol/src/status.js";
 
 const CREATE_AUTHORITY_SCHEMA = `
   PRAGMA journal_mode=WAL;
@@ -26,7 +34,10 @@ const CREATE_AUTHORITY_SCHEMA = `
     paired_at INTEGER NOT NULL,
     revoked_at INTEGER NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS projects (project_id TEXT PRIMARY KEY, name TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS projects (
+    project_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id),
@@ -67,33 +78,101 @@ export class AuthorityStore {
         .run(`host_${randomUUID()}`, randomUUID(), adapters.clock.now());
     }
     for (const project of catalog.projects ?? []) {
-      this.#db.prepare("INSERT OR IGNORE INTO projects VALUES (?, ?)").run(project.projectId, project.name);
+      this.#db
+        .prepare("INSERT OR IGNORE INTO projects VALUES (?, ?)")
+        .run(project.projectId, project.name);
     }
     for (const workspace of catalog.workspaces ?? []) {
-      this.#db.prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)").run(workspace.workspaceId, workspace.projectId, workspace.name);
+      this.#db
+        .prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)")
+        .run(workspace.workspaceId, workspace.projectId, workspace.name);
     }
   }
 
-  projection(): { projects: ProjectSummary[]; workspaces: WorkspaceSummary[]; sessions: SessionSummary[] } {
+  projection(): {
+    projects: ProjectSummary[];
+    workspaces: WorkspaceSummary[];
+    sessions: SessionSummary[];
+  } {
+    const projects = this.#db
+      .prepare(
+        "SELECT project_id AS projectId, name FROM projects ORDER BY name",
+      )
+      .all();
+    const workspaces = this.#db
+      .prepare(
+        `SELECT workspace_id AS workspaceId, project_id AS projectId, name
+         FROM workspaces ORDER BY name`,
+      )
+      .all();
+    const sessions = this.#db
+      .prepare(
+        `SELECT session_id AS sessionId, project_id AS projectId,
+                workspace_id AS workspaceId, retention, residency,
+                metadata_revision AS metadataRevision,
+                timeline_revision AS timelineRevision
+         FROM sessions ORDER BY created_at`,
+      )
+      .all();
+
     return {
-      projects: this.#db.prepare("SELECT project_id AS projectId, name FROM projects ORDER BY name").all() as ProjectSummary[],
-      workspaces: this.#db.prepare("SELECT workspace_id AS workspaceId, project_id AS projectId, name FROM workspaces ORDER BY name").all() as WorkspaceSummary[],
-      sessions: this.#db.prepare("SELECT session_id AS sessionId, project_id AS projectId, workspace_id AS workspaceId, retention, residency, metadata_revision AS metadataRevision, timeline_revision AS timelineRevision FROM sessions ORDER BY created_at").all() as SessionSummary[],
+      projects: projectSummarySchema.array().parse(projects),
+      workspaces: workspaceSummarySchema.array().parse(workspaces),
+      sessions: sessionSummarySchema.array().parse(sessions),
     };
   }
 
-  createSession(projectId: string | null, workspaceId: string | null, now: number): { session: SessionSummary; cursor: string } {
+  createSession(
+    projectId: string | null,
+    workspaceId: string | null,
+    now: number,
+  ): { session: SessionSummary; cursor: string } {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      if (projectId && !this.#db.prepare("SELECT 1 FROM projects WHERE project_id=?").get(projectId)) throw new Error("unknown-project");
-      if (workspaceId) {
-        const workspace = this.#db.prepare("SELECT project_id FROM workspaces WHERE workspace_id=?").get(workspaceId) as { project_id?: unknown } | undefined;
-        if (!workspace) throw new Error("unknown-workspace");
-        if (!projectId || workspace.project_id !== projectId) throw new Error("workspace-project-mismatch");
+      const projectExists = projectId
+        ? this.#db
+            .prepare("SELECT 1 FROM projects WHERE project_id = ?")
+            .get(projectId)
+        : true;
+      if (!projectExists) {
+        throw new Error("unknown-project");
       }
-      const session: SessionSummary = { sessionId: `session_${randomUUID()}`, projectId, workspaceId, retention: "available", residency: "sleeping", metadataRevision: 1, timelineRevision: 1 };
-      this.#db.prepare("INSERT INTO sessions VALUES (?, ?, ?, 'available', 'sleeping', 1, 1, ?)").run(session.sessionId, projectId, workspaceId, now);
-      this.#db.prepare("UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1").run(now);
+
+      if (workspaceId) {
+        const workspace = this.#db
+          .prepare(
+            "SELECT project_id FROM workspaces WHERE workspace_id = ?",
+          )
+          .get(workspaceId);
+        if (!workspace) {
+          throw new Error("unknown-workspace");
+        }
+        if (!projectId || workspace.project_id !== projectId) {
+          throw new Error("workspace-project-mismatch");
+        }
+      }
+
+      const session: SessionSummary = {
+        sessionId: `session_${randomUUID()}`,
+        projectId,
+        workspaceId,
+        retention: "available",
+        residency: "sleeping",
+        metadataRevision: 1,
+        timelineRevision: 1,
+      };
+      this.#db
+        .prepare(
+          `INSERT INTO sessions
+           VALUES (?, ?, ?, 'available', 'sleeping', 1, 1, ?)`,
+        )
+        .run(session.sessionId, projectId, workspaceId, now);
+      this.#db
+        .prepare(
+          `UPDATE host SET sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(now);
       const status = this.status("");
       this.#db.exec("COMMIT");
       return { session, cursor: status.synchronization.cursor };

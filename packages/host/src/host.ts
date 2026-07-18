@@ -13,9 +13,7 @@ import {
 import {
   protocolVersion,
   type HostStatus,
-  type ProjectSummary,
   type ServerMessage,
-  type WorkspaceSummary,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
 import {
@@ -23,7 +21,7 @@ import {
   PairingError,
   type PairingInstructions,
 } from "./pairing.js";
-import { AuthorityStore } from "./store.js";
+import { AuthorityStore, type InitialCatalog } from "./store.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
@@ -39,7 +37,13 @@ interface DeviceRevokeMessage {
   type: "device.revoke";
   deviceId: string;
 }
-interface SessionCreateMessage { type: "session.create"; commandId: string; projectId?: string | null; workspaceId?: string | null }
+
+interface SessionCreateMessage {
+  type: "session.create";
+  commandId: string;
+  projectId?: string | null;
+  workspaceId?: string | null;
+}
 
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
@@ -58,7 +62,7 @@ export interface HostOptions {
   label?: string;
   authorization?: string;
   bindAddress?: string;
-  initialCatalog?: { projects?: ProjectSummary[]; workspaces?: WorkspaceSummary[] };
+  initialCatalog?: InitialCatalog;
 }
 
 export interface StartedHost {
@@ -110,8 +114,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         return;
       }
 
-      const asset = PWA_ASSETS[request.url ?? ""] ??
-        (request.method === "GET" && request.url?.startsWith("/sessions/") ? PWA_ASSETS["/"] : undefined);
+      const asset = findPwaAsset(request);
       if (!asset) {
         response.writeHead(404).end();
         return;
@@ -159,7 +162,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         if (isRevokeMessage(message)) {
           revokeDevice(message.deviceId);
         } else if (isSessionCreateMessage(message)) {
-          createSession(webSocket, message);
+          handleSessionCreate(webSocket, message);
         }
       } catch {
         // Invalid and unknown commands have no authority or side effects.
@@ -216,15 +219,40 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  function createSession(client: WebSocket, command: SessionCreateMessage): void {
+  function handleSessionCreate(
+    client: WebSocket,
+    command: SessionCreateMessage,
+  ): void {
     try {
       adapters.storage.beforeCommit();
-      const created = store.createSession(command.projectId ?? null, command.workspaceId ?? null, adapters.clock.now());
-      client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "accepted" } satisfies ServerMessage));
-      const changeSet: ServerMessage = { type: "host.change-set", cursor: created.cursor, changes: [{ type: "session.created", session: created.session }] };
-      for (const socket of webSocketServer.clients) socket.send(JSON.stringify(changeSet));
+      const created = store.createSession(
+        command.projectId ?? null,
+        command.workspaceId ?? null,
+        adapters.clock.now(),
+      );
+      const outcome: ServerMessage = {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+      };
+      client.send(JSON.stringify(outcome));
+
+      const changeSet: ServerMessage = {
+        type: "host.change-set",
+        cursor: created.cursor,
+        changes: [{ type: "session.created", session: created.session }],
+      };
+      for (const socket of webSocketServer.clients) {
+        socket.send(JSON.stringify(changeSet));
+      }
     } catch (error) {
-      client.send(JSON.stringify({ type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: error instanceof Error ? error.message : "invalid-scope" } satisfies ServerMessage));
+      const outcome: ServerMessage = {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: error instanceof Error ? error.message : "invalid-scope",
+      };
+      client.send(JSON.stringify(outcome));
     }
   }
 
@@ -255,11 +283,40 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 }
 
 function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<SessionCreateMessage>;
-  return candidate.type === "session.create" && typeof candidate.commandId === "string" &&
-    (candidate.projectId === undefined || candidate.projectId === null || typeof candidate.projectId === "string") &&
-    (candidate.workspaceId === undefined || candidate.workspaceId === null || typeof candidate.workspaceId === "string");
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const hasValidProject =
+    !("projectId" in value) ||
+    value.projectId === undefined ||
+    value.projectId === null ||
+    typeof value.projectId === "string";
+  const hasValidWorkspace =
+    !("workspaceId" in value) ||
+    value.workspaceId === undefined ||
+    value.workspaceId === null ||
+    typeof value.workspaceId === "string";
+
+  return (
+    "type" in value &&
+    value.type === "session.create" &&
+    "commandId" in value &&
+    typeof value.commandId === "string" &&
+    hasValidProject &&
+    hasValidWorkspace
+  );
+}
+
+function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
+  const asset = PWA_ASSETS[request.url ?? ""];
+  if (asset) {
+    return asset;
+  }
+  if (request.method === "GET" && request.url?.startsWith("/sessions/")) {
+    return PWA_ASSETS["/"];
+  }
+  return undefined;
 }
 
 function isRevokeMessage(value: unknown): value is DeviceRevokeMessage {
