@@ -16,44 +16,113 @@ function socket(origin: string): WebSocket {
   });
 }
 
-test("protocol negotiation binds Host identity, admits minor extensions, and fails incompatible Clients closed", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "pidex-protocol-"));
-  const host = await startHost({ dataDir, port: 0, authorization: "device", adapters: adaptersFor("deterministic") });
-  try {
-    const compatible = socket(host.origin);
-    const offer = await nextControlMessage(compatible);
-    assert.equal(offer.type, "host.hello");
-    if (offer.type !== "host.hello") return;
-    compatible.send(JSON.stringify({
-      type: "client.hello",
-      expectedHostId: offer.hostId,
-      protocols: [{ major: 1, minor: 99 }],
-      capabilities: offer.capabilities.map(item => ({ id: item.id, minVersion: item.version })),
-      optionalFutureField: true,
-    }));
-    const admitted = await nextControlMessage(compatible);
-    assert.deepEqual(admitted.type === "protocol.admitted" && admitted.protocol, { major: 1, minor: 1 });
-    assert.equal((await nextControlMessage(compatible)).type, "host.snapshot");
+test(
+  "protocol negotiation binds Host identity, admits minor extensions, and fails closed for incompatible Clients",
+  async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "pidex-protocol-"));
+    const host = await startHost({
+      dataDir,
+      port: 0,
+      authorization: "device",
+      adapters: adaptersFor("deterministic"),
+    });
+    try {
+      const compatible = socket(host.origin);
+      const offer = await nextControlMessage(compatible);
+      assert.equal(offer.type, "host.hello");
+      if (offer.type !== "host.hello") {
+        return;
+      }
 
-    const incompatible = socket(host.origin);
-    const otherOffer = await nextControlMessage(incompatible);
-    assert.equal(otherOffer.type, "host.hello");
-    if (otherOffer.type !== "host.hello") return;
-    incompatible.send(JSON.stringify({
-      type: "client.hello", expectedHostId: "host_other",
-      protocols: [{ major: 2, minor: 0 }], capabilities: [],
-    }));
-    const required = await nextControlMessage(incompatible);
-    assert.equal(required.type, "protocol.update-required");
-    assert.equal(required.type === "protocol.update-required" && required.reason, "host-mismatch");
+      compatible.send(JSON.stringify({
+        type: "client.hello",
+        expectedHostId: offer.hostId,
+        protocols: [{ major: 1, minor: 99 }],
+        capabilities: offer.capabilities.map(item => ({
+          id: item.id,
+          minVersion: item.version,
+        })),
+        optionalFutureField: true,
+      }));
+      const admitted = await nextControlMessage(compatible);
+      assert.deepEqual(
+        admitted.type === "protocol.admitted" && admitted.protocol,
+        { major: 1, minor: 1 },
+      );
+      assert.equal(
+        (await nextControlMessage(compatible)).type,
+        "host.snapshot",
+      );
 
-    assert.deepEqual(unsupportedRequiredSemantics(
-      { requiredSemantics: ["session.created.v1", "future.required.v2"], optional: { future: true } },
-      new Set(["session.created.v1"]),
-    ), ["future.required.v2"]);
-    compatible.close(); incompatible.close();
-  } finally {
-    await host.close();
-    await rm(dataDir, { recursive: true, force: true });
-  }
-});
+      const incompatible = socket(host.origin);
+      const otherOffer = await nextControlMessage(incompatible);
+      assert.equal(otherOffer.type, "host.hello");
+      if (otherOffer.type !== "host.hello") {
+        return;
+      }
+
+      incompatible.send(JSON.stringify({
+        type: "client.hello",
+        expectedHostId: "host_other",
+        protocols: [{ major: 2, minor: 0 }],
+        capabilities: [],
+      }));
+      const required = await nextControlMessage(incompatible);
+      assert.equal(required.type, "protocol.update-required");
+      assert.equal(
+        required.type === "protocol.update-required" && required.reason,
+        "host-mismatch",
+      );
+
+      assert.deepEqual(
+        unsupportedRequiredSemantics(
+          {
+            requiredSemantics: [
+              "session.created.v1",
+              "future.required.v2",
+            ],
+            optional: { future: true },
+          },
+          new Set(["session.created.v1"]),
+        ),
+        ["future.required.v2"],
+      );
+      compatible.close();
+      incompatible.close();
+    } finally {
+      await host.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "bounded delivery requests resynchronization before disconnecting the Client",
+  async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "pidex-delivery-bound-"));
+    const host = await startHost({
+      dataDir,
+      port: 0,
+      authorization: "device",
+      adapters: adaptersFor("deterministic"),
+      maxOutboundBytes: 0,
+    });
+    try {
+      const client = socket(host.origin);
+      const closed = new Promise<number>(resolve => {
+        client.once("close", code => resolve(code));
+      });
+
+      const message = await nextControlMessage(client);
+      assert.deepEqual(message, {
+        type: "delivery.resynchronize",
+        reason: "outbound-queue-overflow",
+        lastCursor: host.status().synchronization.cursor,
+      });
+      assert.equal(await closed, 4009);
+    } finally {
+      await host.close();
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  },
+);

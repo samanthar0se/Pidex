@@ -11,19 +11,35 @@ export const protocolCapabilities = [
   { id: "session.rename", version: 1 },
 ] as const;
 
-const capabilitySchema = z.object({
+const protocolSchema = z.object({
+  major: z.number().int(),
+  minor: z.number().int(),
+});
+
+const clientCapabilitySchema = z.object({
   id: z.string(),
   minVersion: z.number().int().positive().optional(),
   maxVersion: z.number().int().positive().optional(),
   version: z.number().int().positive().optional(),
 });
 
-export const clientHelloSchema = z.object({
-  type: z.literal("client.hello"),
-  expectedHostId: z.string(),
-  protocols: z.array(z.object({ major: z.number().int(), minor: z.number().int() })),
-  capabilities: z.array(capabilitySchema),
-}).passthrough();
+const hostCapabilitySchema = z.object({
+  id: z.string(),
+  version: z.number().int().positive(),
+});
+
+const optionalEnvelopeSchema = z
+  .object({ optional: z.record(z.string(), z.unknown()).optional() })
+  .passthrough();
+
+export const clientHelloSchema = z
+  .object({
+    type: z.literal("client.hello"),
+    expectedHostId: z.string(),
+    protocols: z.array(protocolSchema),
+    capabilities: z.array(clientCapabilitySchema),
+  })
+  .passthrough();
 export type ClientHello = z.infer<typeof clientHelloSchema>;
 
 export function clientHello(expectedHostId: string): ClientHello {
@@ -107,7 +123,7 @@ export const hostChangeSchema = z.discriminatedUnion("type", [
     type: z.literal("session.renamed"),
     session: sessionSummarySchema,
   }),
-]).and(z.object({ optional: z.record(z.string(), z.unknown()).optional() }).passthrough());
+]).and(optionalEnvelopeSchema);
 
 export type HostChange = z.infer<typeof hostChangeSchema>;
 
@@ -115,14 +131,14 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.hello"),
     hostId: z.string(),
-    protocols: z.array(z.object({ major: z.number().int(), minor: z.number().int() })),
-    capabilities: z.array(z.object({ id: z.string(), version: z.number().int().positive() })),
+    protocols: z.array(protocolSchema),
+    capabilities: z.array(hostCapabilitySchema),
   }).passthrough(),
   z.object({
     type: z.literal("protocol.admitted"),
     hostId: z.string(),
-    protocol: z.object({ major: z.number().int(), minor: z.number().int() }),
-    capabilities: z.array(z.object({ id: z.string(), version: z.number().int().positive() })),
+    protocol: protocolSchema,
+    capabilities: z.array(hostCapabilitySchema),
   }).passthrough(),
   z.object({
     type: z.literal("protocol.update-required"),
@@ -182,7 +198,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     currentMetadataRevision: z.number().optional(),
     reconciliationCursor: z.string().optional(),
   }),
-]).and(z.object({ optional: z.record(z.string(), z.unknown()).optional() }).passthrough());
+]).and(optionalEnvelopeSchema);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
 export type HostSnapshot = Extract<ServerMessage, { type: "host.snapshot" }>;
@@ -200,10 +216,14 @@ export function unsupportedRequiredSemantics(
   message: unknown,
   supported: ReadonlySet<string>,
 ): string[] {
-  if (!message || typeof message !== "object") return [];
+  if (!message || typeof message !== "object") {
+    return [];
+  }
+
   const required = (message as { requiredSemantics?: unknown }).requiredSemantics;
   if (!Array.isArray(required) || !required.every(item => typeof item === "string")) {
     return required === undefined ? [] : ["malformed-required-semantics"];
   }
+
   return required.filter(item => !supported.has(item));
 }

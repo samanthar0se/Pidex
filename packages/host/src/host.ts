@@ -37,6 +37,8 @@ const DEFAULT_HOSTNAME = "localhost";
 const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
 const MAX_SESSION_NAME_LENGTH = 200;
+const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
+const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 
 interface PwaAsset {
   file: string;
@@ -76,6 +78,23 @@ type ScopeResetReason = Extract<
   ServerMessage,
   { type: "scope.reset" }
 >["reason"];
+
+type ProtocolUpdateReason = Extract<
+  ServerMessage,
+  { type: "protocol.update-required" }
+>["reason"];
+
+interface OutboundMessage {
+  payload: string;
+  bytes: number;
+  replaceKey?: string;
+}
+
+interface ClientDelivery {
+  outboundBytes: number;
+  sending: boolean;
+  queue: OutboundMessage[];
+}
 
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
@@ -163,50 +182,75 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const webSocketServer = new WebSocketServer({ noServer: true });
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
-  const maxOutboundBytes = options.maxOutboundBytes ?? 256 * 1024;
-  const deliveries = new Map<WebSocket, { bytes: number; sending: boolean; queue: Array<{ payload: string; replaceKey?: string }> }>();
+  const maxOutboundBytes =
+    options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
+  const deliveries = new Map<WebSocket, ClientDelivery>();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
-    if (client.readyState !== client.OPEN) return;
+    if (client.readyState !== client.OPEN) {
+      return;
+    }
+
     const payload = JSON.stringify(message);
-    const size = Buffer.byteLength(payload);
-    const delivery = deliveries.get(client) ?? { bytes: 0, sending: false, queue: [] };
-    deliveries.set(client, delivery);
+    const payloadBytes = Buffer.byteLength(payload);
+    let delivery = deliveries.get(client);
+    if (!delivery) {
+      delivery = { outboundBytes: 0, sending: false, queue: [] };
+      deliveries.set(client, delivery);
+    }
+
     const replaceKey = replaceableChangeKey(message);
     const replacement = replaceKey
       ? delivery.queue.find(item => item.replaceKey === replaceKey)
       : undefined;
-    const prospectiveBytes = delivery.bytes + size - (replacement ? Buffer.byteLength(replacement.payload) : 0);
+    const replacementBytes = replacement?.bytes ?? 0;
+    const prospectiveBytes =
+      delivery.outboundBytes + payloadBytes - replacementBytes;
+
     if (prospectiveBytes > maxOutboundBytes) {
-      client.send(JSON.stringify({
-        type: "delivery.resynchronize",
-        reason: "outbound-queue-overflow",
-        lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
-      } satisfies ServerMessage));
+      client.send(
+        JSON.stringify({
+          type: "delivery.resynchronize",
+          reason: "outbound-queue-overflow",
+          lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+        } satisfies ServerMessage),
+      );
       client.close(4009, "resynchronize:outbound-queue-overflow");
       return;
     }
+
     if (replacement) {
-      delivery.bytes = prospectiveBytes;
+      delivery.outboundBytes = prospectiveBytes;
       replacement.payload = payload;
+      replacement.bytes = payloadBytes;
     } else {
-      delivery.bytes += size;
-      delivery.queue.push({ payload, replaceKey });
+      delivery.outboundBytes += payloadBytes;
+      delivery.queue.push({ payload, bytes: payloadBytes, replaceKey });
     }
+
     drainDelivery(client, delivery);
   }
 
-  function drainDelivery(client: WebSocket, delivery: { bytes: number; sending: boolean; queue: Array<{ payload: string; replaceKey?: string }> }): void {
-    if (delivery.sending || client.readyState !== client.OPEN) return;
+  function drainDelivery(client: WebSocket, delivery: ClientDelivery): void {
+    if (delivery.sending || client.readyState !== client.OPEN) {
+      return;
+    }
+
     const item = delivery.queue.shift();
-    if (!item) return;
+    if (!item) {
+      return;
+    }
+
     delivery.sending = true;
     adapters.network.beforeSend();
     client.send(item.payload, error => {
       delivery.sending = false;
-      delivery.bytes -= Buffer.byteLength(item.payload);
-      if (error) client.close();
-      else drainDelivery(client, delivery);
+      delivery.outboundBytes -= item.bytes;
+      if (error) {
+        client.close();
+        return;
+      }
+      drainDelivery(client, delivery);
     });
   }
 
@@ -278,32 +322,44 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
     const status = store.status(RELEASE_ID, warnings);
-    let reason: "host-mismatch" | "no-common-major" | "missing-capability" | undefined;
-    if (hello.expectedHostId !== status.hostId) reason = "host-mismatch";
+    if (hello.expectedHostId !== status.hostId) {
+      sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
+      return;
+    }
+
     const offered = hello.protocols
       .filter(protocol => protocol.major === protocolMajor)
       .sort((a, b) => b.minor - a.minor)[0];
-    if (!offered) reason ??= "no-common-major";
+    if (!offered) {
+      sendProtocolUpdateRequired(client, status.hostId, "no-common-major");
+      return;
+    }
+
     const admittedCapabilities = protocolCapabilities.filter(hostCapability =>
       hello.capabilities.some(clientCapability =>
         clientCapability.id === hostCapability.id &&
         (clientCapability.minVersion ?? 1) <= hostCapability.version &&
-        (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >= hostCapability.version,
+        (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >=
+          hostCapability.version,
       ),
     );
-    const missingRequired = ["scope.host", "session.create"].some(id =>
-      !admittedCapabilities.some(capability => capability.id === id),
+    const missingRequiredCapability = REQUIRED_CLIENT_CAPABILITIES.some(
+      requiredId =>
+        !admittedCapabilities.some(capability => capability.id === requiredId),
     );
-    if (missingRequired) reason ??= "missing-capability";
-    if (reason || !offered) {
-      sendServerMessage(client, { type: "protocol.update-required", reason: reason!, hostId: status.hostId });
+    if (missingRequiredCapability) {
+      sendProtocolUpdateRequired(client, status.hostId, "missing-capability");
       return;
     }
+
     admittedClients.add(client);
     sendServerMessage(client, {
       type: "protocol.admitted",
       hostId: status.hostId,
-      protocol: { major: protocolMajor, minor: Math.min(protocolMinor, offered.minor) },
+      protocol: {
+        major: protocolMajor,
+        minor: Math.min(protocolMinor, offered.minor),
+      },
       capabilities: admittedCapabilities.map(item => ({ ...item })),
     });
     sendServerMessage(client, {
@@ -311,6 +367,18 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       protocolVersion,
       status,
       ...store.projection(),
+    });
+  }
+
+  function sendProtocolUpdateRequired(
+    client: WebSocket,
+    hostId: string,
+    reason: ProtocolUpdateReason,
+  ): void {
+    sendServerMessage(client, {
+      type: "protocol.update-required",
+      reason,
+      hostId,
     });
   }
 
@@ -596,11 +664,16 @@ function isNumericRecord(value: unknown): value is Record<string, number> {
 
 /** Only latest-value projection changes explicitly declared here may collapse. */
 function replaceableChangeKey(message: ServerMessage): string | undefined {
-  if (message.type !== "host.change-set" || message.changes.length !== 1) return undefined;
+  if (message.type !== "host.change-set" || message.changes.length !== 1) {
+    return undefined;
+  }
+
   const change = message.changes[0];
-  return change?.type === "session.renamed"
-    ? `session.renamed:${change.session.sessionId}`
-    : undefined;
+  if (change?.type !== "session.renamed") {
+    return undefined;
+  }
+
+  return `session.renamed:${change.session.sessionId}`;
 }
 
 function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {

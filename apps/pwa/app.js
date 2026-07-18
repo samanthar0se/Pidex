@@ -8,6 +8,13 @@ const projectSelect = document.querySelector("#session-project");
 const workspaceSelect = document.querySelector("#session-workspace");
 const sessionsNav = document.querySelector("#sessions");
 const pairingSecret = new URL(location.href).searchParams.get("pair");
+const expectedHostIdKey = "pidex.expectedHostId";
+const supportedCapabilities = [
+  "scope.host",
+  "scope.session",
+  "session.create",
+  "session.rename",
+];
 let controlSocket;
 let projection = { projects: [], workspaces: [], sessions: [] };
 let admitted = false;
@@ -16,6 +23,7 @@ function setControlEnabled(enabled) {
   newSessionButton.disabled = !enabled;
   createSessionButton.disabled = !enabled;
 }
+
 setControlEnabled(false);
 
 newSessionButton.addEventListener("click", () => {
@@ -110,53 +118,69 @@ function openControl(session) {
 
 function renderStatus({ data }) {
   const message = JSON.parse(data);
-  if (message.type === "host.hello") {
-    const expectedHostId = localStorage.getItem("pidex.expectedHostId") || message.hostId;
-    localStorage.setItem("pidex.expectedHostId", expectedHostId);
-    controlSocket.send(JSON.stringify({
-      type: "client.hello",
-      expectedHostId,
-      protocols: [{ major: 1, minor: 1 }],
-      capabilities: ["scope.host", "scope.session", "session.create", "session.rename"]
-        .map(id => ({ id, minVersion: 1, maxVersion: 1 })),
-    }));
-    return;
-  }
-  if (message.type === "protocol.admitted") {
-    admitted = true;
-    return;
-  }
-  if (message.type === "protocol.update-required") {
-    admitted = false;
-    setControlEnabled(false);
-    statusList.replaceChildren(...createStatusEntry(["Readiness", `update required (${message.reason})`]));
-    return;
-  }
-  if (message.type === "delivery.resynchronize") {
-    admitted = false;
-    setControlEnabled(false);
-    statusList.replaceChildren(...createStatusEntry(["Readiness", "reconnecting to resynchronize"]));
-    return;
-  }
-  if (message.type === "host.change-set") {
-    for (const change of message.changes) {
-      if (change.type === "session.created") {
-        projection.sessions.push(change.session);
-      } else if (change.type === "session.renamed") {
-        projection.sessions = projection.sessions.map(session =>
-          session.sessionId === change.session.sessionId
-            ? change.session
-            : session,
-        );
+  switch (message.type) {
+    case "host.hello":
+      sendClientHello(message.hostId);
+      return;
+    case "protocol.admitted":
+      admitted = true;
+      return;
+    case "protocol.update-required":
+      showControlUnavailable(`update required (${message.reason})`);
+      return;
+    case "delivery.resynchronize":
+      showControlUnavailable("reconnecting to resynchronize");
+      return;
+    case "host.change-set":
+      applyHostChanges(message.changes);
+      return;
+    case "host.snapshot":
+      if (admitted) {
+        renderHostSnapshot(message);
       }
+      return;
+  }
+}
+
+function sendClientHello(hostId) {
+  const expectedHostId = localStorage.getItem(expectedHostIdKey) || hostId;
+  localStorage.setItem(expectedHostIdKey, expectedHostId);
+  controlSocket.send(JSON.stringify({
+    type: "client.hello",
+    expectedHostId,
+    protocols: [{ major: 1, minor: 1 }],
+    capabilities: supportedCapabilities.map(id => ({
+      id,
+      minVersion: 1,
+      maxVersion: 1,
+    })),
+  }));
+}
+
+function showControlUnavailable(readiness) {
+  admitted = false;
+  setControlEnabled(false);
+  statusList.replaceChildren(
+    ...createStatusEntry(["Readiness", readiness]),
+  );
+}
+
+function applyHostChanges(changes) {
+  for (const change of changes) {
+    if (change.type === "session.created") {
+      projection.sessions.push(change.session);
+    } else if (change.type === "session.renamed") {
+      projection.sessions = projection.sessions.map(session =>
+        session.sessionId === change.session.sessionId
+          ? change.session
+          : session,
+      );
     }
-    renderSessions();
-    return;
   }
-  if (message.type !== "host.snapshot") {
-    return;
-  }
-  if (!admitted) return;
+  renderSessions();
+}
+
+function renderHostSnapshot(message) {
   setControlEnabled(true);
 
   const { status } = message;

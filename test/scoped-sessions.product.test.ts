@@ -13,17 +13,15 @@ import {
 } from "../packages/protocol/src/status.js";
 import { negotiateControl } from "./control-client.js";
 
-function connect(
+async function connect(
   origin: string,
 ): Promise<{ socket: WebSocket; snapshot: HostSnapshot }> {
-  return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
-      rejectUnauthorized: false,
-      headers: { authorization: "Bearer test-device" },
-    });
-    void negotiateControl(socket).then(snapshot => resolve({ socket, snapshot }), reject);
-    socket.once("error", reject);
+  const socket = new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
+    rejectUnauthorized: false,
+    headers: { authorization: "Bearer test-device" },
   });
+  const snapshot = await negotiateControl(socket);
+  return { socket, snapshot };
 }
 
 function next(socket: WebSocket): Promise<ServerMessage> {

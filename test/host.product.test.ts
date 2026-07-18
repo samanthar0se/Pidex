@@ -8,28 +8,21 @@ import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { readStatus } from "../packages/cli/src/main.js";
 import { startHost } from "../packages/host/src/host.js";
-import {
-  type HostStatus,
-} from "../packages/protocol/src/status.js";
+import { type HostStatus } from "../packages/protocol/src/status.js";
 import { negotiateControl } from "./control-client.js";
 
-function readPwaStatus(
+async function readPwaStatus(
   origin: string,
   authorization: string,
 ): Promise<HostStatus> {
-  return new Promise((resolve, reject) => {
-    const controlOrigin = origin.replace("https:", "wss:");
-    const controlSocket = new WebSocket(`${controlOrigin}/control`, {
-      rejectUnauthorized: false,
-      headers: { authorization: `Bearer ${authorization}` },
-    });
-
-    void negotiateControl(controlSocket).then(message => {
-      controlSocket.close();
-      resolve(message.status);
-    }, reject);
-    controlSocket.once("error", reject);
+  const controlOrigin = origin.replace("https:", "wss:");
+  const controlSocket = new WebSocket(`${controlOrigin}/control`, {
+    rejectUnauthorized: false,
+    headers: { authorization: `Bearer ${authorization}` },
   });
+  const message = await negotiateControl(controlSocket);
+  controlSocket.close();
+  return message.status;
 }
 
 function readPwaShell(origin: string): Promise<string> {

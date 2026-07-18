@@ -6,9 +6,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { negotiateControl } from "./control-client.js";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost, type StartedHost } from "../packages/host/src/host.js";
+import { negotiateControl } from "./control-client.js";
 
 interface PairedDevice {
   deviceId: string;
@@ -112,13 +112,15 @@ function signChallenge(key: KeyObject, challenge: string): string {
   }).toString("base64url");
 }
 
-function connectClient(origin: string, session: string): Promise<WebSocket> {
-  return new Promise((resolve, reject) => {
-    const controlUrl = `${origin.replace("https:", "wss:")}/control?session=${session}`;
-    const socket = new WebSocket(controlUrl, { rejectUnauthorized: false });
-    void negotiateControl(socket).then(() => resolve(socket), reject);
-    socket.once("error", reject);
-  });
+async function connectClient(
+  origin: string,
+  session: string,
+): Promise<WebSocket> {
+  const controlUrl =
+    `${origin.replace("https:", "wss:")}/control?session=${session}`;
+  const socket = new WebSocket(controlUrl, { rejectUnauthorized: false });
+  await negotiateControl(socket);
+  return socket;
 }
 
 test("a paired Device revokes one identity and its live and stale Client sessions only", async () => {
