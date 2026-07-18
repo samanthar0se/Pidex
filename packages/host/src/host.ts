@@ -36,6 +36,7 @@ import {
 } from "./pairing.js";
 import {
   PiSessionWorker,
+  WorkerLossError,
   WORKER_PROTOCOL_GENERATION,
 } from "./pi-worker.js";
 import {
@@ -1342,7 +1343,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       })
       .catch(error => {
         clearForcedStopTimer(run.runId);
-        store.markRunSteeringUnapplied(run.runId);
         try {
           const currentRun = store
             .runs(run.sessionId)
@@ -1365,6 +1365,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             publishRunCompletion(run.sessionId, cancelled.run);
             return;
           }
+          if (error instanceof WorkerLossError) {
+            recoverFromWorkerLoss(run, workerGeneration, error);
+            return;
+          }
+
           invalidateWorkerGeneration(run.sessionId, workerGeneration);
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
@@ -1382,6 +1387,41 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           // Host loss is reconciled as Interrupted from the accepted durable row.
         }
       });
+  }
+
+  function recoverFromWorkerLoss(
+    run: RunRecord,
+    workerGeneration: string,
+    error: WorkerLossError,
+  ): void {
+    invalidateWorkerGeneration(run.sessionId, workerGeneration);
+    const finalAssistant = store.finalizeAssistant(run.sessionId, run.runId);
+    if (finalAssistant) {
+      publishTimelineChange(run.sessionId, finalAssistant);
+    }
+
+    const interrupted = store.settleRun(
+      run.runId,
+      "interrupted",
+      `Worker recovery interrupted execution (${error.message}); normal settlement could not be proved. Partial output and committed side effects were preserved.`,
+      null,
+      adapters.clock.now(),
+    );
+    const sessionJob = sessionJobs.get(run.sessionId);
+    sessionJob?.close();
+    sessionJobs.delete(run.sessionId);
+
+    const withdrawnInteractions = store.recoverWorkerLoss(
+      run.sessionId,
+      run.runId,
+      adapters.clock.now(),
+    );
+    for (const interaction of withdrawnInteractions) {
+      publishInteraction(interaction);
+    }
+
+    presentationContextByRun.delete(run.runId);
+    publishRunCompletion(run.sessionId, interrupted.run);
   }
 
   function publishRunCompletion(sessionId: string, run: TerminalRun): void {
