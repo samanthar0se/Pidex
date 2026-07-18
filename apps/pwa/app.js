@@ -14,7 +14,13 @@ const supportedCapabilities = [
   "scope.session",
   "session.create",
   "session.rename",
+  "run.submit",
+  "pi.model.select",
+  "pi.mode.select",
+  "pi.input.text",
+  "pi.runtime.cancel",
 ];
+let admittedCapabilities = new Map();
 let controlSocket;
 let projection = { projects: [], workspaces: [], sessions: [] };
 let admitted = false;
@@ -124,6 +130,8 @@ function renderStatus({ data }) {
       return;
     case "protocol.admitted":
       admitted = true;
+      admittedCapabilities = new Map(message.capabilities.map(item => [item.id, item]));
+      renderRuntimeControls();
       return;
     case "protocol.update-required":
       showControlUnavailable(`update required (${message.reason})`);
@@ -140,6 +148,19 @@ function renderStatus({ data }) {
       }
       return;
   }
+}
+
+function renderRuntimeControls() {
+  for (const [id, selector] of [
+    ["pi.model.select", "#run-model"], ["pi.mode.select", "#run-mode"],
+  ]) {
+    const element = document.querySelector(selector);
+    const capability = admittedCapabilities.get(id);
+    element.hidden = !capability;
+    element.disabled = !capability;
+    if (capability) element.replaceChildren(...capability.constraints.values.map(value => new Option(value, value)));
+  }
+  document.querySelector("#run-input").disabled = !admittedCapabilities.has("pi.input.text");
 }
 
 function sendClientHello(hostId) {

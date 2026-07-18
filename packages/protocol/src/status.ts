@@ -27,6 +27,10 @@ const clientCapabilitySchema = z.object({
 const hostCapabilitySchema = z.object({
   id: z.string(),
   version: z.number().int().positive(),
+  constraints: z.object({
+    values: z.array(z.string()).optional(),
+    maximumBytes: z.number().int().positive().optional(),
+  }).optional(),
 });
 
 const optionalEnvelopeSchema = z

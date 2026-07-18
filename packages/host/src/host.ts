@@ -72,6 +72,7 @@ interface SessionRenameMessage {
 
 interface RunSubmitMessage extends SubmitCommand {
   type: "run.submit";
+  requiredCapabilityBasis?: Array<{ id: string; version: number }>;
 }
 
 interface ScopeSetMessage {
@@ -140,6 +141,13 @@ export interface StartedHost {
 
 export async function startHost(options: HostOptions): Promise<StartedHost> {
   const adapters = options.adapters ?? adaptersFor("product");
+  // Refuse to advertise or accept authority until the exact worker generation
+  // has proved the daily-driver semantic baseline.
+  const workerCapabilities = await PiSessionWorker.probe(adapters.pi);
+  const runtimeCapabilities = workerCapabilities
+    .filter(item => !["run.execute", "checkpoint.durable"].includes(item.id))
+    .map(item => ({ id: `pi.${item.id}`, version: item.version, constraints: item.constraints }));
+  const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
   const store = new AuthorityStore(
     join(options.dataDir, "authority.sqlite"),
     adapters,
@@ -190,6 +198,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const webSocketServer = new WebSocketServer({ noServer: true });
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
+  const clientCapabilityBasis = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
@@ -300,6 +309,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     webSocket.once("close", () => {
       clientDeviceIds.delete(webSocket);
       admittedClients.delete(webSocket);
+      clientCapabilityBasis.delete(webSocket);
       deliveries.delete(webSocket);
     });
     webSocket.on("message", bytes => {
@@ -327,7 +337,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       type: "host.hello",
       hostId: store.status(RELEASE_ID, warnings).hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
-      capabilities: [...protocolCapabilities],
+      capabilities: hostCapabilities,
     });
   });
 
@@ -346,7 +356,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       return;
     }
 
-    const admittedCapabilities = protocolCapabilities.filter(hostCapability =>
+    const admittedCapabilities = hostCapabilities.filter(hostCapability =>
       hello.capabilities.some(clientCapability =>
         clientCapability.id === hostCapability.id &&
         (clientCapability.minVersion ?? 1) <= hostCapability.version &&
@@ -364,6 +374,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     admittedClients.add(client);
+    clientCapabilityBasis.set(client, new Set(admittedCapabilities.map(item => `${item.id}@${item.version}`)));
     sendServerMessage(client, {
       type: "protocol.admitted",
       hostId: status.hostId,
@@ -618,6 +629,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       return;
     }
 
+    const requiredBasis = command.requiredCapabilityBasis ?? [];
+    const connectedBasis = clientCapabilityBasis.get(client) ?? new Set();
+    if (requiredBasis.some(required => !connectedBasis.has(`${required.id}@${required.version}`))) {
+      sendServerMessage(client, {
+        type: "command.outcome", commandId: command.commandId,
+        outcome: "rejected", error: "required-capability-basis-unavailable",
+      });
+      return;
+    }
+
     try {
       adapters.storage.beforeCommit();
       const result = store.submitRun(deviceId, command, adapters.clock.now());
@@ -817,7 +838,13 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
     typeof item.prompt === "string" &&
     item.prompt.trim().length > 0 &&
     item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
-    item.requiredCapability === "run.submit"
+    item.requiredCapability === "run.submit" &&
+    (item.requiredCapabilityBasis === undefined ||
+      (Array.isArray(item.requiredCapabilityBasis) && item.requiredCapabilityBasis.every(required =>
+        !!required && typeof required === "object" &&
+        typeof (required as Record<string, unknown>).id === "string" &&
+        Number.isSafeInteger((required as Record<string, unknown>).version)
+      )))
   );
 }
 

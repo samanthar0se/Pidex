@@ -6,13 +6,28 @@ export const BUNDLED_PI_SDK_GENERATION = "pi-sdk@0.1.0";
 const REQUIRED_WORKER_CAPABILITIES = [
   "run.execute",
   "checkpoint.durable",
+  "model.select",
+  "mode.select",
+  "input.text",
 ] as const;
+
+const capabilitySchema = z.union([
+  z.string().transform(id => ({ id, version: 1, constraints: undefined })),
+  z.object({
+    id: z.string().min(1),
+    version: z.literal(1),
+    constraints: z.object({
+      values: z.array(z.string()).min(1).optional(),
+      maximumBytes: z.number().int().positive().optional(),
+    }).strict().optional(),
+  }).strict(),
+]);
 
 const workerReadinessSchema = z.object({
   protocolGeneration: z.literal(WORKER_PROTOCOL_GENERATION),
   sdkGeneration: z.literal(BUNDLED_PI_SDK_GENERATION),
-  capabilities: z.array(z.string()),
-});
+  capabilities: z.array(capabilitySchema),
+}).strict();
 const executionResultSchema = z.object({
   text: z.string(),
   checkpoint: z.string().min(1),
@@ -29,6 +44,23 @@ export class PiSessionWorker {
     this.#pi = pi;
   }
 
+  static async probe(pi: PiAdapter) {
+    if (!pi.probe || !pi.execute) throw new WorkerReadinessError("pi-sdk-unavailable");
+    let readiness: z.infer<typeof workerReadinessSchema>;
+    try {
+      readiness = workerReadinessSchema.parse(await pi.probe({
+        protocolGeneration: WORKER_PROTOCOL_GENERATION,
+        sdkGeneration: BUNDLED_PI_SDK_GENERATION,
+      }));
+    } catch (cause) {
+      throw new WorkerReadinessError("worker-readiness-schema-mismatch", cause);
+    }
+    const ids = new Set(readiness.capabilities.map(capability => capability.id));
+    const missing = REQUIRED_WORKER_CAPABILITIES.filter(id => !ids.has(id));
+    if (missing.length) throw new WorkerReadinessError("missing-required-worker-capability", missing);
+    return Object.freeze(readiness.capabilities.map(capability => Object.freeze(capability)));
+  }
+
   async execute(prompt: string): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
@@ -36,25 +68,12 @@ export class PiSessionWorker {
 
     this.#running = true;
     try {
-      if (!this.#pi.probe || !this.#pi.execute) {
-        throw new Error("pi-sdk-unavailable");
-      }
-
-      const readiness = workerReadinessSchema.parse(
-        await this.#pi.probe({
-          protocolGeneration: WORKER_PROTOCOL_GENERATION,
-          sdkGeneration: BUNDLED_PI_SDK_GENERATION,
-        }),
-      );
-      const isMissingRequiredCapability = REQUIRED_WORKER_CAPABILITIES.some(
-        capability => !readiness.capabilities.includes(capability),
-      );
-      if (isMissingRequiredCapability) {
-        throw new Error("missing-required-worker-capability");
-      }
+      await PiSessionWorker.probe(this.#pi);
+      const execute = this.#pi.execute;
+      if (!execute) throw new WorkerReadinessError("pi-sdk-unavailable");
 
       return executionResultSchema.parse(
-        await this.#pi.execute({
+        await execute({
           sessionId: this.#sessionId,
           prompt,
           projectTrust: true,
@@ -64,5 +83,16 @@ export class PiSessionWorker {
     } finally {
       this.#running = false;
     }
+  }
+}
+
+export class WorkerReadinessError extends Error {
+  readonly code: string;
+  readonly diagnostic: unknown;
+  constructor(code: string, diagnostic?: unknown) {
+    super(`${code}${diagnostic instanceof Error ? `: ${diagnostic.message}` : ""}`);
+    this.name = "WorkerReadinessError";
+    this.code = code;
+    this.diagnostic = diagnostic;
   }
 }

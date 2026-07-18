@@ -10,7 +10,14 @@ export interface PiProbeRequest {
 export interface PiProbeResult {
   protocolGeneration: number;
   sdkGeneration: string;
-  capabilities: string[];
+  capabilities: Array<string | PiSdkCapability>;
+}
+
+/** Data-only SDK semantics. No SDK model or runtime object may cross this seam. */
+export interface PiSdkCapability {
+  id: string;
+  version: number;
+  constraints?: { values?: string[]; maximumBytes?: number };
 }
 
 export interface PiExecuteRequest {
@@ -162,7 +169,14 @@ function deterministicPiAdapter(): PiAdapter {
     kind: "deterministic",
     probe: async request => ({
       ...request,
-      capabilities: ["run.execute", "checkpoint.durable"],
+      capabilities: [
+        { id: "run.execute", version: 1 },
+        { id: "checkpoint.durable", version: 1 },
+        { id: "model.select", version: 1, constraints: { values: ["deterministic"] } },
+        { id: "mode.select", version: 1, constraints: { values: ["agent"] } },
+        { id: "input.text", version: 1, constraints: { maximumBytes: 100_000 } },
+        { id: "runtime.cancel", version: 1 },
+      ],
     }),
     execute: async request => ({
       text: `Deterministic Pi response: ${request.prompt}`,
