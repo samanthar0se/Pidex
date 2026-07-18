@@ -5,11 +5,25 @@ import {
   type HostStatus,
 } from "../../protocol/src/status.js";
 
-/** Operations exposed by the signed CLI entry point; mutating operations are
- * delegated to authenticated launcher/Host adapters in product packaging. */
+/**
+ * Operations exposed by the signed CLI entry point. Product packaging delegates
+ * mutating operations to authenticated launcher and Host adapters.
+ */
 export const PIDEX_COMMANDS = Object.freeze([
-  "status", "start", "retry", "pairing", "revoke", "origin", "certificate",
-  "firewall", "update", "logs", "backup", "recovery", "doctor", "support",
+  "status",
+  "start",
+  "retry",
+  "pairing",
+  "revoke",
+  "origin",
+  "certificate",
+  "firewall",
+  "update",
+  "logs",
+  "backup",
+  "recovery",
+  "doctor",
+  "support",
 ] as const);
 
 export async function readStatus(
@@ -51,11 +65,16 @@ export async function readStatus(
 }
 
 if (process.argv[1]?.endsWith("main.ts")) {
-  if (!PIDEX_COMMANDS.includes(process.argv[2] as typeof PIDEX_COMMANDS[number])) {
+  const command = process.argv[2];
+  const isKnownCommand = PIDEX_COMMANDS.some(candidate => candidate === command);
+
+  if (!isKnownCommand) {
     throw new Error(`Usage: pidex <${PIDEX_COMMANDS.join("|")}>`);
   }
-  if (process.argv[2] !== "status") {
-    throw new Error(`${process.argv[2]} requires the installed signed launcher adapter`);
+  if (command !== "status") {
+    throw new Error(
+      `${command} requires the installed signed launcher adapter`,
+    );
   }
 
   const status = await readStatus(
