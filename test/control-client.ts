@@ -1,4 +1,4 @@
-import WebSocket from "ws";
+import WebSocket, { type RawData } from "ws";
 import {
   clientHello,
   serverMessageSchema,
@@ -8,14 +8,21 @@ import {
 
 export function nextControlMessage(socket: WebSocket): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
-    socket.once("message", data => {
+    const onMessage = (data: RawData): void => {
+      socket.off("error", onError);
       try {
         resolve(serverMessageSchema.parse(JSON.parse(data.toString())));
       } catch (error) {
         reject(error);
       }
-    });
-    socket.once("error", reject);
+    };
+    const onError = (error: Error): void => {
+      socket.off("message", onMessage);
+      reject(error);
+    };
+
+    socket.once("message", onMessage);
+    socket.once("error", onError);
   });
 }
 

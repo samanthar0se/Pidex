@@ -139,7 +139,15 @@ export const timelineEntrySchema = z.object({
   entryId: z.string(),
   runId: z.string().nullable(),
   order: z.number(),
-  kind: z.enum(["prompt", "response", "assistant", "tool", "run", "outcome", "lifecycle"]),
+  kind: z.enum([
+    "prompt",
+    "response",
+    "assistant",
+    "tool",
+    "run",
+    "outcome",
+    "lifecycle",
+  ]),
   text: z.string(),
   blobId: z.string().nullable().optional(),
   revision: z.number().int().positive(),
@@ -152,6 +160,14 @@ export type AcceptedRun = z.infer<typeof acceptedRunSchema>;
 export type CompletedRun = z.infer<typeof completedRunSchema>;
 export type TerminalRun = z.infer<typeof terminalRunSchema>;
 export type TimelineEntry = z.infer<typeof timelineEntrySchema>;
+
+export const timelineChangeSchema = z.object({
+  baseRevision: z.number().int(),
+  revision: z.number().int(),
+  entry: timelineEntrySchema,
+});
+
+export type TimelineChange = z.infer<typeof timelineChangeSchema>;
 
 export const synchronizationScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("host") }),
@@ -232,7 +248,10 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
         workspaces: z.array(workspaceSummarySchema),
         sessions: z.array(sessionSummarySchema),
       }),
-      z.object({ session: sessionSummarySchema, timeline: z.array(timelineEntrySchema).optional() }),
+      z.object({
+        session: sessionSummarySchema,
+        timeline: z.array(timelineEntrySchema).optional(),
+      }),
     ]),
   }),
   z.object({
@@ -256,12 +275,9 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     run: terminalRunSchema,
     timeline: z.array(timelineEntrySchema),
   }),
-  z.object({
+  timelineChangeSchema.extend({
     type: z.literal("timeline.change"),
     sessionId: z.string(),
-    baseRevision: z.number().int(),
-    revision: z.number().int(),
-    entry: timelineEntrySchema,
   }),
 ]).and(optionalEnvelopeSchema);
 

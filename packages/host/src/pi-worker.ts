@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { PiAdapter } from "../../adapters/src/index.js";
+import type { PiAdapter, PiTimelineEvent } from "../../adapters/src/index.js";
 
 export const WORKER_PROTOCOL_GENERATION = 1 as const;
 export const BUNDLED_PI_SDK_GENERATION = "pi-sdk@0.1.0";
@@ -33,10 +33,24 @@ const executionResultSchema = z.object({
   text: z.string(),
   checkpoint: z.string().min(1),
 });
+
 const timelineEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("assistant.delta"), text: z.string() }).strict(),
-  z.object({ type: z.literal("tool.started"), toolCallId: z.string(), name: z.string() }).strict(),
-  z.object({ type: z.literal("tool.completed"), toolCallId: z.string(), name: z.string(), text: z.string() }).strict(),
+  z
+    .object({
+      type: z.literal("tool.started"),
+      toolCallId: z.string(),
+      name: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("tool.completed"),
+      toolCallId: z.string(),
+      name: z.string(),
+      text: z.string(),
+    })
+    .strict(),
 ]);
 
 type WorkerCapability = z.infer<typeof capabilitySchema>;
@@ -93,7 +107,7 @@ export class PiSessionWorker {
 
   async execute(
     prompt: string,
-    onTimelineEvent?: (event: z.infer<typeof timelineEventSchema>) => void,
+    onTimelineEvent?: (event: PiTimelineEvent) => void,
   ): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
@@ -113,7 +127,10 @@ export class PiSessionWorker {
           prompt,
           projectTrust: true,
           resourceLoader: "public",
-          onTimelineEvent: event => onTimelineEvent?.(timelineEventSchema.parse(event)),
+          onTimelineEvent: event => {
+            const timelineEvent = timelineEventSchema.parse(event);
+            onTimelineEvent?.(timelineEvent);
+          },
         }),
       );
       if (!this.#pi.flushCheckpoint) {

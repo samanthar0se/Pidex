@@ -19,6 +19,7 @@ import {
   type ClientHello,
   type HostStatus,
   type ServerMessage,
+  type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
 import {
@@ -215,7 +216,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
   const admittedCapabilityBasisByClient = new Map<WebSocket, Set<string>>();
-  const sessionScopesByClient = new Map<WebSocket, Set<string>>();
+  const scopedSessionIdsByClient = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
@@ -327,7 +328,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       clientDeviceIds.delete(webSocket);
       admittedClients.delete(webSocket);
       admittedCapabilityBasisByClient.delete(webSocket);
-      sessionScopesByClient.delete(webSocket);
+      scopedSessionIdsByClient.delete(webSocket);
       deliveries.delete(webSocket);
     });
     webSocket.on("message", bytes => {
@@ -426,7 +427,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
-    sessionScopesByClient.set(client, new Set(request.sessionIds));
+    scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
     const status = store.status(RELEASE_ID, warnings);
     const sessionsById = new Map(
@@ -438,7 +439,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       request.resourceRevisions ?? {},
     ).every(
       ([sessionId, expected]) =>
-        sessionId === "timeline" || sessionId.startsWith("timeline:") ||
+        sessionId === "timeline" ||
+        sessionId.startsWith("timeline:") ||
         sessionsById.get(sessionId)?.metadataRevision === expected,
     );
 
@@ -494,9 +496,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         continue;
       }
 
-      const observedTimeline = request.resourceRevisions?.[`timeline:${sessionId}`]
-        ?? (request.sessionIds.length === 1 ? request.resourceRevisions?.timeline : undefined);
-      if (observedTimeline === session.timelineRevision && protocolCompatible && basis?.compatible) {
+      const observedTimelineRevision = findObservedTimelineRevision(
+        request,
+        sessionId,
+      );
+      if (
+        observedTimelineRevision === session.timelineRevision &&
+        protocolCompatible &&
+        basis?.compatible
+      ) {
         sendServerMessage(client, {
           type: "scope.current",
           scope: { kind: "session", sessionId },
@@ -506,7 +514,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       }
       sendServerMessage(client, {
         type: "scope.reset",
-        reason: observedTimeline === undefined ? "new-scope" : "revision-mismatch",
+        reason:
+          observedTimelineRevision === undefined
+            ? "new-scope"
+            : "revision-mismatch",
         barrier: {
           scope: { kind: "session", sessionId },
           cursor: status.synchronization.cursor,
@@ -691,7 +702,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
       if (outcome.kind === "accepted" && result.kind !== "replayed") {
         const promptEntry = store.timeline(command.sessionId).at(-1);
-        const session = store.projection().sessions.find(item => item.sessionId === command.sessionId);
+        const session = store
+          .projection()
+          .sessions.find(item => item.sessionId === command.sessionId);
         if (promptEntry && session) {
           publishTimelineChange(command.sessionId, {
             baseRevision: session.timelineRevision - 1,
@@ -703,7 +716,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           workers.get(command.sessionId) ??
           new PiSessionWorker(command.sessionId, adapters.pi);
         workers.set(command.sessionId, worker);
-        dispatchAcceptedRun(worker, command.sessionId, outcome.run.runId, command.prompt);
+        dispatchAcceptedRun(
+          worker,
+          command.sessionId,
+          outcome.run.runId,
+          command.prompt,
+        );
       }
     } catch {
       sendServerMessage(client, {
@@ -733,7 +751,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       })
       .then(executionResult => {
         const finalAssistant = store.finalizeAssistant(sessionId, runId);
-        if (finalAssistant) publishTimelineChange(sessionId, finalAssistant);
+        if (finalAssistant) {
+          publishTimelineChange(sessionId, finalAssistant);
+        }
         const completed = store.completeRun(
           runId,
           executionResult.text,
@@ -770,11 +790,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function publishTimelineChange(
     sessionId: string,
-    change: { baseRevision: number; revision: number; entry: import("../../protocol/src/status.js").TimelineEntry },
+    change: TimelineChange,
   ): void {
-    const message: ServerMessage = { type: "timeline.change", sessionId, ...change };
+    const message: ServerMessage = {
+      type: "timeline.change",
+      sessionId,
+      ...change,
+    };
     for (const socket of admittedClients) {
-      if (sessionScopesByClient.get(socket)?.has(sessionId)) {
+      if (scopedSessionIdsByClient.get(socket)?.has(sessionId)) {
         sendServerMessage(socket, message);
       }
     }
@@ -839,6 +863,21 @@ function isNumericRecord(value: unknown): value is Record<string, number> {
     !Array.isArray(value) &&
     Object.values(value).every(item => typeof item === "number")
   );
+}
+
+function findObservedTimelineRevision(
+  request: ScopeSetMessage,
+  sessionId: string,
+): number | undefined {
+  const sessionRevision = request.resourceRevisions?.[`timeline:${sessionId}`];
+  if (sessionRevision !== undefined) {
+    return sessionRevision;
+  }
+
+  if (request.sessionIds.length === 1) {
+    return request.resourceRevisions?.timeline;
+  }
+  return undefined;
 }
 
 /** Only latest-value projection changes explicitly declared here may collapse. */
