@@ -211,6 +211,8 @@ const activeRunReferenceSchema = z.object({ runId: z.string() });
 const timelineEntryReferenceSchema = z.object({ entryId: z.string() });
 const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
+const sessionResidencyRowSchema = sessionSummarySchema.pick({ residency: true });
+const checkpointRowSchema = z.object({ checkpoint: z.string() });
 const stopReceiptOutcomeSchema = z.object({
   runId: z.string(),
   entryId: z.string(),
@@ -532,22 +534,37 @@ export class AuthorityStore {
     try {
       const session = this.#db
         .prepare("SELECT residency FROM sessions WHERE session_id = ?")
-        .get(sessionId) as { residency?: string } | undefined;
-      if (!session) throw new Error("unknown-session");
-      if (session.residency === "sleeping") {
+        .get(sessionId);
+      const residencyRow = sessionResidencyRowSchema.optional().parse(session);
+      if (!residencyRow) {
+        throw new Error("unknown-session");
+      }
+
+      if (residencyRow.residency === "sleeping") {
         const current = this.loadSession(sessionId);
         this.#db.exec("COMMIT");
-        return { session: current, cursor: this.status("internal").synchronization.cursor };
+        return {
+          session: current,
+          cursor: this.status("internal").synchronization.cursor,
+        };
       }
-      const work = this.#db.prepare(
-        `SELECT 1 FROM runs WHERE session_id = ?
-         AND state IN ('queued','executing','held','cancelling') LIMIT 1`,
-      ).get(sessionId);
-      const interaction = this.#db.prepare(
-        `SELECT 1 FROM interactions WHERE session_id = ?
-         AND state IN ('open','resolving') LIMIT 1`,
-      ).get(sessionId);
-      if (work || interaction) throw new Error("session-not-quiescent");
+
+      const activeRun = this.#db
+        .prepare(
+          `SELECT 1 FROM runs WHERE session_id = ?
+           AND state IN ('queued','executing','held','cancelling') LIMIT 1`,
+        )
+        .get(sessionId);
+      const activeInteraction = this.#db
+        .prepare(
+          `SELECT 1 FROM interactions WHERE session_id = ?
+           AND state IN ('open','resolving') LIMIT 1`,
+        )
+        .get(sessionId);
+      if (activeRun || activeInteraction) {
+        throw new Error("session-not-quiescent");
+      }
+
       this.#db.prepare(
         `UPDATE sessions SET residency = 'sleeping',
          metadata_revision = metadata_revision + 1 WHERE session_id = ?`,
@@ -555,13 +572,13 @@ export class AuthorityStore {
       this.#db.prepare(
         "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
       ).run(now);
-      const sleeping = this.loadSession(sessionId);
+      const sleepingSession = this.loadSession(sessionId);
       const cursor = this.recordSynchronizationChange({
         type: "session.residency-changed",
-        session: sleeping,
+        session: sleepingSession,
       });
       this.#db.exec("COMMIT");
-      return { session: sleeping, cursor };
+      return { session: sleepingSession, cursor };
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
@@ -569,11 +586,13 @@ export class AuthorityStore {
   }
 
   latestCheckpoint(sessionId: string): string | undefined {
-    const row = this.#db.prepare(
-      `SELECT checkpoint FROM timeline_entries WHERE session_id = ?
-       AND checkpoint IS NOT NULL ORDER BY entry_order DESC LIMIT 1`,
-    ).get(sessionId) as { checkpoint?: string } | undefined;
-    return row?.checkpoint;
+    const row = this.#db
+      .prepare(
+        `SELECT checkpoint FROM timeline_entries WHERE session_id = ?
+         AND checkpoint IS NOT NULL ORDER BY entry_order DESC LIMIT 1`,
+      )
+      .get(sessionId);
+    return checkpointRowSchema.optional().parse(row)?.checkpoint;
   }
 
   renameSession(

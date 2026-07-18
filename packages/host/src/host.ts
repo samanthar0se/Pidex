@@ -799,33 +799,47 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       // this await is pending therefore makes the final transition reject.
       const checkpoint = store.latestCheckpoint(command.sessionId);
       if (checkpoint) {
-        const flushed = await adapters.pi.flushCheckpoint?.(
+        const durableCheckpoint = await adapters.pi.flushCheckpoint?.(
           command.sessionId,
           checkpoint,
         );
-        if (flushed !== checkpoint) throw new Error("checkpoint-flush-failed");
+        if (durableCheckpoint !== checkpoint) {
+          throw new Error("checkpoint-flush-failed");
+        }
       }
+
       adapters.storage.beforeCommit();
       const result = store.setSessionSleeping(
         command.sessionId,
         adapters.clock.now(),
       );
       sendServerMessage(client, {
-        type: "command.outcome", commandId: command.commandId, outcome: "accepted",
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
       });
-      const job = sessionJobs.get(command.sessionId);
-      job?.close();
+
+      const sessionJob = sessionJobs.get(command.sessionId);
+      sessionJob?.close();
       sessionJobs.delete(command.sessionId);
       workers.delete(command.sessionId);
       workerGenerations.delete(command.sessionId);
-      const change: ServerMessage = {
-        type: "host.change-set", cursor: result.cursor,
-        changes: [{ type: "session.residency-changed", session: result.session }],
+
+      const changeSet: ServerMessage = {
+        type: "host.change-set",
+        cursor: result.cursor,
+        changes: [
+          { type: "session.residency-changed", session: result.session },
+        ],
       };
-      for (const socket of admittedClients) sendServerMessage(socket, change);
+      for (const socket of admittedClients) {
+        sendServerMessage(socket, changeSet);
+      }
     } catch (error) {
       sendServerMessage(client, {
-        type: "command.outcome", commandId: command.commandId, outcome: "rejected",
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
         error: error instanceof Error ? error.message : "sleep-failed",
       });
     }
@@ -1848,11 +1862,17 @@ function isViewObserveMessage(value: unknown): value is ViewObserveMessage {
 }
 
 function isSessionSleepMessage(value: unknown): value is SessionSleepMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "session.sleep" &&
-    typeof item.commandId === "string" && item.commandId.length > 0 &&
-    typeof item.sessionId === "string";
+  return (
+    item.type === "session.sleep" &&
+    typeof item.commandId === "string" &&
+    item.commandId.length > 0 &&
+    typeof item.sessionId === "string"
+  );
 }
 
 function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {
