@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Authenticate and revoke Devices
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A Client can open a local New Session View, select valid scope, and leave without creating Host state.
 - [ ] An explicit empty-Session action durably creates Session identity, immutable optional scope, available retention, sleeping residency, metadata revision, and Timeline basis before any Pi artifact exists.
