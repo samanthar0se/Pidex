@@ -862,7 +862,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function handleRunSteer(client: WebSocket, command: RunSteerMessage): void {
     const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) return;
+    if (!deviceId) {
+      return;
+    }
+
     try {
       const result = store.acceptSteering(
         deviceId,
@@ -872,17 +875,24 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       );
       if (result.kind === "rejected") {
         sendServerMessage(client, {
-          type: "command.outcome", commandId: command.commandId,
-          outcome: "rejected", error: result.error,
-          reconciliationCursor: result.cursor, runId: command.runId,
+          type: "command.outcome",
+          commandId: command.commandId,
+          outcome: "rejected",
+          error: result.error,
+          reconciliationCursor: result.cursor,
+          runId: command.runId,
         });
         return;
       }
+
       sendServerMessage(client, {
-        type: "command.outcome", commandId: command.commandId,
-        outcome: "accepted", reconciliationCursor: result.cursor,
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+        reconciliationCursor: result.cursor,
         runId: command.runId,
       });
+
       if (result.kind === "accepted") {
         publishTimelineChange(command.sessionId, {
           baseRevision: command.observedTimelineRevision,
@@ -896,8 +906,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         );
       }
     } catch {
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId,
-        outcome: "rejected", error: "commit-failed" });
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "commit-failed",
+      });
     }
   }
 
@@ -1412,14 +1426,24 @@ function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage
 }
 
 function isRunSteerMessage(value: unknown): value is RunSteerMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "run.steer" && item.requiredCapability === "run.steer" &&
-    typeof item.commandId === "string" && typeof item.sessionId === "string" &&
-    typeof item.runId === "string" && typeof item.workerGeneration === "string" &&
+  return (
+    item.type === "run.steer" &&
+    item.requiredCapability === "run.steer" &&
+    typeof item.commandId === "string" &&
+    typeof item.sessionId === "string" &&
+    typeof item.runId === "string" &&
+    typeof item.workerGeneration === "string" &&
     Number.isSafeInteger(item.observedTimelineRevision) &&
-    Number(item.observedTimelineRevision) > 0 && typeof item.text === "string" &&
-    item.text.trim().length > 0 && item.text.length <= MAX_RUN_PROMPT_LENGTH;
+    Number(item.observedTimelineRevision) > 0 &&
+    typeof item.text === "string" &&
+    item.text.trim().length > 0 &&
+    item.text.length <= MAX_RUN_PROMPT_LENGTH
+  );
 }
 
 function isInteractionResolveMessage(

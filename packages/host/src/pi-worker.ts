@@ -4,6 +4,7 @@ import type {
   PiPresentationEffect,
   PiInteractionRequest,
   PiInteractionResult,
+  PiSteeringReceiver,
   PiTimelineEvent,
 } from "../../adapters/src/index.js";
 
@@ -147,15 +148,8 @@ export class PiSessionWorker {
   readonly #sessionId: string;
   readonly #pi: PiAdapter;
   #running = false;
-  #steeringReceiver?: (text: string) => Promise<void>;
-  #capabilities = new Set<string>();
-
-  async steer(text: string): Promise<void> {
-    if (!this.#running || !this.#capabilities.has("runtime.steer") || !this.#steeringReceiver) {
-      throw new Error("steering-unavailable");
-    }
-    await this.#steeringReceiver(text);
-  }
+  #activeSteeringReceiver?: PiSteeringReceiver;
+  #activeCapabilityIds = new Set<string>();
 
   constructor(sessionId: string, pi: PiAdapter) {
     this.#sessionId = sessionId;
@@ -197,6 +191,18 @@ export class PiSessionWorker {
     );
   }
 
+  async steer(text: string): Promise<void> {
+    const receiver = this.#activeSteeringReceiver;
+    if (
+      !this.#running ||
+      !this.#activeCapabilityIds.has("runtime.steer") ||
+      !receiver
+    ) {
+      throw new Error("steering-unavailable");
+    }
+    await receiver(text);
+  }
+
   async execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
@@ -213,7 +219,7 @@ export class PiSessionWorker {
     try {
       const capabilities = await PiSessionWorker.probe(this.#pi);
       const capabilityIds = new Set(capabilities.map(item => item.id));
-      this.#capabilities = capabilityIds;
+      this.#activeCapabilityIds = capabilityIds;
       const execute = this.#pi.execute;
       if (!execute) {
         throw new WorkerReadinessError("pi-sdk-unavailable");
@@ -247,7 +253,7 @@ export class PiSessionWorker {
             return onInteraction(interactionRequestSchema.parse(request));
           },
           registerSteeringReceiver: receiver => {
-            this.#steeringReceiver = receiver;
+            this.#activeSteeringReceiver = receiver;
           },
         }),
       );
@@ -263,8 +269,8 @@ export class PiSessionWorker {
       }
       return executionResult;
     } finally {
-      this.#steeringReceiver = undefined;
-      this.#capabilities.clear();
+      this.#activeSteeringReceiver = undefined;
+      this.#activeCapabilityIds.clear();
       this.#running = false;
     }
   }

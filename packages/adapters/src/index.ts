@@ -25,6 +25,8 @@ export interface PiSdkCapabilityConstraints {
   maximumBytes?: number;
 }
 
+export type PiSteeringReceiver = (text: string) => Promise<void>;
+
 export interface PiExecuteRequest {
   sessionId: string;
   prompt: string;
@@ -39,7 +41,7 @@ export interface PiExecuteRequest {
     request: PiInteractionRequest,
   ) => Promise<PiInteractionResult>;
   /** The runtime registers the receiver belonging to this exact execution. */
-  registerSteeringReceiver?: (receiver: (text: string) => Promise<void>) => void;
+  registerSteeringReceiver?: (receiver: PiSteeringReceiver) => void;
 }
 
 export type PiPresentationEffect =

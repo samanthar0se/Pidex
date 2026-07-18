@@ -143,6 +143,47 @@ test("a Pi worker returns completion only after durable checkpoint flush", async
   assert.deepEqual(events, ["execute", "flush"]);
 });
 
+test("a Pi worker routes steering only to its active capable execution", async () => {
+  const steeringTexts: string[] = [];
+  let completeExecution: (() => void) | undefined;
+  const pi: PiAdapter = {
+    kind: "deterministic",
+    probe: async request => ({
+      ...request,
+      capabilities: [
+        "run.execute",
+        "checkpoint.durable",
+        "model.select",
+        "mode.select",
+        "input.text",
+        "runtime.steer",
+      ],
+    }),
+    execute: async request => {
+      request.registerSteeringReceiver?.(async text => {
+        steeringTexts.push(text);
+      });
+      await new Promise<void>(resolve => {
+        completeExecution = resolve;
+      });
+      return { text: "ok", checkpoint: "cp-steering" };
+    },
+    flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
+  };
+
+  const worker = new PiSessionWorker("session-steering", pi);
+  const execution = worker.execute("go");
+  await new Promise(resolve => setImmediate(resolve));
+
+  await worker.steer("also run tests");
+  assert.deepEqual(steeringTexts, ["also run tests"]);
+
+  assert.ok(completeExecution);
+  completeExecution();
+  await execution;
+  await assert.rejects(worker.steer("too late"), /steering-unavailable/);
+});
+
 test("presentation effects are capability-gated, bounded, and remain inert data", async () => {
   const effects: unknown[] = [];
   const pi: PiAdapter = {

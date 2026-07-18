@@ -177,6 +177,7 @@ const nextRunOrderSchema = z.object({ nextOrder: z.number() });
 const activeRunReferenceSchema = z.object({ runId: z.string() });
 const timelineEntryReferenceSchema = z.object({ entryId: z.string() });
 const timelineOrderSchema = z.object({ value: z.number() });
+const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
 const TIMELINE_WINDOW_SIZE = 100;
 const MAX_TIMELINE_PAGE_SIZE = 200;
 const timelineCursorSchema = z.object({
@@ -701,58 +702,105 @@ export class AuthorityStore {
   acceptSteering(
     deviceId: string,
     command: SteerCommand,
-    currentWorkerGeneration: string | undefined,
+    activeWorkerGeneration: string | undefined,
     now: number,
   ): SteerResult {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const prior = this.#db.prepare(
-        "SELECT entry_id AS entryId FROM steering WHERE device_id = ? AND command_id = ?",
-      ).get(deviceId, command.commandId) as { entryId?: string } | undefined;
-      if (prior?.entryId) {
-        const entry = timelineEntrySchema.parse(this.#db.prepare(
-          `SELECT ${TIMELINE_ENTRY_PROJECTION} FROM timeline_entries WHERE entry_id = ?`,
-        ).get(prior.entryId));
+      const priorSteering = timelineEntryReferenceSchema.optional().parse(
+        this.#db
+          .prepare(
+            `SELECT entry_id AS entryId FROM steering
+             WHERE device_id = ? AND command_id = ?`,
+          )
+          .get(deviceId, command.commandId),
+      );
+      if (priorSteering) {
+        const entry = this.loadTimelineEntry(priorSteering.entryId);
         this.#db.exec("COMMIT");
-        return { kind: "replayed", entry, cursor: this.status("").synchronization.cursor };
+        return {
+          kind: "replayed",
+          entry,
+          cursor: this.status("").synchronization.cursor,
+        };
       }
-      const run = this.#db.prepare(
-        `SELECT ${RUN_RECORD_PROJECTION} FROM runs WHERE run_id = ? AND session_id = ?`,
-      ).get(command.runId, command.sessionId);
-      const session = this.#db.prepare(
-        "SELECT timeline_revision AS timelineRevision FROM sessions WHERE session_id = ?",
-      ).get(command.sessionId) as { timelineRevision?: number } | undefined;
+
+      const run = this.#db
+        .prepare(
+          `SELECT ${RUN_RECORD_PROJECTION} FROM runs
+           WHERE run_id = ? AND session_id = ?`,
+        )
+        .get(command.runId, command.sessionId);
+      const session = timelineRevisionSchema.optional().parse(
+        this.#db
+          .prepare(
+            `SELECT timeline_revision AS timelineRevision
+             FROM sessions WHERE session_id = ?`,
+          )
+          .get(command.sessionId),
+      );
       const cursor = this.status("").synchronization.cursor;
-      if (!run || runRecordSchema.parse(run).state !== "executing" ||
-          currentWorkerGeneration !== command.workerGeneration ||
-          session?.timelineRevision !== command.observedTimelineRevision) {
+      const runIsExecuting =
+        run !== undefined && runRecordSchema.parse(run).state === "executing";
+      const targetsActiveExecution =
+        runIsExecuting &&
+        activeWorkerGeneration === command.workerGeneration &&
+        session?.timelineRevision === command.observedTimelineRevision;
+      if (!targetsActiveExecution) {
         this.#db.exec("COMMIT");
         return { kind: "rejected", error: "stale-execution", cursor };
       }
+
       const entryId = `entry_${randomUUID()}`;
-      this.#db.prepare(
-        `INSERT INTO timeline_entries
-         (entry_id, session_id, run_id, entry_order, kind, text, created_at)
-         VALUES (?, ?, ?, ?, 'steering', ?, ?)`,
-      ).run(entryId, command.sessionId, command.runId,
-        this.nextTimelineOrder(command.sessionId), command.text, now);
-      this.#db.prepare(
-        `INSERT INTO steering
-         (command_id, device_id, run_id, worker_generation, text, entry_id, state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
-      ).run(command.commandId, deviceId, command.runId,
-        command.workerGeneration, command.text, entryId, now);
-      this.#db.prepare(
-        "UPDATE sessions SET timeline_revision = timeline_revision + 1 WHERE session_id = ?",
-      ).run(command.sessionId);
-      this.#db.prepare(
-        "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
-      ).run(now);
-      const entry = timelineEntrySchema.parse(this.#db.prepare(
-        `SELECT ${TIMELINE_ENTRY_PROJECTION} FROM timeline_entries WHERE entry_id = ?`,
-      ).get(entryId));
+      this.#db
+        .prepare(
+          `INSERT INTO timeline_entries
+           (entry_id, session_id, run_id, entry_order, kind, text, created_at)
+           VALUES (?, ?, ?, ?, 'steering', ?, ?)`,
+        )
+        .run(
+          entryId,
+          command.sessionId,
+          command.runId,
+          this.nextTimelineOrder(command.sessionId),
+          command.text,
+          now,
+        );
+      this.#db
+        .prepare(
+          `INSERT INTO steering
+           (command_id, device_id, run_id, worker_generation, text, entry_id,
+            state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
+        )
+        .run(
+          command.commandId,
+          deviceId,
+          command.runId,
+          command.workerGeneration,
+          command.text,
+          entryId,
+          now,
+        );
+      this.#db
+        .prepare(
+          `UPDATE sessions SET timeline_revision = timeline_revision + 1
+           WHERE session_id = ?`,
+        )
+        .run(command.sessionId);
+      this.#db
+        .prepare(
+          `UPDATE host SET sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(now);
+      const entry = this.loadTimelineEntry(entryId);
       this.#db.exec("COMMIT");
-      return { kind: "accepted", entry, cursor: this.status("").synchronization.cursor };
+      return {
+        kind: "accepted",
+        entry,
+        cursor: this.status("").synchronization.cursor,
+      };
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
@@ -760,15 +808,22 @@ export class AuthorityStore {
   }
 
   markSteering(commandId: string, deviceId: string, applied: boolean): void {
-    this.#db.prepare(
-      "UPDATE steering SET state = ? WHERE command_id = ? AND device_id = ? AND state = 'accepted'",
-    ).run(applied ? "applied" : "unapplied", commandId, deviceId);
+    const state = applied ? "applied" : "unapplied";
+    this.#db
+      .prepare(
+        `UPDATE steering SET state = ?
+         WHERE command_id = ? AND device_id = ? AND state = 'accepted'`,
+      )
+      .run(state, commandId, deviceId);
   }
 
   markRunSteeringUnapplied(runId: string): void {
-    this.#db.prepare(
-      "UPDATE steering SET state = 'unapplied' WHERE run_id = ? AND state = 'accepted'",
-    ).run(runId);
+    this.#db
+      .prepare(
+        `UPDATE steering SET state = 'unapplied'
+         WHERE run_id = ? AND state = 'accepted'`,
+      )
+      .run(runId);
   }
 
   completeRun(
