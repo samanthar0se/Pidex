@@ -35,6 +35,11 @@ export interface PushHint {
   body: string;
 }
 
+type RevocationFact = Pick<
+  PushHint,
+  "eventId" | "hostId" | "occurredAt"
+>;
+
 type PushTransport = (
   subscription: string,
   encrypted: Uint8Array,
@@ -96,16 +101,22 @@ export class AdvisoryPush {
   /** Remove delivery authority before attempting one non-authoritative final hint. */
   async revoke(
     deviceId: string,
-    fact?: { eventId: string; hostId: string; occurredAt: string },
+    revocation?: RevocationFact,
   ): Promise<boolean> {
     const device = this.#devices.get(deviceId);
     this.#devices.delete(deviceId);
-    if (!device || !fact) return false;
+    if (!device || !revocation) {
+      return false;
+    }
+
     const { preferences } = device;
-    if (!preferences.subscription || !preferences.encryptionKey) return false;
+    if (!preferences.subscription || !preferences.encryptionKey) {
+      return false;
+    }
+
     const hint: PushHint = {
       version: 1,
-      ...fact,
+      ...revocation,
       category: "revocation",
       path: "/",
       title: "Device revoked",

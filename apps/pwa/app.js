@@ -11,8 +11,10 @@ const DEVICE_STORES = [IDENTITY_STORE, DRAFT_STORE, PREFERENCES_STORE];
 const PROTOCOL_BASIS = "1.1";
 const MAX_CACHED_SESSION_PROJECTIONS = 10;
 const MAX_FINALIZED_PAGES = 25;
-const DEFAULT_CACHE_BUDGET_BYTES = 50 * 1024 * 1024;
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+const DEFAULT_CACHE_BUDGET_BYTES = 50 * BYTES_PER_MEGABYTE;
 const CACHE_BUDGET_PREFERENCE = "cache-budget-bytes";
+const PUSH_RECEIPT_DATABASE = "pidex-push-receipts";
 const HOST_SCOPE_KEY = "host";
 const SESSION_SCOPE_PREFIX = "session:";
 const CACHE_STORES = {
@@ -25,6 +27,14 @@ const CACHE_STORES = {
 const WORKING_SET_STORES = [
   CACHE_STORES.metadata,
   CACHE_STORES.discovery,
+  CACHE_STORES.sessionProjections,
+];
+const SESSION_DETAIL_CACHE_STORES = [
+  CACHE_STORES.finalizedPages,
+  CACHE_STORES.immutableBlobs,
+];
+const BUDGETED_CACHE_STORES = [
+  ...SESSION_DETAIL_CACHE_STORES,
   CACHE_STORES.sessionProjections,
 ];
 const OFFLINE_STATUS = "Offline · cached state may be stale";
@@ -1538,24 +1548,30 @@ function loadDevice() {
 }
 
 async function initializeStorageManagement() {
-  const persistence = navigator.storage?.persist
-    ? await navigator.storage.persist().catch(() => false) : false;
-  const persisted = persistence || (navigator.storage?.persisted
-    ? await navigator.storage.persisted().catch(() => false) : false);
-  const budget = await loadPreference(CACHE_BUDGET_PREFERENCE)
-    .catch(() => DEFAULT_CACHE_BUDGET_BYTES) || DEFAULT_CACHE_BUDGET_BYTES;
-  const input = $("#storage-budget");
-  if (input) input.value = String(Math.round(budget / 1024 / 1024));
+  let persisted = false;
+  if (navigator.storage?.persist) {
+    persisted = await navigator.storage.persist().catch(() => false);
+  }
+  if (!persisted && navigator.storage?.persisted) {
+    persisted = await navigator.storage.persisted().catch(() => false);
+  }
+
+  const budget = await loadCacheBudget();
+  const budgetInput = $("#storage-budget");
+  if (budgetInput) {
+    budgetInput.value = String(Math.round(budget / BYTES_PER_MEGABYTE));
+  }
   $("#storage-persistence").textContent = persisted
     ? "Persistent storage granted"
     : "Storage may be evicted by the browser or OS";
+
   $("#settings").disabled = false;
   $("#settings").onclick = async () => {
     await refreshStorageUsage(budget);
     $("#storage-settings").showModal();
   };
   $("#save-storage-budget").onclick = async () => {
-    const bytes = Math.max(1, Number(input.value)) * 1024 * 1024;
+    const bytes = Math.max(1, Number(budgetInput.value)) * BYTES_PER_MEGABYTE;
     await savePreference(CACHE_BUDGET_PREFERENCE, bytes);
     await enforceCacheBudget(bytes);
     await refreshStorageUsage(bytes);
@@ -1575,58 +1591,74 @@ function loadPreference(key) {
   );
 }
 
+async function loadCacheBudget() {
+  const budget = await loadPreference(CACHE_BUDGET_PREFERENCE)
+    .catch(() => DEFAULT_CACHE_BUDGET_BYTES);
+  return budget || DEFAULT_CACHE_BUDGET_BYTES;
+}
+
 async function refreshStorageUsage(budget) {
-  const estimate = navigator.storage?.estimate
-    ? await navigator.storage.estimate().catch(() => ({})) : {};
+  let estimate = {};
+  if (navigator.storage?.estimate) {
+    estimate = await navigator.storage.estimate().catch(() => ({}));
+  }
   $("#storage-usage").textContent =
     `${formatBytes(estimate.usage || 0)} used · ${formatBytes(budget)} Pidex budget`;
 }
 
 function formatBytes(bytes) {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / BYTES_PER_MEGABYTE).toFixed(1)} MB`;
 }
 
 function reportStorageWriteFailure(error) {
   const label = $("#storage-failure");
-  if (label) label.textContent = `Storage write failed: ${error?.message || error}`;
+  if (label) {
+    label.textContent = `Storage write failed: ${error?.message || error}`;
+  }
 }
 
 async function enforceCacheBudget(explicitBudget) {
-  if (!state.hostId) return;
-  const budget = explicitBudget || await loadPreference(CACHE_BUDGET_PREFERENCE)
-    .catch(() => DEFAULT_CACHE_BUDGET_BYTES) || DEFAULT_CACHE_BUDGET_BYTES;
+  if (!state.hostId) {
+    return;
+  }
+
+  const budget = explicitBudget || await loadCacheBudget();
   await withCache(state.hostId, async database => {
-    const stores = [
-      CACHE_STORES.finalizedPages,
-      CACHE_STORES.immutableBlobs,
-      CACHE_STORES.sessionProjections,
-    ];
-    const transaction = database.transaction(stores, "readwrite");
+    const transaction = database.transaction(
+      BUDGETED_CACHE_STORES,
+      "readwrite",
+    );
     const candidates = [];
     let usage = 0;
-    for (const storeName of stores) {
+    for (const storeName of BUDGETED_CACHE_STORES) {
       const store = transaction.objectStore(storeName);
-      const [keys, values] = await Promise.all([
-        requestValue(store.getAllKeys()), requestValue(store.getAll()),
-      ]);
-      values.forEach((value, index) => {
+      for (const { key, value } of await readStoreEntries(store)) {
         const bytes = new Blob([JSON.stringify(value)]).size;
         usage += bytes;
-        const sessionId = value.scope?.startsWith(SESSION_SCOPE_PREFIX)
-          ? value.scope.slice(SESSION_SCOPE_PREFIX.length) : null;
-        candidates.push({ storeName, key: keys[index], value, bytes, sessionId });
-      });
+        candidates.push({
+          storeName,
+          key,
+          bytes,
+          sessionId: cacheEntrySessionId(value),
+          lastViewed: String(value.lastViewed || value.fetchedAt || ""),
+        });
+      }
     }
     candidates.sort((left, right) => {
-      const tier = name => name === CACHE_STORES.sessionProjections ? 1 : 0;
-      return tier(left.storeName) - tier(right.storeName) ||
-        String(left.value.lastViewed || left.value.fetchedAt || "")
-          .localeCompare(String(right.value.lastViewed || right.value.fetchedAt || ""));
+      return cacheEvictionTier(left.storeName) -
+        cacheEvictionTier(right.storeName) ||
+        left.lastViewed.localeCompare(right.lastViewed);
     });
+
+    const protectedSessionId = currentSessionId();
     for (const candidate of candidates) {
-      if (usage <= budget) break;
+      if (usage <= budget) {
+        break;
+      }
       // Never evict the current View; lightweight discovery summaries remain.
-      if (candidate.sessionId === currentSessionId()) continue;
+      if (candidate.sessionId === protectedSessionId) {
+        continue;
+      }
       transaction.objectStore(candidate.storeName).delete(candidate.key);
       usage -= candidate.bytes;
     }
@@ -1634,22 +1666,44 @@ async function enforceCacheBudget(explicitBudget) {
   });
 }
 
+function cacheEntrySessionId(value) {
+  if (!value.scope?.startsWith(SESSION_SCOPE_PREFIX)) {
+    return null;
+  }
+  return value.scope.slice(SESSION_SCOPE_PREFIX.length);
+}
+
+function cacheEvictionTier(storeName) {
+  return storeName === CACHE_STORES.sessionProjections ? 1 : 0;
+}
+
+async function readStoreEntries(store) {
+  const [keys, values] = await Promise.all([
+    requestValue(store.getAllKeys()),
+    requestValue(store.getAll()),
+  ]);
+  return values.map((value, index) => ({ key: keys[index], value }));
+}
+
 async function clearSessionData() {
   const sessionId = currentSessionId();
-  if (!state.hostId || !sessionId) return;
+  if (!state.hostId || !sessionId) {
+    return;
+  }
+
   await withCache(state.hostId, async database => {
-    const stores = [CACHE_STORES.sessionProjections, CACHE_STORES.finalizedPages,
-      CACHE_STORES.immutableBlobs];
-    const transaction = database.transaction(stores, "readwrite");
+    const transaction = database.transaction(
+      BUDGETED_CACHE_STORES,
+      "readwrite",
+    );
     transaction.objectStore(CACHE_STORES.sessionProjections).delete(sessionId);
-    for (const name of stores.slice(1)) {
-      const store = transaction.objectStore(name);
-      const [keys, values] = await Promise.all([
-        requestValue(store.getAllKeys()), requestValue(store.getAll()),
-      ]);
-      values.forEach((value, index) => {
-        if (value.scope === sessionScopeKey(sessionId)) store.delete(keys[index]);
-      });
+    for (const storeName of SESSION_DETAIL_CACHE_STORES) {
+      const store = transaction.objectStore(storeName);
+      for (const { key, value } of await readStoreEntries(store)) {
+        if (value.scope === sessionScopeKey(sessionId)) {
+          store.delete(key);
+        }
+      }
     }
     await transactionDone(transaction);
   });
@@ -1666,16 +1720,28 @@ async function cleanupRevokedDevice() {
 async function clearAllDeviceData() {
   socket?.close();
   const registration = await navigator.serviceWorker?.ready.catch(() => null);
-  await registration?.pushManager?.getSubscription().then(value => value?.unsubscribe())
+  await registration?.pushManager?.getSubscription()
+    .then(subscription => subscription?.unsubscribe())
     .catch(() => {});
   const hostId = state.hostId || localStorage.getItem(EXPECTED_HOST_ID_KEY);
-  if (hostId) await resetDisposableCache(hostId).catch(() => {});
-  await Promise.all([DEVICE_DATABASE, "pidex-push-receipts"].map(deleteDatabase));
+  if (hostId) {
+    await resetDisposableCache(hostId).catch(() => {});
+  }
+  await Promise.all(
+    [DEVICE_DATABASE, PUSH_RECEIPT_DATABASE].map(deleteDatabase),
+  );
   for (const name of await caches.keys()) {
-    if (name.startsWith("pidex-")) await caches.delete(name);
+    if (name.startsWith("pidex-")) {
+      await caches.delete(name);
+    }
   }
   localStorage.removeItem(EXPECTED_HOST_ID_KEY);
-  Object.assign(state, { hostId: null, apiToken: null, drafts: new Map(), scopes: new Map() });
+  Object.assign(state, {
+    hostId: null,
+    apiToken: null,
+    drafts: new Map(),
+    scopes: new Map(),
+  });
 }
 
 function deleteDatabase(name) {

@@ -81,14 +81,18 @@ test("revocation stops scheduling and permits at most one final encrypted hint",
     subscription: "subscription",
     encryptionKey: key,
   });
-
-  assert.equal(await push.revoke("device-1", {
+  const revocation = {
     eventId: "revocation:device-1",
     hostId: "host-1",
     occurredAt: "2026-07-18T12:00:00.000Z",
-  }), true);
+  };
+
+  assert.equal(
+    await push.revoke("device-1", revocation),
+    true,
+  );
   assert.equal(await push.publish(interaction), 0);
-  assert.equal(await push.revoke("device-1"), false);
+  assert.equal(await push.revoke("device-1", revocation), false);
   assert.equal(sent.length, 1);
   assert.equal(decryptPushHint(sent[0]!, key).category, "revocation");
 });
