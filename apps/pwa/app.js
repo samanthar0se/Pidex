@@ -247,8 +247,16 @@ function renderHostSnapshot(message) {
   );
   workspaceSelect.replaceChildren(new Option("No Workspace", ""));
   renderSessions();
-  const selectedSessionId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
-  if (selectedSessionId) controlSocket.send(JSON.stringify({ type: "scope.set", sessionIds: [selectedSessionId], protocolVersion: "1.1" }));
+  const selectedSessionId = location.pathname.match(
+    /^\/sessions\/([^/]+)$/,
+  )?.[1];
+  if (selectedSessionId) {
+    controlSocket.send(JSON.stringify({
+      type: "scope.set",
+      sessionIds: [selectedSessionId],
+      protocolVersion: "1.1",
+    }));
+  }
 }
 
 function renderInteraction(interaction) {
@@ -257,30 +265,76 @@ function renderInteraction(interaction) {
     interactionArea.replaceChildren();
     return;
   }
+
   const message = document.createElement("p");
-  message.textContent = interaction.payload.message; // Always inert; extension markup is never interpreted.
-  let control;
-  if (interaction.kind === "select") {
-    control = document.createElement("select");
-    control.replaceChildren(...interaction.payload.options.map(value => new Option(value, value)));
-  } else if (interaction.kind === "confirm") {
-    control = document.createElement("input"); control.type = "checkbox";
-  } else {
-    control = document.createElement("textarea");
-    control.value = typeof interaction.payload.defaultValue === "string" ? interaction.payload.defaultValue : "";
+  // Keep extension-provided content inert rather than interpreting it as markup.
+  message.textContent = interaction.payload.message;
+  const control = createInteractionControl(interaction);
+  const respondButton = document.createElement("button");
+  respondButton.textContent = "Respond";
+  const dismissButton = document.createElement("button");
+  dismissButton.textContent = "Dismiss";
+
+  respondButton.addEventListener("click", () => {
+    sendInteractionResolution(interaction, control, false);
+  });
+  dismissButton.addEventListener("click", () => {
+    sendInteractionResolution(interaction, control, true);
+  });
+
+  if (interaction.state === "resolving") {
+    control.disabled = true;
+    respondButton.disabled = true;
+    dismissButton.disabled = true;
   }
-  const respond = document.createElement("button"); respond.textContent = "Respond";
-  const dismiss = document.createElement("button"); dismiss.textContent = "Dismiss";
-  const send = dismissing => controlSocket.send(JSON.stringify({
-    type: "interaction.resolve", commandId: crypto.randomUUID(), interactionId: interaction.interactionId,
-    workerGeneration: interaction.workerGeneration, observedRevision: interaction.revision,
-    dismiss: dismissing, ...(dismissing ? {} : { value: interaction.kind === "confirm" ? control.checked : control.value }),
-  }));
-  respond.addEventListener("click", () => send(false));
-  dismiss.addEventListener("click", () => send(true));
-  if (interaction.state === "resolving") { control.disabled = true; respond.disabled = true; dismiss.disabled = true; }
-  interactionArea.replaceChildren(message, control, respond, dismiss);
+
+  interactionArea.replaceChildren(
+    message,
+    control,
+    respondButton,
+    dismissButton,
+  );
   interactionArea.hidden = false;
+}
+
+function createInteractionControl(interaction) {
+  if (interaction.kind === "select") {
+    const select = document.createElement("select");
+    const options = interaction.payload.options.map(
+      value => new Option(value, value),
+    );
+    select.replaceChildren(...options);
+    return select;
+  }
+
+  if (interaction.kind === "confirm") {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    return checkbox;
+  }
+
+  const editor = document.createElement("textarea");
+  editor.value = typeof interaction.payload.defaultValue === "string"
+    ? interaction.payload.defaultValue
+    : "";
+  return editor;
+}
+
+function sendInteractionResolution(interaction, control, dismiss) {
+  const command = {
+    type: "interaction.resolve",
+    commandId: crypto.randomUUID(),
+    interactionId: interaction.interactionId,
+    workerGeneration: interaction.workerGeneration,
+    observedRevision: interaction.revision,
+    dismiss,
+  };
+  if (!dismiss) {
+    command.value = interaction.kind === "confirm"
+      ? control.checked
+      : control.value;
+  }
+  controlSocket.send(JSON.stringify(command));
 }
 
 function renderSessions() {

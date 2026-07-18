@@ -8,6 +8,8 @@ import {
   adaptersFor,
   executePidexFirewallOperation,
   type HostAdapters,
+  type PiInteractionRequest,
+  type PiInteractionResult,
   type WindowsPlatformAdapter,
 } from "../../adapters/src/index.js";
 import {
@@ -28,7 +30,10 @@ import {
   PairingError,
   type PairingInstructions,
 } from "./pairing.js";
-import { PiSessionWorker } from "./pi-worker.js";
+import {
+  PiSessionWorker,
+  WORKER_PROTOCOL_GENERATION,
+} from "./pi-worker.js";
 import {
   AuthorityStore,
   type InitialCatalog,
@@ -43,6 +48,7 @@ const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_RUN_PROMPT_LENGTH = 100_000;
+const MAX_INTERACTION_RESPONSE_BYTES = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const INTERNAL_WORKER_CAPABILITIES = new Set([
@@ -232,7 +238,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
   const workers = new Map<string, PiSessionWorker>();
-  const interactionResolvers = new Map<string, (result: { dismissed: true } | { dismissed: false; value: string | boolean }) => void>();
+  const interactionResolvers = new Map<
+    string,
+    (result: PiInteractionResult) => void
+  >();
 
   function sendServerMessage(client: WebSocket, message: ServerMessage): void {
     if (client.readyState !== client.OPEN) {
@@ -542,7 +551,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           protocolBasis: protocolVersion,
           capabilities: ["session.rename"],
         },
-        snapshot: { session, timeline: store.timeline(sessionId), interactions: store.interactions(sessionId) },
+        snapshot: {
+          session,
+          timeline: store.timeline(sessionId),
+          interactions: store.interactions(sessionId),
+        },
       });
     }
   }
@@ -754,27 +767,19 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     prompt: string,
   ): void {
     void worker
-      .execute(prompt, event => {
-        const change = store.applyTimelineEvent(
-          sessionId,
-          runId,
-          event,
-          adapters.clock.now(),
-        );
-        publishTimelineChange(sessionId, change);
-      }, request => new Promise(resolve => {
-        const created = store.createInteraction({
-          sessionId, runId, workerGeneration: 1, correlationId: request.correlationId,
-          kind: request.kind,
-          payload: { message: request.message, ...(request.kind === "select" ? { options: request.options } : {}),
-            ...(request.kind !== "select" && request.defaultValue !== undefined ? { defaultValue: request.defaultValue } : {}) },
-          ...(request.provenance ? { provenance: request.provenance } : {}),
-          createdAt: adapters.clock.now(),
-        });
-        interactionResolvers.set(created.interaction.interactionId, resolve);
-        publishTimelineChange(sessionId, created.timelineChange);
-        publishInteraction(created.interaction);
-      }))
+      .execute(
+        prompt,
+        event => {
+          const change = store.applyTimelineEvent(
+            sessionId,
+            runId,
+            event,
+            adapters.clock.now(),
+          );
+          publishTimelineChange(sessionId, change);
+        },
+        request => waitForInteractionResolution(sessionId, runId, request),
+      )
       .then(executionResult => {
         const finalAssistant = store.finalizeAssistant(sessionId, runId);
         if (finalAssistant) {
@@ -814,6 +819,28 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       });
   }
 
+  function waitForInteractionResolution(
+    sessionId: string,
+    runId: string,
+    request: PiInteractionRequest,
+  ): Promise<PiInteractionResult> {
+    return new Promise(resolve => {
+      const created = store.createInteraction({
+        sessionId,
+        runId,
+        workerGeneration: WORKER_PROTOCOL_GENERATION,
+        correlationId: request.correlationId,
+        kind: request.kind,
+        payload: interactionPayload(request),
+        ...(request.provenance ? { provenance: request.provenance } : {}),
+        createdAt: adapters.clock.now(),
+      });
+      interactionResolvers.set(created.interaction.interactionId, resolve);
+      publishTimelineChange(sessionId, created.timelineChange);
+      publishInteraction(created.interaction);
+    });
+  }
+
   function publishTimelineChange(
     sessionId: string,
     change: TimelineChange,
@@ -838,25 +865,81 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  function handleInteractionResolve(client: WebSocket, command: InteractionResolveMessage): void {
+  function handleInteractionResolve(
+    client: WebSocket,
+    command: InteractionResolveMessage,
+  ): void {
+    const reject = (error: string): void => {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error,
+      });
+    };
+
     let interaction: Interaction;
-    try { interaction = store.loadInteraction(command.interactionId); }
-    catch { return reject("unknown-interaction"); }
-    if (interaction.state !== "open" || interaction.revision !== command.observedRevision || interaction.workerGeneration !== command.workerGeneration) return reject("stale-interaction");
-    if (!command.dismiss && !validInteractionValue(interaction, command.value)) return reject("invalid-interaction-value");
+    try {
+      interaction = store.loadInteraction(command.interactionId);
+    } catch {
+      reject("unknown-interaction");
+      return;
+    }
+
+    const isStale =
+      interaction.state !== "open" ||
+      interaction.revision !== command.observedRevision ||
+      interaction.workerGeneration !== command.workerGeneration;
+    if (isStale) {
+      reject("stale-interaction");
+      return;
+    }
+
+    let result: PiInteractionResult;
+    if (command.dismiss) {
+      result = { dismissed: true };
+    } else if (isValidInteractionValue(interaction, command.value)) {
+      result = { dismissed: false, value: command.value };
+    } else {
+      reject("invalid-interaction-value");
+      return;
+    }
+
     const resolver = interactionResolvers.get(interaction.interactionId);
-    if (!resolver) return reject("exact-worker-unavailable");
-    const resolving = store.transitionInteraction(interaction.interactionId, "open", "resolving");
-    if (!resolving) return reject("stale-interaction");
+    if (!resolver) {
+      reject("exact-worker-unavailable");
+      return;
+    }
+
+    const resolving = store.transitionInteraction(
+      interaction.interactionId,
+      "open",
+      "resolving",
+    );
+    if (!resolving) {
+      reject("stale-interaction");
+      return;
+    }
+
     publishInteraction(resolving);
-    sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted" });
-    resolver(command.dismiss ? { dismissed: true } : { dismissed: false, value: command.value as string | boolean });
+    sendServerMessage(client, {
+      type: "command.outcome",
+      commandId: command.commandId,
+      outcome: "accepted",
+    });
+    resolver(result);
     interactionResolvers.delete(interaction.interactionId);
     // Resolving the exact in-process request is the worker acknowledgement;
     // only then may authority expose a terminal state.
-    const terminal = store.transitionInteraction(interaction.interactionId, "resolving", command.dismiss ? "dismissed" : "responded");
-    if (terminal) publishInteraction(terminal);
-    function reject(error: string): void { sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error }); }
+    const terminalState = command.dismiss ? "dismissed" : "responded";
+    const terminal = store.transitionInteraction(
+      interaction.interactionId,
+      "resolving",
+      terminalState,
+    );
+    if (terminal) {
+      publishInteraction(terminal);
+    }
   }
 
   return {
@@ -1020,22 +1103,55 @@ function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
   );
 }
 
-function isInteractionResolveMessage(value: unknown): value is InteractionResolveMessage {
-  if (!value || typeof value !== "object") return false;
+function isInteractionResolveMessage(
+  value: unknown,
+): value is InteractionResolveMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "interaction.resolve" && typeof item.commandId === "string" &&
-    typeof item.interactionId === "string" && Number.isSafeInteger(item.workerGeneration) &&
+  return (
+    item.type === "interaction.resolve" &&
+    typeof item.commandId === "string" &&
+    typeof item.interactionId === "string" &&
+    Number.isSafeInteger(item.workerGeneration) &&
     Number.isSafeInteger(item.observedRevision) &&
-    (item.dismiss === undefined || typeof item.dismiss === "boolean");
+    (item.dismiss === undefined || typeof item.dismiss === "boolean")
+  );
 }
 
-function validInteractionValue(interaction: Interaction, value: unknown): boolean {
+function isValidInteractionValue(
+  interaction: Interaction,
+  value: unknown,
+): value is string | boolean {
   switch (interaction.kind) {
-    case "select": return typeof value === "string" && interaction.payload.options?.includes(value) === true;
-    case "confirm": return typeof value === "boolean";
+    case "select":
+      return (
+        typeof value === "string" &&
+        interaction.payload.options?.includes(value) === true
+      );
+    case "confirm":
+      return typeof value === "boolean";
     case "input":
-    case "editor": return typeof value === "string" && Buffer.byteLength(value) <= 100_000;
+    case "editor":
+      return (
+        typeof value === "string" &&
+        Buffer.byteLength(value) <= MAX_INTERACTION_RESPONSE_BYTES
+      );
   }
+}
+
+function interactionPayload(
+  request: PiInteractionRequest,
+): Interaction["payload"] {
+  const payload: Interaction["payload"] = { message: request.message };
+  if (request.kind === "select") {
+    payload.options = request.options;
+  } else if (request.defaultValue !== undefined) {
+    payload.defaultValue = request.defaultValue;
+  }
+  return payload;
 }
 
 function isCapabilityBasisRequirement(

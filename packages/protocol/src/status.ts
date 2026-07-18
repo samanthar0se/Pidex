@@ -169,12 +169,23 @@ export const timelineChangeSchema = z.object({
 });
 
 export const interactionSchema = z.object({
-  interactionId: z.string(), sessionId: z.string(), runId: z.string().nullable(),
-  workerGeneration: z.number().int().positive(), correlationId: z.string(),
+  interactionId: z.string(),
+  sessionId: z.string(),
+  runId: z.string().nullable(),
+  workerGeneration: z.number().int().positive(),
+  correlationId: z.string(),
   kind: z.enum(["select", "confirm", "input", "editor"]),
-  payload: z.object({ message: z.string(), options: z.array(z.string()).optional(), defaultValue: z.union([z.string(), z.boolean()]).optional() }).strict(),
-  provenance: z.string().optional(), state: z.enum(["open", "resolving", "responded", "dismissed"]),
-  revision: z.number().int().positive(), createdAt: z.number(),
+  payload: z
+    .object({
+      message: z.string(),
+      options: z.array(z.string()).optional(),
+      defaultValue: z.union([z.string(), z.boolean()]).optional(),
+    })
+    .strict(),
+  provenance: z.string().optional(),
+  state: z.enum(["open", "resolving", "responded", "dismissed"]),
+  revision: z.number().int().positive(),
+  createdAt: z.number(),
 });
 export type Interaction = z.infer<typeof interactionSchema>;
 
@@ -291,7 +302,10 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("timeline.change"),
     sessionId: z.string(),
   }),
-  z.object({ type: z.literal("interaction.change"), interaction: interactionSchema }),
+  z.object({
+    type: z.literal("interaction.change"),
+    interaction: interactionSchema,
+  }),
 ]).and(optionalEnvelopeSchema);
 
 export type ServerMessage = z.infer<typeof serverMessageSchema>;

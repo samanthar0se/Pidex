@@ -158,6 +158,22 @@ const TIMELINE_ENTRY_PROJECTION = `
   revision, finalized != 0 AS finalized,
   tool_call_id AS toolCallId
 `;
+const INTERACTION_PROJECTION = `
+  interaction_id AS interactionId, session_id AS sessionId,
+  run_id AS runId, worker_generation AS workerGeneration,
+  correlation_id AS correlationId, kind, payload_json AS payloadJson,
+  provenance, state, revision, created_at AS createdAt
+`;
+
+type NewInteraction = Omit<
+  Interaction,
+  "interactionId" | "state" | "revision"
+>;
+
+interface CreatedInteraction {
+  interaction: Interaction;
+  timelineChange: TimelineChange;
+}
 
 export type SubmitOutcome = z.infer<typeof submitOutcomeSchema>;
 
@@ -721,54 +737,103 @@ export class AuthorityStore {
   }
 
   interactions(sessionId: string): Interaction[] {
-    return this.#db.prepare(
-      `SELECT interaction_id AS interactionId, session_id AS sessionId,
-       run_id AS runId, worker_generation AS workerGeneration,
-       correlation_id AS correlationId, kind, payload_json AS payloadJson,
-       provenance, state, revision, created_at AS createdAt
-       FROM interactions WHERE session_id = ? AND state IN ('open','resolving')
-       ORDER BY created_at, interaction_id`,
-    ).all(sessionId).map(row => interactionFromRow(row));
+    const rows = this.#db
+      .prepare(
+        `SELECT ${INTERACTION_PROJECTION}
+         FROM interactions
+         WHERE session_id = ? AND state IN ('open','resolving')
+         ORDER BY created_at, interaction_id`,
+      )
+      .all(sessionId);
+    return rows.map(row => interactionFromRow(row));
   }
 
-  createInteraction(input: Omit<Interaction, "interactionId" | "state" | "revision">): { interaction: Interaction; timelineChange: TimelineChange } {
+  createInteraction(input: NewInteraction): CreatedInteraction {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const interaction: Interaction = { ...input, interactionId: `interaction_${randomUUID()}`, state: "open", revision: 1 };
-      this.#db.prepare(
-        `INSERT INTO interactions VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?)`,
-      ).run(interaction.interactionId, interaction.sessionId, interaction.runId,
-        interaction.workerGeneration, interaction.correlationId, interaction.kind,
-        JSON.stringify(interaction.payload), interaction.provenance ?? null, interaction.createdAt);
+      const interaction: Interaction = {
+        ...input,
+        interactionId: `interaction_${randomUUID()}`,
+        state: "open",
+        revision: 1,
+      };
+      this.#db
+        .prepare(
+          `INSERT INTO interactions
+           (interaction_id, session_id, run_id, worker_generation,
+            correlation_id, kind, payload_json, provenance, state, revision,
+            created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, ?)`,
+        )
+        .run(
+          interaction.interactionId,
+          interaction.sessionId,
+          interaction.runId,
+          interaction.workerGeneration,
+          interaction.correlationId,
+          interaction.kind,
+          JSON.stringify(interaction.payload),
+          interaction.provenance ?? null,
+          interaction.createdAt,
+        );
+
       const session = this.loadSession(interaction.sessionId);
       const entryId = `entry_${randomUUID()}`;
-      this.#db.prepare(
-        `INSERT INTO timeline_entries (entry_id, session_id, run_id, entry_order, kind, text, created_at)
-         VALUES (?, ?, ?, ?, 'interaction', ?, ?)`,
-      ).run(entryId, interaction.sessionId, interaction.runId,
-        this.nextTimelineOrder(interaction.sessionId), `${interaction.kind}: ${interaction.payload.message}`, interaction.createdAt);
-      const timelineChange = this.advanceTimelineRevision(interaction.sessionId, session.timelineRevision, entryId);
+      this.#db
+        .prepare(
+          `INSERT INTO timeline_entries
+           (entry_id, session_id, run_id, entry_order, kind, text, created_at)
+           VALUES (?, ?, ?, ?, 'interaction', ?, ?)`,
+        )
+        .run(
+          entryId,
+          interaction.sessionId,
+          interaction.runId,
+          this.nextTimelineOrder(interaction.sessionId),
+          `${interaction.kind}: ${interaction.payload.message}`,
+          interaction.createdAt,
+        );
+      const timelineChange = this.advanceTimelineRevision(
+        interaction.sessionId,
+        session.timelineRevision,
+        entryId,
+      );
       this.#db.exec("COMMIT");
       return { interaction, timelineChange };
-    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
-  transitionInteraction(interactionId: string, from: Interaction["state"], to: Interaction["state"]): Interaction | undefined {
-    const changed = this.#db.prepare(
-      `UPDATE interactions SET state = ?, revision = revision + 1 WHERE interaction_id = ? AND state = ?`,
-    ).run(to, interactionId, from);
-    if (changed.changes !== 1) return undefined;
+  transitionInteraction(
+    interactionId: string,
+    from: Interaction["state"],
+    to: Interaction["state"],
+  ): Interaction | undefined {
+    const changed = this.#db
+      .prepare(
+        `UPDATE interactions SET state = ?, revision = revision + 1
+         WHERE interaction_id = ? AND state = ?`,
+      )
+      .run(to, interactionId, from);
+    if (changed.changes !== 1) {
+      return undefined;
+    }
     return this.loadInteraction(interactionId);
   }
 
   loadInteraction(interactionId: string): Interaction {
-    const row = this.#db.prepare(
-      `SELECT interaction_id AS interactionId, session_id AS sessionId, run_id AS runId,
-       worker_generation AS workerGeneration, correlation_id AS correlationId, kind,
-       payload_json AS payloadJson, provenance, state, revision, created_at AS createdAt
-       FROM interactions WHERE interaction_id = ?`,
-    ).get(interactionId);
-    if (!row) throw new Error("unknown-interaction");
+    const row = this.#db
+      .prepare(
+        `SELECT ${INTERACTION_PROJECTION}
+         FROM interactions
+         WHERE interaction_id = ?`,
+      )
+      .get(interactionId);
+    if (!row) {
+      throw new Error("unknown-interaction");
+    }
     return interactionFromRow(row);
   }
 
