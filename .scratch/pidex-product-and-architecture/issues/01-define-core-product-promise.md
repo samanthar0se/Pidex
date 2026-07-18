@@ -17,7 +17,7 @@ Pidex v1 promises one developer a complete, reconnectable Pi conversation experi
 - Create, find, open, rename, archive, resume, and fork persistent sessions.
 - Read complete history and stream live run output and status.
 - Compose prompts and supported inputs, select runtime-exposed model and mode options, steer an active run, and queue follow-ups where the runtime supports them.
-- Answer approvals and permission requests and cancel active work.
+- Answer structured Pi interactions and cancel active work.
 - Move between devices or use several authenticated clients at once. Clients share live control; the host establishes authoritative ordering, rejects actions invalidated by a race, and immediately reconciles every client.
 - Disconnect, sleep, close, or reload every client without stopping host-owned sessions or runs. Reconnection and tested host/application restarts recover authoritative state without losing or duplicating accepted work.
 
@@ -31,4 +31,4 @@ Pidex v1 promises one developer a complete, reconnectable Pi conversation experi
 
 ### Measurable success
 
-The primary release test is a one-week daily-driver trial in which the developer performs real Pi work through Pidex from desktop and mobile without returning to the host UI for any core session action. Across the recovery and multi-client scenarios defined by later tickets, the trial must produce no lost or duplicated accepted prompts, approvals, cancellations, or completed run output. The final quality ticket will turn this outcome, the concurrent-session baseline, and reconnect/restart scenarios into precise acceptance thresholds.
+The primary release test is a one-week daily-driver trial in which the developer performs real Pi work through Pidex from desktop and mobile without returning to the host UI for any core session action. Across the recovery and multi-client scenarios defined by later tickets, the trial must produce no lost or duplicated accepted prompts, interaction responses, cancellations, or completed run output. The final quality ticket will turn this outcome, the concurrent-session baseline, and reconnect/restart scenarios into precise acceptance thresholds.

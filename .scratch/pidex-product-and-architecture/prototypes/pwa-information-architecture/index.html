@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0c1210">
+  <title>Pidex PWA information architecture prototype</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0c1210;
+      --panel: #121a17;
+      --panel-2: #18221e;
+      --panel-3: #202c27;
+      --line: #2b3933;
+      --text: #edf5f0;
+      --muted: #98aaa1;
+      --accent: #7fe3ae;
+      --accent-ink: #07130c;
+      --warn: #f5c76e;
+      --danger: #ff8e84;
+      --info: #8dc8ff;
+      --radius: 14px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { min-height: 100vh; overflow-x: hidden; }
+    button, input, textarea { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    .prototype-note {
+      position: fixed;
+      top: 10px;
+      left: 50%;
+      z-index: 30;
+      transform: translateX(-50%);
+      padding: 5px 10px;
+      border: 1px solid #5d4730;
+      border-radius: 999px;
+      background: #211a11e8;
+      color: #f5d59b;
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      backdrop-filter: blur(8px);
+    }
+
+    .shell { min-height: 100vh; padding-bottom: 86px; }
+    .topbar {
+      height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: #0e1512e8;
+      backdrop-filter: blur(12px);
+    }
+    .brand { display: flex; align-items: center; gap: 9px; font-weight: 760; letter-spacing: -.02em; }
+    .brand-mark { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px; background: var(--accent); color: var(--accent-ink); font-size: 13px; }
+    .host-state { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .host-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px #7fe3ae1b; }
+    .topbar-spacer { flex: 1; }
+    .icon-button, .quiet-button, .primary-button {
+      border: 0;
+      border-radius: 9px;
+      cursor: pointer;
+    }
+    .icon-button { width: 34px; height: 34px; background: transparent; color: var(--muted); }
+    .icon-button:hover, .quiet-button:hover { background: var(--panel-3); color: var(--text); }
+    .quiet-button { padding: 8px 10px; background: transparent; color: var(--muted); }
+    .primary-button { padding: 9px 13px; background: var(--accent); color: var(--accent-ink); font-weight: 720; }
+    .desktop-only { display: initial; }
+    .mobile-only { display: none; }
+
+    .status-dot { width: 8px; height: 8px; display: inline-block; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+    .status-dot.executing { background: var(--accent); box-shadow: 0 0 0 3px #7fe3ae1c; }
+    .status-dot.waiting { background: var(--warn); }
+    .status-dot.held { background: var(--danger); }
+    .status-dot.sleeping { background: #708079; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+    .pill.warn { border-color: #765d2f; color: var(--warn); background: #2a2112; }
+    .pill.info { border-color: #315777; color: var(--info); background: #101f2b; }
+    .eyebrow { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+    .muted { color: var(--muted); }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* Variant A: Focused workbench */
+    .workbench { display: grid; grid-template-columns: 306px minmax(420px, 1fr); height: calc(100vh - 58px - 86px); }
+    .session-rail, .attention-rail { min-height: 0; overflow: auto; background: var(--panel); }
+    .session-rail { border-right: 1px solid var(--line); }
+    .attention-rail { border-left: 1px solid var(--line); }
+    .rail-heading { position: sticky; top: 0; z-index: 2; padding: 17px 15px 12px; background: linear-gradient(var(--panel) 78%, transparent); }
+    .rail-heading-row { display: flex; align-items: center; justify-content: space-between; }
+    .rail-heading h2, .attention-rail h2 { margin: 2px 0 0; font-size: 15px; }
+    .search { width: 100%; margin-top: 12px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: #0d1411; color: var(--text); }
+    .session-group { padding: 5px 8px 14px; }
+    .group-label { padding: 8px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+    .project-label { display: flex; align-items: center; gap: 8px; padding: 13px 8px 6px; color: #c3d1ca; font-size: 12px; font-weight: 680; }
+    .project-label span:last-child { margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 500; }
+    .session-row { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 9px; align-items: start; padding: 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; text-align: left; cursor: pointer; }
+    .session-row:hover { background: var(--panel-2); }
+    .session-row.selected { border-color: #3b5a4c; background: #1a2922; }
+    .session-row .status-dot { margin-top: 5px; }
+    .session-row > span:nth-child(2) { min-width: 0; }
+    .session-title { display: block; font-size: 13px; font-weight: 680; }
+    .session-subtitle { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .session-subtitle { display: block; }
+    .session-time { color: #788a81; font-size: 10px; }
+    .sidebar-footer { position: sticky; bottom: 0; display: flex; gap: 8px; margin-top: 18px; padding: 12px 14px; border-top: 1px solid var(--line); background: #111916f2; color: var(--muted); font-size: 11px; }
+    .sidebar-footer span:first-child { flex: 1; }
+    .conversation { min-width: 0; display: grid; grid-template-rows: auto 1fr auto; background: #0e1512; }
+    .conversation-header { display: flex; align-items: center; gap: 12px; min-height: 65px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+    .conversation-title { min-width: 0; flex: 1; }
+    .conversation-title h1 { margin: 0; font-size: 16px; }
+    .conversation-title p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .timeline { overflow: auto; padding: 24px max(22px, calc((100% - 760px) / 2)); }
+    .timeline-entry { margin-bottom: 24px; }
+    .entry-label { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; color: var(--muted); font-size: 11px; }
+    .message { line-height: 1.58; font-size: 14px; }
+    .message, .tool-card { overflow-wrap: anywhere; }
+    .user-message { padding: 13px 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); }
+    .tool-card { margin: 10px 0; padding: 10px 12px; border-left: 2px solid #4d695c; background: #121b17; color: #b9c8c0; font: 12px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .streaming { color: var(--accent); }
+    .composer { padding: 12px 18px 16px; border-top: 1px solid var(--line); background: #101713; }
+    .composer-box { max-width: 790px; margin: 0 auto; border: 1px solid #3b4c44; border-radius: 13px; background: var(--panel-2); overflow: hidden; }
+    .composer textarea { width: 100%; min-height: 66px; resize: none; padding: 12px 13px 5px; border: 0; outline: 0; background: transparent; color: var(--text); }
+    .composer-actions { display: flex; align-items: center; gap: 6px; padding: 5px 7px 7px; }
+    .composer-actions .primary-button { margin-left: auto; }
+    .attention-list { padding: 8px 10px; }
+    .attention-card { margin-bottom: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); }
+    .attention-card.urgent { border-color: #6d5934; }
+    .attention-card h3 { margin: 8px 0 4px; font-size: 13px; }
+    .attention-card p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .attention-actions { display: flex; gap: 7px; margin-top: 11px; }
+    .attention-actions button { flex: 1; padding: 7px; border: 1px solid var(--line); border-radius: 8px; background: transparent; cursor: pointer; font-size: 11px; }
+
+    /* Variant A selected direction: close Codex app baseline */
+    .codex-clone {
+      --panel: #e8e8e6;
+      --panel-2: #f0f0ee;
+      --panel-3: #d9d9d6;
+      --line: #d2d2cf;
+      --text: #202020;
+      --muted: #747474;
+      --accent: #222;
+      --accent-ink: #fff;
+      --info: #546f65;
+      min-height: 100vh;
+      background: #fff;
+      color: var(--text);
+    }
+    .codex-clone .workbench { grid-template-columns: 370px minmax(420px, 1fr); height: calc(100vh - 86px); }
+    .codex-clone .session-rail { display: flex; flex-direction: column; background: var(--panel); }
+    .clone-sidebar-head { padding: 20px 20px 12px; }
+    .clone-brand-row { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; font-weight: 760; }
+    .clone-brand-row .icon-button { margin-left: auto; }
+    .clone-nav { display: grid; gap: 4px; }
+    .clone-nav-button { width: 100%; display: flex; align-items: center; gap: 12px; padding: 10px 8px; border: 0; border-radius: 9px; background: transparent; color: #333; text-align: left; cursor: pointer; font-size: 14px; }
+    .clone-nav-button:hover { background: #dcdcd9; }
+    .clone-nav-button span:last-child { margin-left: auto; color: var(--muted); font-size: 11px; }
+    .clone-section-heading { display: flex; align-items: center; padding: 18px 20px 5px; color: #777; font-size: 12px; }
+    .clone-section-heading span:last-child { margin-left: auto; letter-spacing: .4em; }
+    .codex-clone .session-group { padding: 4px 14px 20px; }
+    .codex-clone .project-label { padding: 14px 8px 7px; color: #444; font-size: 12px; }
+    .codex-clone .session-row { padding: 10px 12px 10px 19px; border-radius: 10px; color: #303030; }
+    .codex-clone .session-row:hover { background: #dcdcd9; }
+    .codex-clone .session-row.selected { border-color: transparent; background: #d6d6d3; }
+    .codex-clone .session-title { font-size: 13px; font-weight: 560; }
+    .codex-clone .session-subtitle { color: #777; }
+    .codex-clone .sidebar-footer { background: #e8e8e6f2; }
+    .codex-clone .conversation { background: #fff; }
+    .codex-clone .conversation-header { min-height: 76px; padding: 12px 26px; background: #fff; }
+    .codex-clone .conversation-title h1 { font-size: 18px; font-weight: 650; }
+    .codex-clone .quiet-button { color: #666; }
+    .codex-clone .quiet-button:hover { background: #f0f0ee; color: #222; }
+    .codex-clone .pill { border-color: #d5d5d2; background: #f7f7f6; color: #555; }
+    .codex-clone .timeline { padding: 56px max(52px, calc((100% - 900px) / 2)); }
+    .codex-clone .timeline-entry { margin-bottom: 54px; }
+    .codex-clone .entry-label { color: #737373; }
+    .codex-clone .message { font-size: 16px; line-height: 1.66; }
+    .codex-clone .user-message { margin-left: auto; width: fit-content; max-width: 86%; border: 0; border-radius: 17px; background: #f1f1f0; }
+    .codex-clone .tool-card { border-left-color: #b3b3af; background: #fafaf9; color: #4b4b4b; }
+    .codex-clone .streaming { color: #444; }
+    .codex-clone .composer { padding: 14px 44px 24px; border-top: 0; background: #fff; }
+    .codex-clone .composer-box { max-width: 930px; border-color: #d2d2cf; border-radius: 20px; background: #fff; box-shadow: 0 10px 32px #00000012; }
+    .codex-clone .composer textarea { min-height: 84px; padding: 17px 18px 5px; color: #222; }
+    .codex-clone .composer-actions { padding: 7px 10px 10px; }
+    .codex-clone .composer-actions .primary-button { background: #333; color: #fff; }
+    .clone-drawer-backdrop { display: none; }
+    .sidebar-connection { margin: auto 14px 0; padding: 11px 12px; border: 1px solid #d0d0cd; border-radius: 10px; background: #f0f0ee; font-size: 11px; }
+    .sidebar-connection strong { display: flex; align-items: center; gap: 7px; }
+    .sidebar-connection span:last-child { display: block; margin-top: 4px; color: #777; }
+    .mobile-connection-row { display: none; }
+    .connection-offline .sidebar-connection { border-color: #d6b46a; background: #fff5da; }
+    .connection-reconnecting .sidebar-connection { border-color: #9fb7cb; background: #edf6fd; }
+    .connection-offline .composer-box, .connection-reconnecting .composer-box { background: #f5f5f3; box-shadow: none; }
+    .connection-offline .composer-actions, .connection-reconnecting .composer-actions { opacity: .5; pointer-events: none; }
+    .connection-offline .interaction-options, .connection-reconnecting .interaction-options { opacity: .5; pointer-events: none; }
+    .interaction-card { margin: 18px 0; padding: 17px; border: 1px solid #cfcfcb; border-radius: 15px; background: #fafaf9; box-shadow: 0 8px 24px #0000000c; }
+    .interaction-card.compact { max-width: 930px; margin: 0 auto 10px; padding: 12px 14px; }
+    .interaction-card-header { display: flex; align-items: center; gap: 8px; color: #666; font-size: 11px; }
+    .interaction-card-header span:last-child { margin-left: auto; color: #9a6b18; }
+    .interaction-card h3 { margin: 10px 0 5px; font-size: 15px; }
+    .interaction-card p { margin: 0; color: #666; font-size: 12px; line-height: 1.5; }
+    .interaction-options { display: flex; gap: 8px; margin-top: 14px; }
+    .interaction-options button { padding: 8px 12px; border: 1px solid #c8c8c4; border-radius: 9px; background: #fff; color: #333; cursor: pointer; }
+    .interaction-options button:first-child { border-color: #333; background: #333; color: #fff; }
+    .interaction-takeover { padding: 14px 44px 24px; background: #fff; }
+    .interaction-takeover .interaction-card { max-width: 930px; margin: 0 auto; }
+    .interaction-modal-backdrop { position: fixed; z-index: 35; inset: 0; display: grid; place-items: center; padding: 20px; background: #0006; }
+    .interaction-modal-backdrop .interaction-card { width: min(520px, 94vw); background: #fff; box-shadow: 0 24px 80px #0005; }
+
+    /* Variant B: Supervision board */
+    .board-shell { min-height: calc(100vh - 58px - 86px); background: #0f1513; }
+    .board-header { display: flex; align-items: end; gap: 20px; padding: 28px 28px 20px; }
+    .board-header h1 { margin: 4px 0 0; font-size: 27px; letter-spacing: -.04em; }
+    .board-header p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .metrics { margin-left: auto; display: flex; gap: 8px; }
+    .metric { min-width: 90px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+    .metric strong { display: block; font-size: 19px; }
+    .metric span { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .board-filters { display: flex; gap: 8px; padding: 0 28px 18px; overflow-x: auto; }
+    .filter { padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
+    .filter.selected { border-color: #547765; background: #1b2d24; color: var(--text); }
+    .board { display: grid; grid-template-columns: repeat(3, minmax(230px, 1fr)); gap: 14px; padding: 0 28px 28px; }
+    .lane { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: var(--radius); background: #121a17; }
+    .lane-heading { display: flex; align-items: center; gap: 8px; padding: 2px 3px 11px; }
+    .lane-heading h2 { margin: 0; font-size: 13px; }
+    .lane-heading .count { margin-left: auto; color: var(--muted); font-size: 11px; }
+    .board-card { margin-bottom: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel-2); cursor: pointer; }
+    .board-card:hover { border-color: #4b675a; }
+    .board-card h3 { margin: 9px 0 5px; font-size: 14px; }
+    .board-card p { min-height: 32px; margin: 0 0 12px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .card-meta { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
+    .progress { height: 3px; margin-top: 11px; border-radius: 3px; background: var(--line); overflow: hidden; }
+    .progress span { display: block; width: 67%; height: 100%; background: var(--accent); }
+    .board-detail { position: fixed; z-index: 10; top: 58px; right: 0; bottom: 86px; width: min(480px, 94vw); display: grid; grid-template-rows: auto 1fr auto; border-left: 1px solid var(--line); background: #101713; box-shadow: -18px 0 60px #0008; transform: translateX(102%); transition: transform .2s ease; }
+    .board-detail.open { transform: translateX(0); }
+    .detail-header { display: flex; gap: 10px; align-items: center; padding: 15px; border-bottom: 1px solid var(--line); }
+    .detail-header h2 { flex: 1; margin: 0; font-size: 15px; }
+    .mini-timeline { overflow: auto; padding: 18px; }
+    .mini-entry { margin-bottom: 17px; padding-bottom: 17px; border-bottom: 1px solid var(--line); font-size: 13px; line-height: 1.5; }
+
+    /* Variant C: Client-local tabs */
+    .studio { display: grid; grid-template-columns: 246px minmax(0, 1fr); height: calc(100vh - 58px - 86px); }
+    .tree { overflow: auto; padding: 16px 10px; border-right: 1px solid var(--line); background: #101713; }
+    .tree-title { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 13px; }
+    .tree-title h2 { margin: 0; font-size: 14px; }
+    .tree-section { margin: 10px 0 15px; }
+    .tree-section-label { padding: 5px 8px; color: var(--muted); font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .tree-row { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; font-size: 12px; }
+    .tree-row:hover { background: var(--panel-2); }
+    .tree-row.indent { padding-left: 23px; }
+    .tree-row .status-dot { margin-left: auto; }
+    .studio-main { min-width: 0; display: grid; grid-template-rows: 43px 1fr; }
+    .tabs { display: flex; align-items: end; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--line); background: #111815; overflow-x: auto; }
+    .tab { min-width: 130px; max-width: 210px; display: flex; align-items: center; gap: 7px; padding: 8px 9px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .tab.selected { border-color: var(--line); background: #18211d; color: var(--text); }
+    .tab span:nth-child(2) { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; text-align: left; }
+    .tab-close { color: #6e7d76; }
+    .tab-add { min-width: 34px; justify-content: center; }
+    .studio-content { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; }
+    .studio-conversation { min-width: 0; display: grid; grid-template-rows: auto 1fr auto; }
+    .context-bar { display: flex; align-items: center; gap: 9px; padding: 12px 17px; border-bottom: 1px solid var(--line); }
+    .context-bar h1 { margin: 0; font-size: 15px; }
+    .context-bar .pill:first-of-type { margin-left: auto; }
+    .inspector { overflow: auto; padding: 16px; border-left: 1px solid var(--line); background: var(--panel); }
+    .inspector h2 { margin: 0 0 13px; font-size: 13px; }
+    .fact { padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .fact dt { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+    .fact dd { margin: 5px 0 0; font-size: 12px; }
+    .view-note { margin-top: 17px; padding: 11px; border: 1px solid #3b5a4c; border-radius: 10px; background: #16241d; color: #bcd2c6; font-size: 11px; line-height: 1.45; }
+
+    .mobile-nav { position: fixed; z-index: 8; left: 0; right: 0; bottom: 0; height: 62px; display: none; align-items: center; justify-content: space-around; border-top: 1px solid var(--line); background: #111815ef; backdrop-filter: blur(12px); }
+    .mobile-nav button { display: grid; gap: 4px; place-items: center; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
+    .mobile-nav button.selected { color: var(--accent); }
+
+    .prototype-switcher { position: fixed; z-index: 50; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 7px; border: 1px solid #64776d; border-radius: 999px; background: #edf5f0; color: #0a100d; box-shadow: 0 12px 38px #000a; }
+    .prototype-switcher button { width: 34px; height: 34px; border: 0; border-radius: 50%; background: #d7e4dc; color: #0a100d; cursor: pointer; }
+    .prototype-switcher button:hover { background: #bcd2c5; }
+    .variant-label { min-width: 205px; padding: 0 8px; text-align: center; font-size: 12px; font-weight: 760; }
+    .interaction-switcher { bottom: 72px; background: #fff3d6; border-color: #8d7745; }
+    .interaction-switcher[hidden] { display: none; }
+    .interaction-switcher .variant-label { min-width: 245px; }
+
+    @media (max-width: 980px) {
+      .workbench { grid-template-columns: 260px minmax(0, 1fr); }
+      .attention-rail { display: none; }
+      .board { grid-template-columns: repeat(2, minmax(230px, 1fr)); }
+      .studio-content { grid-template-columns: 1fr; }
+      .inspector { display: none; }
+    }
+
+    @media (max-width: 680px) {
+      .shell { padding-bottom: 128px; }
+      .prototype-note { top: 6px; font-size: 9px; }
+      .topbar { height: 52px; padding: 0 12px; }
+      .host-state span, .desktop-only { display: none; }
+      .mobile-only { display: initial; }
+      .workbench, .studio { display: block; height: auto; }
+      .codex-clone .workbench { display: block; height: auto; }
+      .codex-clone .session-rail { display: none; }
+      .codex-clone { padding-bottom: 86px; }
+      .codex-clone .conversation { min-height: calc(100vh - 86px); }
+      .codex-clone.drawer-open .session-rail { position: fixed; z-index: 42; inset: 0 auto 0 0; display: block; width: min(88vw, 370px); box-shadow: 18px 0 50px #0004; }
+      .codex-clone.drawer-open .clone-drawer-backdrop { position: fixed; z-index: 41; inset: 0; display: block; border: 0; background: #0005; }
+      .session-rail, .tree { display: none; }
+      .conversation, .studio-conversation { min-height: calc(100vh - 52px - 128px); grid-template-rows: auto 1fr auto; }
+      .conversation-header, .context-bar { min-height: 58px; padding: 9px 12px; }
+      .timeline { min-height: 48vh; padding: 18px 13px; }
+      .composer { padding: 9px 10px 12px; }
+      .codex-clone .composer { padding: 9px 10px 12px; }
+      .interaction-takeover { padding: 9px 10px 12px; }
+      .codex-clone .timeline { padding: 26px 14px; }
+      .codex-clone .conversation-header { min-height: 62px; padding: 9px 12px; }
+      .mobile-connection-row { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid #dbc382; background: #fff5da; color: #765816; font-size: 11px; }
+      .mobile-connection-row span:last-child { margin-left: auto; }
+      .composer textarea { min-height: 56px; }
+      .board-header { display: block; padding: 22px 14px 14px; }
+      .board-header h1 { font-size: 23px; }
+      .metrics { margin-top: 15px; overflow-x: auto; }
+      .metric { min-width: 84px; }
+      .board-filters { padding: 0 14px 14px; }
+      .board { display: block; padding: 0 14px 18px; }
+      .lane { margin-bottom: 12px; }
+      .board-detail { top: 52px; bottom: 128px; width: 100vw; }
+      .studio-main { display: block; }
+      .tabs { height: 42px; padding-left: 5px; }
+      .tab { min-width: 115px; }
+      .studio-content { display: block; }
+      .context-bar .pill { display: none; }
+      .mobile-nav { bottom: 66px; display: flex; }
+      .prototype-switcher { bottom: 10px; }
+      .interaction-switcher { bottom: 64px; }
+      .variant-label { min-width: 165px; }
+      .interaction-switcher .variant-label { min-width: 205px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-note">Throwaway prototype · read-only interactions</div>
+  <main id="app"></main>
+  <div class="prototype-switcher" aria-label="Prototype variant switcher">
+    <button id="previous-variant" aria-label="Previous variant">←</button>
+    <div class="variant-label" id="variant-label"></div>
+    <button id="next-variant" aria-label="Next variant">→</button>
+  </div>
+  <div class="prototype-switcher interaction-switcher" id="interaction-switcher" aria-label="Interaction placement switcher">
+    <button id="previous-interaction" aria-label="Previous Interaction placement">←</button>
+    <div class="variant-label" id="interaction-label"></div>
+    <button id="next-interaction" aria-label="Next Interaction placement">→</button>
+  </div>
+
+  <template id="shared-timeline">
+    <div class="timeline-entry">
+      <div class="entry-label">You · 10:42</div>
+      <div class="message user-message">Trace the reconnect path and propose the smallest fix that preserves command receipts.</div>
+    </div>
+    <div class="timeline-entry">
+      <div class="entry-label"><span class="status-dot executing"></span> Pi · Run 18 executing</div>
+      <div class="message">I’m following the synchronization cursor through the client store and daemon receipt boundary.</div>
+      <div class="tool-card">read · src/client/sync/projection-store.ts<br>read · src/daemon/commands/receipt-store.ts</div>
+      <div class="message">The reconnect path currently installs the snapshot before it recovers uncertain command outcomes. That creates a narrow window where the pending overlay can disappear before the receipt is correlated.<span class="streaming"> ▌</span></div>
+    </div>
+  </template>
+
+  <script>
+    const variants = {
+      A: { name: "Codex clone baseline", render: renderWorkbench },
+      B: { name: "Supervision board", render: renderBoard },
+      C: { name: "Client-local tabs", render: renderStudio }
+    };
+    const keys = Object.keys(variants);
+    const interactions = {
+      N: "No open Interaction",
+      A: "Pinned above composer",
+      B: "Inline only",
+      C: "Composer takeover",
+      D: "Modal dialog"
+    };
+    const interactionKeys = Object.keys(interactions);
+
+    function shell(content) {
+      return `<div class="shell">
+        <header class="topbar">
+          <div class="brand"><span class="brand-mark">P</span> Pidex</div>
+          <div class="host-state"><span>Dev workstation · current</span></div>
+          <div class="topbar-spacer"></div>
+          <button class="quiet-button desktop-only">⌕ Quick open</button>
+          <button class="quiet-button desktop-only"><span class="status-dot waiting"></span> Attention · 2</button>
+          <button class="icon-button" title="Notifications">◉</button>
+          <button class="icon-button" title="Device and settings">UD</button>
+        </header>
+        ${content}
+      </div>`;
+    }
+
+    function timeline() {
+      return document.querySelector("#shared-timeline").innerHTML;
+    }
+
+    function composer() {
+      return `<div class="composer">
+        <div class="composer-box">
+          <textarea aria-label="Composer draft" placeholder="Follow up…"></textarea>
+          <div class="composer-actions">
+            <button class="quiet-button">Auto · GPT-5</button>
+            <button class="quiet-button">＋</button>
+            <button class="primary-button">Steer run ↑</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function interactionCard(compact = false) {
+      return `<article class="interaction-card${compact ? " compact" : ""}">
+        <div class="interaction-card-header"><span>${compact ? "‹  1 of 2  › · " : ""}Select Interaction · release-tools</span><span>4:21 remaining</span></div>
+        <h3>Choose the deployment target</h3>
+        <p>The extension is waiting for one response. The Host deadline continues if this View closes.</p>
+        <div class="interaction-options"><button>Staging</button><button>Production</button><button>Dismiss</button></div>
+      </article>`;
+    }
+
+    function interactionTimeline(interactionKey) {
+      if (interactionKey === "N") return timeline();
+      const inlineCard = interactionKey === "B" ? interactionCard() : "";
+      return `<div class="timeline-entry"><div class="entry-label">You · 10:42</div><div class="message user-message">Prepare the release and walk me through every decision.</div></div>
+        <div class="timeline-entry"><div class="entry-label"><span class="status-dot waiting"></span> Pi · Run 7 awaiting Interaction</div><div class="message">The release checks passed. The deployment extension needs a target before the Run can continue.</div>${inlineCard}</div>`;
+    }
+
+    function interactionComposer(interactionKey) {
+      if (interactionKey === "C") return `<div class="interaction-takeover">${interactionCard()}</div>`;
+      if (interactionKey === "A") return `<div class="composer">${interactionCard(true)}<div class="composer-box"><textarea aria-label="Composer draft" placeholder="You can still steer or queue a follow-up…"></textarea><div class="composer-actions"><button class="quiet-button">Auto · GPT-5</button><button class="quiet-button">＋</button><button class="primary-button">Steer run ↑</button></div></div></div>`;
+      return composer();
+    }
+
+    function mobileNav(selected) {
+      return `<nav class="mobile-nav">
+        <button class="${selected === "sessions" ? "selected" : ""}"><span>☰</span><span>Sessions</span></button>
+        <button class="${selected === "current" ? "selected" : ""}"><span>▣</span><span>Current</span></button>
+        <button class="${selected === "attention" ? "selected" : ""}"><span>●</span><span>Attention · 2</span></button>
+      </nav>`;
+    }
+
+    function sessionRows(interactionKey) {
+      const showingInteraction = interactionKey !== "N";
+      return `<div class="session-group">
+        <div class="project-label"><span>▾</span><strong>Pidex</strong><span>main</span></div>
+        <button class="session-row ${showingInteraction ? "" : "selected"}"><span class="status-dot executing"></span><span><span class="session-title truncate">Reconnect receipt race</span><span class="session-subtitle truncate">Run 18 executing</span></span><span class="session-time">now</span></button>
+        <button class="session-row"><span class="status-dot executing"></span><span><span class="session-title truncate">Auth handshake tests</span><span class="session-subtitle truncate">Running test suite</span></span><span class="session-time">1m</span></button>
+        <button class="session-row ${showingInteraction ? "selected" : ""}"><span class="status-dot waiting"></span><span><span class="session-title truncate">Release pipeline review</span><span class="session-subtitle truncate">Interaction needs response</span></span><span class="session-time">2m</span></button>
+        <button class="session-row"><span class="status-dot held"></span><span><span class="session-title truncate">Index corruption diagnosis</span><span class="session-subtitle truncate">Follow-up held</span></span><span class="session-time">8m</span></button>
+        <button class="session-row"><span class="status-dot sleeping"></span><span><span class="session-title truncate">PWA cache boundaries</span><span class="session-subtitle truncate">Available · sleeping</span></span><span class="session-time">1h</span></button>
+        <button class="session-row"><span class="status-dot sleeping"></span><span><span class="session-title truncate">Worker lifecycle design</span><span class="session-subtitle truncate">Available · sleeping</span></span><span class="session-time">Tue</span></button>
+        <div class="project-label"><span>›</span><strong>Course platform</strong><span>main</span></div>
+        <button class="session-row"><span class="status-dot sleeping"></span><span><span class="session-title truncate">Exercise validation cleanup</span><span class="session-subtitle truncate">Available · sleeping</span></span><span class="session-time">Mon</span></button>
+        <div class="project-label"><span>›</span><strong>Unscoped</strong><span>2</span></div>
+      </div>`;
+    }
+
+    function renderWorkbench() {
+      const interactionKey = currentInteraction();
+      const showingInteraction = interactionKey !== "N";
+      const connection = currentConnection();
+      const connectionLabel = connection === "current" ? "Current" : connection === "offline" ? "Offline" : "Reconnecting";
+      const connectionDetail = connection === "current" ? "Dev workstation" : "Last synchronized 8 minutes ago";
+      return `<div class="shell codex-clone connection-${connection}"><section class="workbench">
+        <aside class="session-rail">
+          <div class="clone-sidebar-head">
+            <div class="clone-brand-row"><span class="brand-mark">P</span> Pidex <button class="icon-button" data-close-clone-drawer title="Collapse sidebar">◧</button></div>
+            <nav class="clone-nav">
+              <button class="clone-nav-button"><span>✎</span><strong>New Session</strong></button>
+              <button class="clone-nav-button"><span>◇</span><strong>Archived</strong></button>
+            </nav>
+          </div>
+          <div class="clone-section-heading"><span>Sessions</span><span>⌕ ⚙</span></div>
+          ${sessionRows(interactionKey)}
+          <div class="sidebar-connection"><strong><span class="status-dot ${connection === "current" ? "executing" : connection === "offline" ? "waiting" : "sleeping"}"></span>${connectionLabel}</strong><span>${connectionDetail}</span></div>
+          <div class="sidebar-footer"><span>UD’s Device</span><span>Settings ⚙</span></div>
+        </aside>
+        <button class="clone-drawer-backdrop" data-close-clone-drawer aria-label="Close Session sidebar"></button>
+        <section class="conversation">
+          <div class="conversation-header">
+            <button class="icon-button mobile-only" data-open-clone-drawer>☰</button>
+            <div class="conversation-title"><h1 class="truncate">${showingInteraction ? "Release pipeline review" : "Reconnect receipt race"}</h1><p class="truncate">Pidex / main · C:\\git\\Pidex</p></div>
+            <button class="quiet-button desktop-only">▷ Run</button>
+            <button class="quiet-button desktop-only">■ Stop</button>
+            <span class="pill info"><span class="status-dot executing"></span> GPT-5 · Auto</span>
+            <button class="quiet-button desktop-only">•••</button>
+          </div>
+          ${connection === "current" ? "" : `<div class="mobile-connection-row"><strong>${connectionLabel}</strong><span>Synced 8m ago · controls unavailable</span></div>`}
+          <div class="timeline">${interactionTimeline(interactionKey)}</div>
+          ${interactionComposer(interactionKey)}
+        </section>
+      </section>${interactionKey === "D" ? `<div class="interaction-modal-backdrop">${interactionCard()}</div>` : ""}</div>`;
+    }
+
+    function boardCard(title, copy, state, meta, kind) {
+      return `<article class="board-card" data-open-detail><span class="pill"><span class="status-dot ${kind}"></span>${state}</span><h3>${title}</h3><p>${copy}</p><div class="card-meta"><span>${meta}</span><span>·</span><span>Pidex</span></div>${kind === "executing" ? '<div class="progress"><span></span></div>' : ""}</article>`;
+    }
+
+    function renderBoard() {
+      return shell(`<section class="board-shell">
+        <div class="board-header"><div><div class="eyebrow">Host overview</div><h1>Work in motion</h1><p>Supervise every Session without opening or waking it.</p></div><div class="metrics"><div class="metric"><strong>2</strong><span>Executing</span></div><div class="metric"><strong>2</strong><span>Attention</span></div><div class="metric"><strong>18</strong><span>Available</span></div></div></div>
+        <div class="board-filters"><button class="filter selected">All work</button><button class="filter">Pidex</button><button class="filter">Course platform</button><button class="filter">Unscoped</button></div>
+        <div class="board">
+          <section class="lane"><div class="lane-heading"><span class="status-dot waiting"></span><h2>Needs attention</h2><span class="count">2</span></div>
+            ${boardCard("Release pipeline review", "Select the deployment target. Deadline continues on the Host.", "Interaction · 4:21", "updated 2m", "waiting")}
+            ${boardCard("Index corruption diagnosis", "Follow-up held after an interrupted predecessor.", "Held queue", "updated 8m", "held")}
+          </section>
+          <section class="lane"><div class="lane-heading"><span class="status-dot executing"></span><h2>Executing</h2><span class="count">2</span></div>
+            ${boardCard("Reconnect receipt race", "Tracing synchronization and receipt recovery through the client store.", "Run 18 executing", "streaming now", "executing")}
+            ${boardCard("Auth handshake tests", "Testing private-CA identity and paired Device authentication.", "Run 4 executing", "updated 1m", "executing")}
+          </section>
+          <section class="lane"><div class="lane-heading"><span class="status-dot sleeping"></span><h2>Recently available</h2><span class="count">14</span></div>
+            ${boardCard("PWA cache boundaries", "Offline cache and background behavior decision complete.", "Available · sleeping", "updated 1h", "sleeping")}
+            ${boardCard("Worker lifecycle design", "Session lifecycle and recovery decision complete.", "Available · sleeping", "updated Tue", "sleeping")}
+          </section>
+        </div>
+        <aside class="board-detail" id="board-detail"><div class="detail-header"><button class="icon-button" data-close-detail>←</button><h2>Reconnect receipt race</h2><button class="quiet-button">Open full view</button></div><div class="mini-timeline">${timeline()}</div>${composer()}</aside>
+      </section>${mobileNav("sessions")}`);
+    }
+
+    function renderStudio() {
+      return shell(`<section class="studio">
+        <aside class="tree">
+          <div class="tree-title"><h2>Explorer</h2><button class="icon-button">＋</button></div>
+          <div class="tree-section"><div class="tree-section-label">Attention</div><button class="tree-row"><span>◆</span><span class="truncate">Release pipeline review</span><span class="status-dot waiting"></span></button><button class="tree-row"><span>◆</span><span class="truncate">Index corruption diagnosis</span><span class="status-dot held"></span></button></div>
+          <div class="tree-section"><div class="tree-section-label">Pidex</div><button class="tree-row"><span>⌄</span><span>main</span></button><button class="tree-row indent"><span class="truncate">Reconnect receipt race</span><span class="status-dot executing"></span></button><button class="tree-row indent"><span class="truncate">Auth handshake tests</span><span class="status-dot executing"></span></button><button class="tree-row indent"><span class="truncate">PWA cache boundaries</span><span class="status-dot sleeping"></span></button></div>
+          <div class="tree-section"><div class="tree-section-label">Course platform</div><button class="tree-row"><span>›</span><span>main</span></button></div>
+        </aside>
+        <section class="studio-main">
+          <div class="tabs"><button class="tab selected"><span class="status-dot executing"></span><span>Reconnect receipt race</span><span class="tab-close">×</span></button><button class="tab"><span class="status-dot waiting"></span><span>Release pipeline review</span><span class="tab-close">×</span></button><button class="tab"><span class="status-dot sleeping"></span><span>PWA cache boundaries</span><span class="tab-close">×</span></button><button class="tab tab-add">＋</button></div>
+          <div class="studio-content">
+            <section class="studio-conversation">
+              <div class="context-bar"><button class="icon-button mobile-only">☰</button><h1 class="truncate">Reconnect receipt race</h1><span class="pill">main</span><span class="pill info"><span class="status-dot executing"></span> Run 18</span><button class="quiet-button desktop-only">•••</button></div>
+              <div class="timeline">${timeline()}</div>
+              ${composer()}
+            </section>
+            <aside class="inspector"><h2>Session inspector</h2><dl><div class="fact"><dt>Retention</dt><dd>Available</dd></div><div class="fact"><dt>Residency</dt><dd>Resident</dd></div><div class="fact"><dt>Current work</dt><dd>Run 18 · executing</dd></div><div class="fact"><dt>Queued</dt><dd>1 follow-up</dd></div><div class="fact"><dt>Project / workspace</dt><dd>Pidex / main</dd></div><div class="fact"><dt>Model / mode</dt><dd>GPT-5 · auto</dd></div></dl><div class="view-note"><strong>This tab is a View.</strong><br>Closing it removes only this Client’s presentation. It does not stop, sleep, archive, or otherwise mutate the Session.</div></aside>
+          </div>
+        </section>
+      </section>${mobileNav("current")}`);
+    }
+
+    function currentVariant() {
+      const requested = new URLSearchParams(location.search).get("variant")?.toUpperCase();
+      return variants[requested] ? requested : "A";
+    }
+
+    function currentInteraction() {
+      const requested = new URLSearchParams(location.search).get("interaction")?.toUpperCase();
+      return interactions[requested] ? requested : "N";
+    }
+
+    function currentConnection() {
+      const requested = new URLSearchParams(location.search).get("connection")?.toLowerCase();
+      return ["offline", "reconnecting"].includes(requested) ? requested : "current";
+    }
+
+    function setVariant(key) {
+      const url = new URL(location.href);
+      url.searchParams.set("variant", key);
+      history.replaceState({}, "", url);
+      render();
+    }
+
+    function cycle(direction) {
+      const index = keys.indexOf(currentVariant());
+      setVariant(keys[(index + direction + keys.length) % keys.length]);
+    }
+
+    function cycleInteraction(direction) {
+      const index = interactionKeys.indexOf(currentInteraction());
+      const key = interactionKeys[(index + direction + interactionKeys.length) % interactionKeys.length];
+      const url = new URL(location.href);
+      url.searchParams.set("interaction", key);
+      history.replaceState({}, "", url);
+      render();
+    }
+
+    function render() {
+      const key = currentVariant();
+      document.querySelector("#app").innerHTML = variants[key].render();
+      document.querySelector("#variant-label").textContent = `${key} — ${variants[key].name}`;
+      document.querySelector("#interaction-switcher").hidden = key !== "A";
+      document.querySelector("#interaction-label").textContent = `Interaction ${currentInteraction()} — ${interactions[currentInteraction()]}`;
+      document.title = `Pidex prototype · ${key} — ${variants[key].name}`;
+      document.querySelectorAll("[data-open-detail]").forEach(card => card.addEventListener("click", () => document.querySelector("#board-detail")?.classList.add("open")));
+      document.querySelector("[data-close-detail]")?.addEventListener("click", () => document.querySelector("#board-detail")?.classList.remove("open"));
+      document.querySelector("[data-open-clone-drawer]")?.addEventListener("click", () => document.querySelector(".codex-clone")?.classList.add("drawer-open"));
+      document.querySelectorAll("[data-close-clone-drawer]").forEach(button => button.addEventListener("click", () => document.querySelector(".codex-clone")?.classList.remove("drawer-open")));
+      if (key === "A" && currentConnection() !== "current") {
+        const composerInput = document.querySelector(".codex-clone .composer textarea");
+        if (composerInput) {
+          composerInput.placeholder = `${currentConnection() === "offline" ? "Offline" : "Reconnecting"} — this draft stays local and unsent`;
+        }
+      }
+    }
+
+    document.querySelector("#previous-variant").addEventListener("click", () => cycle(-1));
+    document.querySelector("#next-variant").addEventListener("click", () => cycle(1));
+    document.querySelector("#previous-interaction").addEventListener("click", () => cycleInteraction(-1));
+    document.querySelector("#next-interaction").addEventListener("click", () => cycleInteraction(1));
+    document.addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      if (event.target.matches("input, textarea, [contenteditable]")) return;
+      cycle(event.key === "ArrowLeft" ? -1 : 1);
+    });
+    window.addEventListener("popstate", render);
+    render();
+  </script>
+</body>
+</html>
