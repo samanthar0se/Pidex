@@ -11,6 +11,7 @@ import {
   serverMessageSchema,
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
+import { negotiateControl } from "./control-client.js";
 
 function nextServerMessage(socket: WebSocket): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
@@ -39,10 +40,7 @@ async function connect(
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });
-  const snapshot = await nextServerMessage(socket);
-  if (snapshot.type !== "host.snapshot") {
-    assert.fail("Expected a Host snapshot after connecting");
-  }
+  const snapshot = await negotiateControl(socket);
 
   return { socket, cursor: snapshot.status.synchronization.cursor };
 }

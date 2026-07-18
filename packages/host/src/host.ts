@@ -11,7 +11,12 @@ import {
   type WindowsPlatformAdapter,
 } from "../../adapters/src/index.js";
 import {
+  clientHelloSchema,
+  protocolCapabilities,
+  protocolMajor,
+  protocolMinor,
   protocolVersion,
+  type ClientHello,
   type HostStatus,
   type ServerMessage,
 } from "../../protocol/src/status.js";
@@ -90,6 +95,8 @@ export interface HostOptions {
   authorization?: string;
   bindAddress?: string;
   initialCatalog?: InitialCatalog;
+  /** Per-Client delivery bound; exceeding it disconnects only that Client. */
+  maxOutboundBytes?: number;
 }
 
 export interface StartedHost {
@@ -155,6 +162,53 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
   const clientDeviceIds = new Map<WebSocket, string>();
+  const admittedClients = new Set<WebSocket>();
+  const maxOutboundBytes = options.maxOutboundBytes ?? 256 * 1024;
+  const deliveries = new Map<WebSocket, { bytes: number; sending: boolean; queue: Array<{ payload: string; replaceKey?: string }> }>();
+
+  function sendServerMessage(client: WebSocket, message: ServerMessage): void {
+    if (client.readyState !== client.OPEN) return;
+    const payload = JSON.stringify(message);
+    const size = Buffer.byteLength(payload);
+    const delivery = deliveries.get(client) ?? { bytes: 0, sending: false, queue: [] };
+    deliveries.set(client, delivery);
+    const replaceKey = replaceableChangeKey(message);
+    const replacement = replaceKey
+      ? delivery.queue.find(item => item.replaceKey === replaceKey)
+      : undefined;
+    const prospectiveBytes = delivery.bytes + size - (replacement ? Buffer.byteLength(replacement.payload) : 0);
+    if (prospectiveBytes > maxOutboundBytes) {
+      client.send(JSON.stringify({
+        type: "delivery.resynchronize",
+        reason: "outbound-queue-overflow",
+        lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+      } satisfies ServerMessage));
+      client.close(4009, "resynchronize:outbound-queue-overflow");
+      return;
+    }
+    if (replacement) {
+      delivery.bytes = prospectiveBytes;
+      replacement.payload = payload;
+    } else {
+      delivery.bytes += size;
+      delivery.queue.push({ payload, replaceKey });
+    }
+    drainDelivery(client, delivery);
+  }
+
+  function drainDelivery(client: WebSocket, delivery: { bytes: number; sending: boolean; queue: Array<{ payload: string; replaceKey?: string }> }): void {
+    if (delivery.sending || client.readyState !== client.OPEN) return;
+    const item = delivery.queue.shift();
+    if (!item) return;
+    delivery.sending = true;
+    adapters.network.beforeSend();
+    client.send(item.payload, error => {
+      delivery.sending = false;
+      delivery.bytes -= Buffer.byteLength(item.payload);
+      if (error) client.close();
+      else drainDelivery(client, delivery);
+    });
+  }
 
   server.on("upgrade", (request, socket, head) => {
     const upgradeUrl = new URL(request.url ?? "/", "https://pidex.invalid");
@@ -190,11 +244,18 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   });
 
   webSocketServer.on("connection", webSocket => {
-    webSocket.once("close", () => clientDeviceIds.delete(webSocket));
+    webSocket.once("close", () => {
+      clientDeviceIds.delete(webSocket);
+      admittedClients.delete(webSocket);
+      deliveries.delete(webSocket);
+    });
     webSocket.on("message", bytes => {
       try {
         const message: unknown = JSON.parse(bytes.toString());
-        if (isRevokeMessage(message)) {
+        if (!admittedClients.has(webSocket)) {
+          const hello = clientHelloSchema.safeParse(message);
+          if (hello.success) negotiate(webSocket, hello.data);
+        } else if (isRevokeMessage(message)) {
           revokeDevice(message.deviceId);
         } else if (isSessionCreateMessage(message)) {
           handleSessionCreate(webSocket, message);
@@ -207,15 +268,51 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         // Invalid and unknown commands have no authority or side effects.
       }
     });
-    adapters.network.beforeSend();
-    const message: ServerMessage = {
+    sendServerMessage(webSocket, {
+      type: "host.hello",
+      hostId: store.status(RELEASE_ID, warnings).hostId,
+      protocols: [{ major: protocolMajor, minor: protocolMinor }],
+      capabilities: [...protocolCapabilities],
+    });
+  });
+
+  function negotiate(client: WebSocket, hello: ClientHello): void {
+    const status = store.status(RELEASE_ID, warnings);
+    let reason: "host-mismatch" | "no-common-major" | "missing-capability" | undefined;
+    if (hello.expectedHostId !== status.hostId) reason = "host-mismatch";
+    const offered = hello.protocols
+      .filter(protocol => protocol.major === protocolMajor)
+      .sort((a, b) => b.minor - a.minor)[0];
+    if (!offered) reason ??= "no-common-major";
+    const admittedCapabilities = protocolCapabilities.filter(hostCapability =>
+      hello.capabilities.some(clientCapability =>
+        clientCapability.id === hostCapability.id &&
+        (clientCapability.minVersion ?? 1) <= hostCapability.version &&
+        (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >= hostCapability.version,
+      ),
+    );
+    const missingRequired = ["scope.host", "session.create"].some(id =>
+      !admittedCapabilities.some(capability => capability.id === id),
+    );
+    if (missingRequired) reason ??= "missing-capability";
+    if (reason || !offered) {
+      sendServerMessage(client, { type: "protocol.update-required", reason: reason!, hostId: status.hostId });
+      return;
+    }
+    admittedClients.add(client);
+    sendServerMessage(client, {
+      type: "protocol.admitted",
+      hostId: status.hostId,
+      protocol: { major: protocolMajor, minor: Math.min(protocolMinor, offered.minor) },
+      capabilities: admittedCapabilities.map(item => ({ ...item })),
+    });
+    sendServerMessage(client, {
       type: "host.snapshot",
       protocolVersion,
-      status: store.status(RELEASE_ID, warnings),
+      status,
       ...store.projection(),
-    };
-    sendServerMessage(webSocket, message);
-  });
+    });
+  }
 
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     const projection = store.projection();
@@ -366,7 +463,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         cursor: created.cursor,
         changes: [{ type: "session.created", session: created.session }],
       };
-      for (const socket of webSocketServer.clients) {
+      for (const socket of admittedClients) {
         sendServerMessage(socket, changeSet);
       }
     } catch (error) {
@@ -421,7 +518,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             { type: "session.renamed", session: resolved.session },
           ],
         };
-        for (const socket of webSocketServer.clients) {
+        for (const socket of admittedClients) {
           sendServerMessage(socket, changeSet);
         }
       }
@@ -497,8 +594,13 @@ function isNumericRecord(value: unknown): value is Record<string, number> {
   );
 }
 
-function sendServerMessage(client: WebSocket, message: ServerMessage): void {
-  client.send(JSON.stringify(message));
+/** Only latest-value projection changes explicitly declared here may collapse. */
+function replaceableChangeKey(message: ServerMessage): string | undefined {
+  if (message.type !== "host.change-set" || message.changes.length !== 1) return undefined;
+  const change = message.changes[0];
+  return change?.type === "session.renamed"
+    ? `session.renamed:${change.session.sessionId}`
+    : undefined;
 }
 
 function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {

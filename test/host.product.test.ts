@@ -9,9 +9,9 @@ import { adaptersFor } from "../packages/adapters/src/index.js";
 import { readStatus } from "../packages/cli/src/main.js";
 import { startHost } from "../packages/host/src/host.js";
 import {
-  parseServerMessage,
   type HostStatus,
 } from "../packages/protocol/src/status.js";
+import { negotiateControl } from "./control-client.js";
 
 function readPwaStatus(
   origin: string,
@@ -24,16 +24,10 @@ function readPwaStatus(
       headers: { authorization: `Bearer ${authorization}` },
     });
 
-    controlSocket.once("message", bytes => {
-      try {
-        const message = parseServerMessage(bytes.toString());
-        controlSocket.close();
-        resolve(message.status);
-      } catch (error) {
-        controlSocket.close();
-        reject(error);
-      }
-    });
+    void negotiateControl(controlSocket).then(message => {
+      controlSocket.close();
+      resolve(message.status);
+    }, reject);
     controlSocket.once("error", reject);
   });
 }

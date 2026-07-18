@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
+import { negotiateControl } from "./control-client.js";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost, type StartedHost } from "../packages/host/src/host.js";
 
@@ -115,7 +116,7 @@ function connectClient(origin: string, session: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const controlUrl = `${origin.replace("https:", "wss:")}/control?session=${session}`;
     const socket = new WebSocket(controlUrl, { rejectUnauthorized: false });
-    socket.once("message", () => resolve(socket));
+    void negotiateControl(socket).then(() => resolve(socket), reject);
     socket.once("error", reject);
   });
 }

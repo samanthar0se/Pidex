@@ -10,6 +10,7 @@ import {
   serverMessageSchema,
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
+import { negotiateControl } from "./control-client.js";
 
 function next(socket: WebSocket): Promise<ServerMessage> {
   return new Promise((resolve, reject) => {
@@ -32,7 +33,7 @@ async function connect(origin: string, token: string): Promise<WebSocket> {
       headers: { authorization: `Bearer ${token}` },
     },
   );
-  await next(socket);
+  await negotiateControl(socket);
   return socket;
 }
 

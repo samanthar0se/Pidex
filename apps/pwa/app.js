@@ -10,6 +10,13 @@ const sessionsNav = document.querySelector("#sessions");
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let controlSocket;
 let projection = { projects: [], workspaces: [], sessions: [] };
+let admitted = false;
+
+function setControlEnabled(enabled) {
+  newSessionButton.disabled = !enabled;
+  createSessionButton.disabled = !enabled;
+}
+setControlEnabled(false);
 
 newSessionButton.addEventListener("click", () => {
   newSessionView.hidden = false;
@@ -103,6 +110,34 @@ function openControl(session) {
 
 function renderStatus({ data }) {
   const message = JSON.parse(data);
+  if (message.type === "host.hello") {
+    const expectedHostId = localStorage.getItem("pidex.expectedHostId") || message.hostId;
+    localStorage.setItem("pidex.expectedHostId", expectedHostId);
+    controlSocket.send(JSON.stringify({
+      type: "client.hello",
+      expectedHostId,
+      protocols: [{ major: 1, minor: 1 }],
+      capabilities: ["scope.host", "scope.session", "session.create", "session.rename"]
+        .map(id => ({ id, minVersion: 1, maxVersion: 1 })),
+    }));
+    return;
+  }
+  if (message.type === "protocol.admitted") {
+    admitted = true;
+    return;
+  }
+  if (message.type === "protocol.update-required") {
+    admitted = false;
+    setControlEnabled(false);
+    statusList.replaceChildren(...createStatusEntry(["Readiness", `update required (${message.reason})`]));
+    return;
+  }
+  if (message.type === "delivery.resynchronize") {
+    admitted = false;
+    setControlEnabled(false);
+    statusList.replaceChildren(...createStatusEntry(["Readiness", "reconnecting to resynchronize"]));
+    return;
+  }
   if (message.type === "host.change-set") {
     for (const change of message.changes) {
       if (change.type === "session.created") {
@@ -121,6 +156,8 @@ function renderStatus({ data }) {
   if (message.type !== "host.snapshot") {
     return;
   }
+  if (!admitted) return;
+  setControlEnabled(true);
 
   const { status } = message;
   projection = {

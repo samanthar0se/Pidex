@@ -11,6 +11,7 @@ import {
   type HostSnapshot,
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
+import { negotiateControl } from "./control-client.js";
 
 function connect(
   origin: string,
@@ -20,18 +21,7 @@ function connect(
       rejectUnauthorized: false,
       headers: { authorization: "Bearer test-device" },
     });
-    socket.once("message", bytes => {
-      try {
-        const message = parseMessage(bytes);
-        if (message.type !== "host.snapshot") {
-          reject(new Error("expected snapshot"));
-          return;
-        }
-        resolve({ socket, snapshot: message });
-      } catch (error) {
-        reject(error);
-      }
-    });
+    void negotiateControl(socket).then(snapshot => resolve({ socket, snapshot }), reject);
     socket.once("error", reject);
   });
 }

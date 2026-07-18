@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 import {
+  clientHello,
   parseServerMessage,
+  serverMessageSchema,
   type HostStatus,
 } from "../../protocol/src/status.js";
 
@@ -17,11 +19,18 @@ export async function readStatus(
         : undefined,
     });
 
-    controlSocket.once("message", data => {
+    controlSocket.on("message", data => {
       try {
-        const message = parseServerMessage(data.toString());
-        controlSocket.close();
-        resolve(message.status);
+        const wire = serverMessageSchema.parse(JSON.parse(data.toString()));
+        if (wire.type === "host.hello") {
+          controlSocket.send(JSON.stringify(clientHello(wire.hostId)));
+        } else if (wire.type === "host.snapshot") {
+          const message = parseServerMessage(data.toString());
+          controlSocket.close();
+          resolve(message.status);
+        } else if (wire.type === "protocol.update-required") {
+          throw new Error(`Pidex update required: ${wire.reason}`);
+        }
       } catch (error) {
         controlSocket.close();
         reject(error);

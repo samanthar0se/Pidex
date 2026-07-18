@@ -1,0 +1,59 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import WebSocket from "ws";
+import { adaptersFor } from "../packages/adapters/src/index.js";
+import { startHost } from "../packages/host/src/host.js";
+import { unsupportedRequiredSemantics } from "../packages/protocol/src/status.js";
+import { nextControlMessage } from "./control-client.js";
+
+function socket(origin: string): WebSocket {
+  return new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
+    rejectUnauthorized: false,
+    headers: { authorization: "Bearer device" },
+  });
+}
+
+test("protocol negotiation binds Host identity, admits minor extensions, and fails incompatible Clients closed", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-protocol-"));
+  const host = await startHost({ dataDir, port: 0, authorization: "device", adapters: adaptersFor("deterministic") });
+  try {
+    const compatible = socket(host.origin);
+    const offer = await nextControlMessage(compatible);
+    assert.equal(offer.type, "host.hello");
+    if (offer.type !== "host.hello") return;
+    compatible.send(JSON.stringify({
+      type: "client.hello",
+      expectedHostId: offer.hostId,
+      protocols: [{ major: 1, minor: 99 }],
+      capabilities: offer.capabilities.map(item => ({ id: item.id, minVersion: item.version })),
+      optionalFutureField: true,
+    }));
+    const admitted = await nextControlMessage(compatible);
+    assert.deepEqual(admitted.type === "protocol.admitted" && admitted.protocol, { major: 1, minor: 1 });
+    assert.equal((await nextControlMessage(compatible)).type, "host.snapshot");
+
+    const incompatible = socket(host.origin);
+    const otherOffer = await nextControlMessage(incompatible);
+    assert.equal(otherOffer.type, "host.hello");
+    if (otherOffer.type !== "host.hello") return;
+    incompatible.send(JSON.stringify({
+      type: "client.hello", expectedHostId: "host_other",
+      protocols: [{ major: 2, minor: 0 }], capabilities: [],
+    }));
+    const required = await nextControlMessage(incompatible);
+    assert.equal(required.type, "protocol.update-required");
+    assert.equal(required.type === "protocol.update-required" && required.reason, "host-mismatch");
+
+    assert.deepEqual(unsupportedRequiredSemantics(
+      { requiredSemantics: ["session.created.v1", "future.required.v2"], optional: { future: true } },
+      new Set(["session.created.v1"]),
+    ), ["future.required.v2"]);
+    compatible.close(); incompatible.close();
+  } finally {
+    await host.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
