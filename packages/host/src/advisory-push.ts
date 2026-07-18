@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 export type PushCategory = "interaction" | "run" | "held" | "piProblem";
+export type PushHintCategory = PushCategory | "revocation";
 export type PushFactCategory = PushCategory | "routine";
 
 export interface PushFact {
@@ -28,7 +29,7 @@ export interface PushHint {
   eventId: string;
   hostId: string;
   occurredAt: string;
-  category: PushCategory;
+  category: PushHintCategory;
   path: string;
   title: string;
   body: string;
@@ -90,6 +91,35 @@ export class AdvisoryPush {
 
   deliveryFailures(deviceId: string): number {
     return this.#devices.get(deviceId)?.failures ?? 0;
+  }
+
+  /** Remove delivery authority before attempting one non-authoritative final hint. */
+  async revoke(
+    deviceId: string,
+    fact?: { eventId: string; hostId: string; occurredAt: string },
+  ): Promise<boolean> {
+    const device = this.#devices.get(deviceId);
+    this.#devices.delete(deviceId);
+    if (!device || !fact) return false;
+    const { preferences } = device;
+    if (!preferences.subscription || !preferences.encryptionKey) return false;
+    const hint: PushHint = {
+      version: 1,
+      ...fact,
+      category: "revocation",
+      path: "/",
+      title: "Device revoked",
+      body: "Open Pidex to remove local Device data.",
+    };
+    try {
+      await this.send(
+        preferences.subscription,
+        encryptPushHint(hint, preferences.encryptionKey),
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async deliverToDevice(

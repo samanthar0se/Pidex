@@ -70,6 +70,29 @@ test("unsupported, denied, disabled, outage, and missed deadline never affect Ho
   assert.equal(push.deliveryFailures("online-later"), 1);
 });
 
+test("revocation stops scheduling and permits at most one final encrypted hint", async () => {
+  const sent: Uint8Array[] = [];
+  const key = randomBytes(32);
+  const push = new AdvisoryPush(async (_subscription, payload) => {
+    sent.push(payload);
+  });
+  push.configure("device-1", {
+    enabled: true,
+    subscription: "subscription",
+    encryptionKey: key,
+  });
+
+  assert.equal(await push.revoke("device-1", {
+    eventId: "revocation:device-1",
+    hostId: "host-1",
+    occurredAt: "2026-07-18T12:00:00.000Z",
+  }), true);
+  assert.equal(await push.publish(interaction), 0);
+  assert.equal(await push.revoke("device-1"), false);
+  assert.equal(sent.length, 1);
+  assert.equal(decryptPushHint(sent[0]!, key).category, "revocation");
+});
+
 test("worker deduplicates delayed/foreground hints and click only opens then reconciles", async () => {
   const worker = await readFile("apps/pwa/service-worker.js", "utf8");
   const app = await readFile("apps/pwa/app.js", "utf8");

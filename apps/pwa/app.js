@@ -11,6 +11,8 @@ const DEVICE_STORES = [IDENTITY_STORE, DRAFT_STORE, PREFERENCES_STORE];
 const PROTOCOL_BASIS = "1.1";
 const MAX_CACHED_SESSION_PROJECTIONS = 10;
 const MAX_FINALIZED_PAGES = 25;
+const DEFAULT_CACHE_BUDGET_BYTES = 50 * 1024 * 1024;
+const CACHE_BUDGET_PREFERENCE = "cache-budget-bytes";
 const HOST_SCOPE_KEY = "host";
 const SESSION_SCOPE_PREFIX = "session:";
 const CACHE_STORES = {
@@ -207,6 +209,7 @@ if (pairingSecret) {
   $("#pair-device").onclick = pairDevice;
 } else {
   void registerServiceWorker();
+  void initializeStorageManagement();
   loadCachedWorkingSet().finally(authenticateStoredDevice);
 }
 
@@ -277,7 +280,13 @@ function openControl(token) {
       .then(() => handleMessage(JSON.parse(event.data)))
       .catch(() => setCurrent(false, OFFLINE_STATUS));
   };
-  socket.onclose = () => setCurrent(false, OFFLINE_STATUS);
+  socket.onclose = event => {
+    if (event.code === 4003 && event.reason === "device-revoked") {
+      void cleanupRevokedDevice();
+      return;
+    }
+    setCurrent(false, OFFLINE_STATUS);
+  };
 }
 
 async function handleMessage(message) {
@@ -1293,6 +1302,7 @@ async function persistWorkingSet() {
     ? "Current"
     : $("#connection-state").textContent;
   setCurrent(state.current, connectionLabel);
+  void enforceCacheBudget().catch(reportStorageWriteFailure);
 }
 
 async function persistFinalizedPage(sessionId, pageCursor, page) {
@@ -1311,6 +1321,7 @@ async function persistFinalizedPage(sessionId, pageCursor, page) {
       }),
       page,
       fetchedAt: new Date().toISOString(),
+      lastViewed: new Date().toISOString(),
     }, `${sessionId}:${pageCursor}`);
     const keys = await requestValue(store.getAllKeys());
     const excessPageCount = Math.max(0, keys.length - MAX_FINALIZED_PAGES);
@@ -1336,6 +1347,7 @@ async function persistVerifiedImmutableBlob(identity, body, verifiedMetadata) {
       ...cacheBasis(verifiedMetadata.scope, verifiedMetadata.resourceRevisions),
       identity,
       body,
+      lastViewed: new Date().toISOString(),
     }, identity);
     await transactionDone(transaction);
   });
@@ -1523,4 +1535,154 @@ function loadDevice() {
   return withDeviceStore(IDENTITY_STORE, "readonly", store =>
     requestValue(store.get("device"))
   );
+}
+
+async function initializeStorageManagement() {
+  const persistence = navigator.storage?.persist
+    ? await navigator.storage.persist().catch(() => false) : false;
+  const persisted = persistence || (navigator.storage?.persisted
+    ? await navigator.storage.persisted().catch(() => false) : false);
+  const budget = await loadPreference(CACHE_BUDGET_PREFERENCE)
+    .catch(() => DEFAULT_CACHE_BUDGET_BYTES) || DEFAULT_CACHE_BUDGET_BYTES;
+  const input = $("#storage-budget");
+  if (input) input.value = String(Math.round(budget / 1024 / 1024));
+  $("#storage-persistence").textContent = persisted
+    ? "Persistent storage granted"
+    : "Storage may be evicted by the browser or OS";
+  $("#settings").disabled = false;
+  $("#settings").onclick = async () => {
+    await refreshStorageUsage(budget);
+    $("#storage-settings").showModal();
+  };
+  $("#save-storage-budget").onclick = async () => {
+    const bytes = Math.max(1, Number(input.value)) * 1024 * 1024;
+    await savePreference(CACHE_BUDGET_PREFERENCE, bytes);
+    await enforceCacheBudget(bytes);
+    await refreshStorageUsage(bytes);
+  };
+  $("#clear-session-data").onclick = clearSessionData;
+  $("#clear-all-data").onclick = async () => {
+    if (confirm("Delete Device identity and drafts? Re-pairing is required.")) {
+      await clearAllDeviceData();
+      location.href = "/";
+    }
+  };
+}
+
+function loadPreference(key) {
+  return withDeviceStore(PREFERENCES_STORE, "readonly", store =>
+    requestValue(store.get(key))
+  );
+}
+
+async function refreshStorageUsage(budget) {
+  const estimate = navigator.storage?.estimate
+    ? await navigator.storage.estimate().catch(() => ({})) : {};
+  $("#storage-usage").textContent =
+    `${formatBytes(estimate.usage || 0)} used · ${formatBytes(budget)} Pidex budget`;
+}
+
+function formatBytes(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function reportStorageWriteFailure(error) {
+  const label = $("#storage-failure");
+  if (label) label.textContent = `Storage write failed: ${error?.message || error}`;
+}
+
+async function enforceCacheBudget(explicitBudget) {
+  if (!state.hostId) return;
+  const budget = explicitBudget || await loadPreference(CACHE_BUDGET_PREFERENCE)
+    .catch(() => DEFAULT_CACHE_BUDGET_BYTES) || DEFAULT_CACHE_BUDGET_BYTES;
+  await withCache(state.hostId, async database => {
+    const stores = [
+      CACHE_STORES.finalizedPages,
+      CACHE_STORES.immutableBlobs,
+      CACHE_STORES.sessionProjections,
+    ];
+    const transaction = database.transaction(stores, "readwrite");
+    const candidates = [];
+    let usage = 0;
+    for (const storeName of stores) {
+      const store = transaction.objectStore(storeName);
+      const [keys, values] = await Promise.all([
+        requestValue(store.getAllKeys()), requestValue(store.getAll()),
+      ]);
+      values.forEach((value, index) => {
+        const bytes = new Blob([JSON.stringify(value)]).size;
+        usage += bytes;
+        const sessionId = value.scope?.startsWith(SESSION_SCOPE_PREFIX)
+          ? value.scope.slice(SESSION_SCOPE_PREFIX.length) : null;
+        candidates.push({ storeName, key: keys[index], value, bytes, sessionId });
+      });
+    }
+    candidates.sort((left, right) => {
+      const tier = name => name === CACHE_STORES.sessionProjections ? 1 : 0;
+      return tier(left.storeName) - tier(right.storeName) ||
+        String(left.value.lastViewed || left.value.fetchedAt || "")
+          .localeCompare(String(right.value.lastViewed || right.value.fetchedAt || ""));
+    });
+    for (const candidate of candidates) {
+      if (usage <= budget) break;
+      // Never evict the current View; lightweight discovery summaries remain.
+      if (candidate.sessionId === currentSessionId()) continue;
+      transaction.objectStore(candidate.storeName).delete(candidate.key);
+      usage -= candidate.bytes;
+    }
+    await transactionDone(transaction);
+  });
+}
+
+async function clearSessionData() {
+  const sessionId = currentSessionId();
+  if (!state.hostId || !sessionId) return;
+  await withCache(state.hostId, async database => {
+    const stores = [CACHE_STORES.sessionProjections, CACHE_STORES.finalizedPages,
+      CACHE_STORES.immutableBlobs];
+    const transaction = database.transaction(stores, "readwrite");
+    transaction.objectStore(CACHE_STORES.sessionProjections).delete(sessionId);
+    for (const name of stores.slice(1)) {
+      const store = transaction.objectStore(name);
+      const [keys, values] = await Promise.all([
+        requestValue(store.getAllKeys()), requestValue(store.getAll()),
+      ]);
+      values.forEach((value, index) => {
+        if (value.scope === sessionScopeKey(sessionId)) store.delete(keys[index]);
+      });
+    }
+    await transactionDone(transaction);
+  });
+  state.scopes.delete(sessionId);
+  announce("Session cache cleared; pairing and retained draft preserved");
+}
+
+async function cleanupRevokedDevice() {
+  setCurrent(false, "Revoked · cleaning local data");
+  await clearAllDeviceData().catch(reportStorageWriteFailure);
+  setCurrent(false, "Revoked");
+}
+
+async function clearAllDeviceData() {
+  socket?.close();
+  const registration = await navigator.serviceWorker?.ready.catch(() => null);
+  await registration?.pushManager?.getSubscription().then(value => value?.unsubscribe())
+    .catch(() => {});
+  const hostId = state.hostId || localStorage.getItem(EXPECTED_HOST_ID_KEY);
+  if (hostId) await resetDisposableCache(hostId).catch(() => {});
+  await Promise.all([DEVICE_DATABASE, "pidex-push-receipts"].map(deleteDatabase));
+  for (const name of await caches.keys()) {
+    if (name.startsWith("pidex-")) await caches.delete(name);
+  }
+  localStorage.removeItem(EXPECTED_HOST_ID_KEY);
+  Object.assign(state, { hostId: null, apiToken: null, drafts: new Map(), scopes: new Map() });
+}
+
+function deleteDatabase(name) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(Error(`cleanup blocked for ${name}`));
+  });
 }

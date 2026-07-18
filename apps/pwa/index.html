@@ -425,7 +425,6 @@
           <button
             id="settings"
             disabled
-            title="Settings are not available in this release"
           >
             Settings
           </button>
@@ -481,6 +480,29 @@
           </button>
           <button type="button" id="create-and-run">Create &amp; Run</button>
         </div>
+      </form>
+    </dialog>
+
+    <dialog id="storage-settings">
+      <form method="dialog">
+        <h2>Device storage</h2>
+        <p id="storage-usage">Calculating usage…</p>
+        <p id="storage-persistence" class="scope"></p>
+        <p id="storage-failure" class="danger" aria-live="polite"></p>
+        <label>
+          Cache budget (MB)
+          <input id="storage-budget" type="number" min="1" step="1">
+        </label>
+        <button type="button" id="save-storage-budget">Save budget</button>
+        <button type="button" id="clear-session-data">Clear Session data</button>
+        <button type="button" id="clear-all-data" class="danger">Clear all local data</button>
+        <p class="danger">
+          Offline copies and backups may retain cached content; revocation is
+          not remote wipe. Clearing all data loses Device identity and drafts,
+          and re-pairing is required. Clearing Session data preserves pairing
+          and retained drafts.
+        </p>
+        <button value="close">Close</button>
       </form>
     </dialog>
 
