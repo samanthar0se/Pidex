@@ -67,6 +67,11 @@ interface ScopeSetMessage {
   protocolVersion: string;
 }
 
+type ScopeResetReason = Extract<
+  ServerMessage,
+  { type: "scope.reset" }
+>["reason"];
+
 const PWA_ASSETS: Record<string, PwaAsset> = {
   "/": { file: "index.html", contentType: "text/html" },
   "/app.js": { file: "app.js", contentType: "text/javascript" },
@@ -209,62 +214,91 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       status: store.status(RELEASE_ID, warnings),
       ...store.projection(),
     };
-    webSocket.send(JSON.stringify(message));
+    sendServerMessage(webSocket, message);
   });
 
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     const projection = store.projection();
     const status = store.status(RELEASE_ID, warnings);
+    const sessionsById = new Map(
+      projection.sessions.map(session => [session.sessionId, session]),
+    );
     const basis = request.cursor ? store.cursorBasis(request.cursor) : undefined;
     const protocolCompatible = request.protocolVersion === protocolVersion;
-    const revisionCompatible = Object.entries(request.resourceRevisions ?? {}).every(([sessionId, expected]) => {
-      const session = projection.sessions.find(item => item.sessionId === sessionId);
-      return session?.metadataRevision === expected;
-    });
+    const revisionCompatible = Object.entries(
+      request.resourceRevisions ?? {},
+    ).every(
+      ([sessionId, expected]) =>
+        sessionsById.get(sessionId)?.metadataRevision === expected,
+    );
 
     if (basis?.compatible && protocolCompatible && revisionCompatible) {
       for (const item of store.changesAfter(basis.sequence)) {
         const message: ServerMessage = {
           type: "host.change-set",
           cursor: item.cursor,
-          changes: [item.change] as Extract<ServerMessage, { type: "host.change-set" }>["changes"],
+          changes: [item.change],
         };
-        client.send(JSON.stringify(message));
+        sendServerMessage(client, message);
       }
-      client.send(JSON.stringify({ type: "scope.current", scope: { kind: "host" }, cursor: status.synchronization.cursor } satisfies ServerMessage));
+
+      sendServerMessage(client, {
+        type: "scope.current",
+        scope: { kind: "host" },
+        cursor: status.synchronization.cursor,
+      });
     } else {
-      const reason = !protocolCompatible
-        ? "protocol-mismatch"
-        : !revisionCompatible
-          ? "revision-mismatch"
-          : basis && !basis.compatible
-            ? basis.reason
-            : "new-scope";
-      client.send(JSON.stringify({
+      let reason: ScopeResetReason;
+      if (!protocolCompatible) {
+        reason = "protocol-mismatch";
+      } else if (!revisionCompatible) {
+        reason = "revision-mismatch";
+      } else if (basis && !basis.compatible) {
+        reason = basis.reason;
+      } else {
+        reason = "new-scope";
+      }
+
+      sendServerMessage(client, {
         type: "scope.reset",
         reason,
         barrier: {
-          scope: { kind: "host" }, cursor: status.synchronization.cursor,
-          resourceRevisions: Object.fromEntries(projection.sessions.map(session => [session.sessionId, session.metadataRevision])),
+          scope: { kind: "host" },
+          cursor: status.synchronization.cursor,
+          resourceRevisions: Object.fromEntries(
+            projection.sessions.map(session => [
+              session.sessionId,
+              session.metadataRevision,
+            ]),
+          ),
           protocolBasis: protocolVersion,
           capabilities: ["session.create", "session.rename", "scope.session"],
         },
         snapshot: projection,
-      } satisfies ServerMessage));
+      });
     }
 
     for (const sessionId of request.sessionIds) {
-      const session = projection.sessions.find(item => item.sessionId === sessionId);
-      if (!session) continue;
-      client.send(JSON.stringify({
-        type: "scope.reset", reason: "new-scope",
+      const session = sessionsById.get(sessionId);
+      if (!session) {
+        continue;
+      }
+
+      sendServerMessage(client, {
+        type: "scope.reset",
+        reason: "new-scope",
         barrier: {
-          scope: { kind: "session", sessionId }, cursor: status.synchronization.cursor,
-          resourceRevisions: { metadata: session.metadataRevision, timeline: session.timelineRevision },
-          protocolBasis: protocolVersion, capabilities: ["session.rename"],
+          scope: { kind: "session", sessionId },
+          cursor: status.synchronization.cursor,
+          resourceRevisions: {
+            metadata: session.metadataRevision,
+            timeline: session.timelineRevision,
+          },
+          protocolBasis: protocolVersion,
+          capabilities: ["session.rename"],
         },
         snapshot: { session },
-      } satisfies ServerMessage));
+      });
     }
   }
 
@@ -325,7 +359,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         commandId: command.commandId,
         outcome: "accepted",
       };
-      client.send(JSON.stringify(outcome));
+      sendServerMessage(client, outcome);
 
       const changeSet: ServerMessage = {
         type: "host.change-set",
@@ -333,7 +367,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         changes: [{ type: "session.created", session: created.session }],
       };
       for (const socket of webSocketServer.clients) {
-        socket.send(JSON.stringify(changeSet));
+        sendServerMessage(socket, changeSet);
       }
     } catch (error) {
       const outcome: ServerMessage = {
@@ -342,7 +376,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         outcome: "rejected",
         error: error instanceof Error ? error.message : "invalid-scope",
       };
-      client.send(JSON.stringify(outcome));
+      sendServerMessage(client, outcome);
     }
   }
 
@@ -369,13 +403,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           outcome: "rejected",
           error: "command-id-conflict",
         };
-        client.send(JSON.stringify(conflict));
+        sendServerMessage(client, conflict);
         return;
       }
 
       const resolved = result.kind === "replayed" ? result.outcome : result;
-      client.send(
-        JSON.stringify(renameOutcomeMessage(command.commandId, resolved)),
+      sendServerMessage(
+        client,
+        renameOutcomeMessage(command.commandId, resolved),
       );
 
       if (resolved.kind === "accepted" && result.kind !== "replayed") {
@@ -387,7 +422,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           ],
         };
         for (const socket of webSocketServer.clients) {
-          socket.send(JSON.stringify(changeSet));
+          sendServerMessage(socket, changeSet);
         }
       }
     } catch {
@@ -397,7 +432,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         outcome: "rejected",
         error: "commit-failed",
       };
-      client.send(JSON.stringify(failure));
+      sendServerMessage(client, failure);
     }
   }
 
@@ -406,7 +441,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     createPairing: () => pairing.create(canonicalOrigin),
     status: () => store.status(RELEASE_ID, warnings),
     revokeDevice,
-    rotateSynchronizationEpoch: () => store.rotateSynchronizationEpoch(adapters.clock.now()),
+    rotateSynchronizationEpoch: () =>
+      store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
       stopAdvertisement();
       for (const webSocket of webSocketServer.clients) {
@@ -429,12 +465,40 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 }
 
 function isScopeSetMessage(value: unknown): value is ScopeSetMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "scope.set" && typeof item.protocolVersion === "string" &&
-    Array.isArray(item.sessionIds) && item.sessionIds.every(id => typeof id === "string") &&
-    (item.cursor === undefined || typeof item.cursor === "string") &&
-    (item.resourceRevisions === undefined || (typeof item.resourceRevisions === "object" && item.resourceRevisions !== null));
+  const hasValidSessionIds =
+    Array.isArray(item.sessionIds) &&
+    item.sessionIds.every(sessionId => typeof sessionId === "string");
+  const hasValidCursor =
+    item.cursor === undefined || typeof item.cursor === "string";
+  const hasValidResourceRevisions =
+    item.resourceRevisions === undefined ||
+    isNumericRecord(item.resourceRevisions);
+
+  return (
+    item.type === "scope.set" &&
+    typeof item.protocolVersion === "string" &&
+    hasValidSessionIds &&
+    hasValidCursor &&
+    hasValidResourceRevisions
+  );
+}
+
+function isNumericRecord(value: unknown): value is Record<string, number> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every(item => typeof item === "number")
+  );
+}
+
+function sendServerMessage(client: WebSocket, message: ServerMessage): void {
+  client.send(JSON.stringify(message));
 }
 
 function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {

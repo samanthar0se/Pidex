@@ -5,9 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { HostAdapters } from "../../adapters/src/index.js";
 import {
+  hostChangeSchema,
   projectSummarySchema,
   sessionSummarySchema,
   workspaceSummarySchema,
+  type HostChange,
   type HostStatus,
   type ProjectSummary,
   type SessionSummary,
@@ -104,6 +106,24 @@ export type RenameResult =
 export interface InitialCatalog {
   projects?: ProjectSummary[];
   workspaces?: WorkspaceSummary[];
+}
+
+type CursorBasis =
+  | { compatible: true; sequence: number }
+  | {
+      compatible: false;
+      reason: "host-mismatch" | "epoch-mismatch" | "history-unavailable";
+    };
+
+interface DecodedCursor {
+  hostId: string;
+  epoch: string;
+  sequence: number;
+}
+
+interface SynchronizationChange {
+  cursor: string;
+  change: HostChange;
 }
 
 export class AuthorityStore {
@@ -228,13 +248,12 @@ export class AuthorityStore {
            WHERE singleton = 1`,
         )
         .run(now);
-      const sequence = this.currentSequence();
-      this.#db.prepare(
-        "INSERT INTO synchronization_changes VALUES (?, ?)",
-      ).run(sequence, JSON.stringify({ type: "session.created", session }));
-      const status = this.status("");
+      const cursor = this.recordSynchronizationChange({
+        type: "session.created",
+        session,
+      });
       this.#db.exec("COMMIT");
-      return { session, cursor: status.synchronization.cursor };
+      return { session, cursor };
     } catch (error) {
       this.#db.exec("ROLLBACK");
       throw error;
@@ -301,16 +320,14 @@ export class AuthorityStore {
           )
           .run(now);
         const session = this.loadSession(command.sessionId);
-        this.#db.prepare(
-          "INSERT INTO synchronization_changes VALUES (?, ?)",
-        ).run(
-          this.currentSequence(),
-          JSON.stringify({ type: "session.renamed", session }),
-        );
+        const cursor = this.recordSynchronizationChange({
+          type: "session.renamed",
+          session,
+        });
         outcome = {
           kind: "accepted",
           session,
-          cursor: this.status("").synchronization.cursor,
+          cursor,
           digest,
         };
       }
@@ -380,37 +397,81 @@ export class AuthorityStore {
     };
   }
 
-  cursorBasis(cursor: string):
-    | { compatible: true; sequence: number }
-    | { compatible: false; reason: "host-mismatch" | "epoch-mismatch" | "history-unavailable" } {
+  cursorBasis(cursor: string): CursorBasis {
     const decoded = decodeCursor(cursor);
     const status = this.status("");
-    if (!decoded || decoded.hostId !== status.hostId) return { compatible: false, reason: "host-mismatch" };
-    if (decoded.epoch !== status.synchronization.epoch) return { compatible: false, reason: "epoch-mismatch" };
-    if (decoded.sequence > status.synchronization.sequence) return { compatible: false, reason: "history-unavailable" };
-    const earliest = this.#db.prepare("SELECT MIN(sequence) AS sequence FROM synchronization_changes").get();
-    if (decoded.sequence < status.synchronization.sequence && earliest && typeof earliest.sequence === "number" && decoded.sequence < earliest.sequence - 1) {
+    if (!decoded || decoded.hostId !== status.hostId) {
+      return { compatible: false, reason: "host-mismatch" };
+    }
+    if (decoded.epoch !== status.synchronization.epoch) {
+      return { compatible: false, reason: "epoch-mismatch" };
+    }
+    if (decoded.sequence > status.synchronization.sequence) {
       return { compatible: false, reason: "history-unavailable" };
     }
+
+    const earliest = this.#db
+      .prepare(
+        "SELECT MIN(sequence) AS sequence FROM synchronization_changes",
+      )
+      .get();
+    const earliestRetainedSequence =
+      earliest && typeof earliest.sequence === "number"
+        ? earliest.sequence
+        : undefined;
+    const hasMissingChanges =
+      decoded.sequence < status.synchronization.sequence &&
+      earliestRetainedSequence !== undefined &&
+      decoded.sequence < earliestRetainedSequence - 1;
+    if (hasMissingChanges) {
+      return { compatible: false, reason: "history-unavailable" };
+    }
+
     return { compatible: true, sequence: decoded.sequence };
   }
 
-  changesAfter(sequence: number): Array<{ cursor: string; change: unknown }> {
+  changesAfter(sequence: number): SynchronizationChange[] {
     const status = this.status("");
-    return this.#db.prepare("SELECT sequence, payload_json FROM synchronization_changes WHERE sequence > ? ORDER BY sequence").all(sequence).map(row => ({
-      cursor: encodeCursor(status.hostId, status.synchronization.epoch, Number(row.sequence)),
-      change: JSON.parse(String(row.payload_json)),
+    const rows = this.#db
+      .prepare(
+        `SELECT sequence, payload_json FROM synchronization_changes
+         WHERE sequence > ? ORDER BY sequence`,
+      )
+      .all(sequence);
+
+    return rows.map(row => ({
+      cursor: encodeCursor(
+        status.hostId,
+        status.synchronization.epoch,
+        Number(row.sequence),
+      ),
+      change: hostChangeSchema.parse(JSON.parse(String(row.payload_json))),
     }));
   }
 
   rotateSynchronizationEpoch(now: number): void {
-    this.#db.prepare("UPDATE host SET epoch = ?, sequence = sequence + 1, committed_at = ? WHERE singleton = 1").run(randomUUID(), now);
-    this.#db.prepare("DELETE FROM synchronization_changes").run();
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db
+        .prepare(
+          `UPDATE host SET epoch = ?, sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(randomUUID(), now);
+      this.#db.prepare("DELETE FROM synchronization_changes").run();
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
-  private currentSequence(): number {
-    const row = this.#db.prepare("SELECT sequence FROM host WHERE singleton = 1").get();
-    return Number(row?.sequence);
+  private recordSynchronizationChange(change: HostChange): string {
+    const synchronization = this.status("").synchronization;
+    this.#db
+      .prepare("INSERT INTO synchronization_changes VALUES (?, ?)")
+      .run(synchronization.sequence, JSON.stringify(change));
+    return synchronization.cursor;
   }
 
   addDevice(deviceId: string, publicKeyJwk: string, pairedAt: number): void {
@@ -464,14 +525,38 @@ function encodeCursor(hostId: string, epoch: string, sequence: number): string {
   return `sync_${Buffer.from(JSON.stringify({ hostId, epoch, sequence })).toString("base64url")}`;
 }
 
-function decodeCursor(cursor: string): { hostId: string; epoch: string; sequence: number } | undefined {
+function decodeCursor(cursor: string): DecodedCursor | undefined {
+  if (!cursor.startsWith("sync_")) {
+    return undefined;
+  }
+
   try {
-    const value: unknown = JSON.parse(Buffer.from(cursor.slice(5), "base64url").toString());
-    if (!cursor.startsWith("sync_") || !value || typeof value !== "object") return undefined;
+    const json = Buffer.from(cursor.slice(5), "base64url").toString();
+    const value: unknown = JSON.parse(json);
+    if (!value || typeof value !== "object") {
+      return undefined;
+    }
+
     const record = value as Record<string, unknown>;
-    if (typeof record.hostId !== "string" || typeof record.epoch !== "string" || !Number.isSafeInteger(record.sequence) || Number(record.sequence) < 1) return undefined;
-    return { hostId: record.hostId, epoch: record.epoch, sequence: Number(record.sequence) };
-  } catch { return undefined; }
+    const sequence = record.sequence;
+    if (
+      typeof record.hostId !== "string" ||
+      typeof record.epoch !== "string" ||
+      typeof sequence !== "number" ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1
+    ) {
+      return undefined;
+    }
+
+    return {
+      hostId: record.hostId,
+      epoch: record.epoch,
+      sequence,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function renameCommandDigest(command: RenameCommand): string {

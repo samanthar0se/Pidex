@@ -61,6 +61,19 @@ const synchronizationBarrierSchema = z.object({
   capabilities: z.array(z.string()),
 });
 
+export const hostChangeSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("session.created"),
+    session: sessionSummarySchema,
+  }),
+  z.object({
+    type: z.literal("session.renamed"),
+    session: sessionSummarySchema,
+  }),
+]);
+
+export type HostChange = z.infer<typeof hostChangeSchema>;
+
 export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.snapshot"),
@@ -73,18 +86,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.change-set"),
     cursor: z.string(),
-    changes: z.array(
-      z.discriminatedUnion("type", [
-        z.object({
-          type: z.literal("session.created"),
-          session: sessionSummarySchema,
-        }),
-        z.object({
-          type: z.literal("session.renamed"),
-          session: sessionSummarySchema,
-        }),
-      ]),
-    ),
+    changes: z.array(hostChangeSchema),
   }),
   z.object({
     type: z.literal("scope.reset"),
