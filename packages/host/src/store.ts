@@ -15,6 +15,11 @@ const CREATE_HOST_TABLE = `
     sequence INTEGER NOT NULL,
     readiness TEXT NOT NULL,
     committed_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS devices (
+    device_id TEXT PRIMARY KEY,
+    public_key_jwk TEXT NOT NULL,
+    paired_at INTEGER NOT NULL
   )
 `;
 
@@ -65,6 +70,15 @@ export class AuthorityStore {
         cursor: `${row.host_id}:${row.epoch}:${row.sequence}`,
       },
     };
+  }
+
+  addDevice(deviceId: string, publicKeyJwk: string, pairedAt: number): void {
+    this.#db.prepare("INSERT INTO devices VALUES (?, ?, ?)").run(deviceId, publicKeyJwk, pairedAt);
+  }
+
+  devicePublicKey(deviceId: string): string | undefined {
+    const row = this.#db.prepare("SELECT public_key_jwk FROM devices WHERE device_id=?").get(deviceId);
+    return row && typeof row.public_key_jwk === "string" ? row.public_key_jwk : undefined;
   }
 
   close(): void {
