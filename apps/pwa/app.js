@@ -7,6 +7,9 @@ const createSessionButton = document.querySelector("#create-session");
 const projectSelect = document.querySelector("#session-project");
 const workspaceSelect = document.querySelector("#session-workspace");
 const sessionsNav = document.querySelector("#sessions");
+const archivedView = document.querySelector("#archived-sessions");
+const archivedList = document.querySelector("#archived-list");
+const archiveSessionButton = document.querySelector("#archive-session");
 const runModelSelect = document.querySelector("#run-model");
 const runModeSelect = document.querySelector("#run-mode");
 const runInput = document.querySelector("#run-input");
@@ -22,6 +25,8 @@ const supportedCapabilities = [
   "scope.session",
   "session.create",
   "session.rename",
+  "session.archive",
+  "session.restore",
   "run.submit",
   "run.follow-up",
   "run.release",
@@ -37,7 +42,7 @@ const supportedCapabilities = [
 const presentation = { generation: null, status: new Map(), widgets: new Map() };
 let admittedCapabilities = new Map();
 let controlSocket;
-let projection = { projects: [], workspaces: [], sessions: [] };
+let projection = { projects: [], workspaces: [], sessions: [], archivedSessions: [] };
 let admitted = false;
 let observedExecution = null;
 
@@ -78,6 +83,11 @@ projectSelect.addEventListener("change", () => {
 submitRunButton.addEventListener("click", () => sendRun("run.submit"));
 followUpButton.addEventListener("click", () => sendRun("run.follow-up"));
 stopRunButton.addEventListener("click", sendStop);
+archiveSessionButton.addEventListener("click", () => {
+  const id = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
+  const session = projection.sessions.find(item => item.sessionId === id);
+  if (session) controlSocket.send(JSON.stringify({ type: "session.archive", commandId: crypto.randomUUID(), sessionId: id, observedMetadataRevision: session.metadataRevision }));
+});
 
 function sendStop() {
   if (!observedExecution || !presentation.generation) {
@@ -389,6 +399,12 @@ function applyHostChanges(changes) {
           ? change.session
           : session,
       );
+    } else if (change.type === "session.archived") {
+      projection.sessions = projection.sessions.filter(item => item.sessionId !== change.session.sessionId);
+      projection.archivedSessions.push(change.session);
+    } else if (change.type === "session.restored") {
+      projection.archivedSessions = projection.archivedSessions.filter(item => item.sessionId !== change.session.sessionId);
+      projection.sessions.push(change.session);
     }
   }
   renderSessions();
@@ -402,6 +418,7 @@ function renderHostSnapshot(message) {
     projects: message.projects,
     workspaces: message.workspaces,
     sessions: message.sessions,
+    archivedSessions: message.archivedSessions,
   };
 
   const entries = [
@@ -543,6 +560,15 @@ function sendInteractionResolution(interaction, control, dismiss) {
 }
 
 function renderSessions() {
+  archivedView.hidden = location.pathname !== "/archived";
+  archivedList.replaceChildren(...projection.archivedSessions.map(session => {
+    const button = document.createElement("button");
+    button.textContent = `Restore ${session.name}`;
+    button.addEventListener("click", () => controlSocket.send(JSON.stringify({ type: "session.restore", commandId: crypto.randomUUID(), sessionId: session.sessionId, observedMetadataRevision: session.metadataRevision })));
+    return button;
+  }));
+  const selectedId = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
+  archiveSessionButton.hidden = !selectedId || !admittedCapabilities.has("session.archive");
   const groups = new Map();
   for (const session of projection.sessions) {
     const groupName = sessionGroupName(session);

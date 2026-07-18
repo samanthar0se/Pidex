@@ -104,6 +104,12 @@ interface SessionSleepMessage {
   commandId: string;
   sessionId: string;
 }
+interface SessionAvailabilityMessage {
+  type: "session.archive" | "session.restore";
+  commandId: string;
+  sessionId: string;
+  observedMetadataRevision: number;
+}
 
 interface CapabilityBasisRequirement {
   id: string;
@@ -451,6 +457,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionRename(webSocket, message);
         } else if (isSessionSleepMessage(message)) {
           void handleSessionSleep(webSocket, message);
+        } else if (isSessionAvailabilityMessage(message)) {
+          handleSessionAvailability(webSocket, message);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
         } else if (isRunSteerMessage(message)) {
@@ -549,7 +557,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const projection = store.projection();
     const status = store.status(RELEASE_ID, warnings);
     const sessionsById = new Map(
-      projection.sessions.map(session => [session.sessionId, session]),
+      [...projection.sessions, ...projection.archivedSessions].map(session => [session.sessionId, session]),
     );
     const basis = request.cursor ? store.cursorBasis(request.cursor) : undefined;
     const protocolCompatible = request.protocolVersion === protocolVersion;
@@ -596,7 +604,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           scope: { kind: "host" },
           cursor: status.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
-            projection.sessions.map(session => [
+            [...projection.sessions, ...projection.archivedSessions].map(session => [
               session.sessionId,
               session.metadataRevision,
             ]),
@@ -843,6 +851,28 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         error: error instanceof Error ? error.message : "sleep-failed",
       });
     }
+  }
+
+  function handleSessionAvailability(client: WebSocket, command: SessionAvailabilityMessage): void {
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      adapters.storage.beforeCommit();
+      const result = store.changeSessionAvailability(deviceId, command,
+        command.type === "session.archive" ? "archived" : "available", adapters.clock.now());
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId,
+        outcome: result.kind === "accepted" || result.kind === "replayed" && !result.error ? "accepted" : "rejected",
+        ...(result.error ? { error: result.error } : {}) });
+      if (result.kind === "accepted" && result.session) {
+        if (command.type === "session.archive") {
+          sessionJobs.get(command.sessionId)?.close();
+          sessionJobs.delete(command.sessionId); workers.delete(command.sessionId); workerGenerations.delete(command.sessionId);
+        }
+        const changeSet: ServerMessage = { type: "host.change-set", cursor: result.cursor,
+          changes: [{ type: command.type === "session.archive" ? "session.archived" : "session.restored", session: result.session }] };
+        for (const socket of admittedClients) sendServerMessage(socket, changeSet);
+      }
+    } catch { sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "commit-failed" }); }
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
@@ -1873,6 +1903,14 @@ function isSessionSleepMessage(value: unknown): value is SessionSleepMessage {
     item.commandId.length > 0 &&
     typeof item.sessionId === "string"
   );
+}
+
+function isSessionAvailabilityMessage(value: unknown): value is SessionAvailabilityMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return (item.type === "session.archive" || item.type === "session.restore") &&
+    typeof item.commandId === "string" && typeof item.sessionId === "string" &&
+    Number.isSafeInteger(item.observedMetadataRevision) && Number(item.observedMetadataRevision) > 0;
 }
 
 function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {

@@ -69,6 +69,7 @@ const CREATE_AUTHORITY_SCHEMA = `
     workspace_id TEXT REFERENCES workspaces(workspace_id),
     name TEXT NOT NULL DEFAULT 'Untitled Session',
     retention TEXT NOT NULL CHECK(retention='available'),
+    availability TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','archived')),
     residency TEXT NOT NULL CHECK(residency IN ('sleeping','resident')),
     metadata_revision INTEGER NOT NULL,
     timeline_revision INTEGER NOT NULL,
@@ -201,7 +202,7 @@ const submitOutcomeSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("rejected"),
-    error: z.enum(["unknown-session", "session-busy", "no-executing-run"]),
+    error: z.enum(["unknown-session", "session-archived", "session-busy", "no-executing-run"]),
     cursor: z.string(),
     digest: z.string(),
   }),
@@ -351,6 +352,9 @@ export class AuthorityStore {
         "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",
       );
     }
+    if (!sessionColumns.some(column => column.name === "availability")) {
+      this.#db.exec("ALTER TABLE sessions ADD COLUMN availability TEXT NOT NULL DEFAULT 'available'");
+    }
     const timelineColumns = this.#db
       .prepare("PRAGMA table_info(timeline_entries)")
       .all();
@@ -430,6 +434,7 @@ export class AuthorityStore {
     projects: ProjectSummary[];
     workspaces: WorkspaceSummary[];
     sessions: SessionSummary[];
+    archivedSessions: SessionSummary[];
   } {
     const projects = this.#db
       .prepare(
@@ -445,17 +450,24 @@ export class AuthorityStore {
     const sessions = this.#db
       .prepare(
         `SELECT session_id AS sessionId, name, project_id AS projectId,
-                workspace_id AS workspaceId, retention, residency,
+                workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
                 timeline_revision AS timelineRevision
-         FROM sessions ORDER BY created_at`,
+         FROM sessions WHERE availability = 'available' ORDER BY created_at`,
       )
       .all();
+    const archivedSessions = this.#db.prepare(
+      `SELECT session_id AS sessionId, name, project_id AS projectId,
+       workspace_id AS workspaceId, retention, availability, residency,
+       metadata_revision AS metadataRevision, timeline_revision AS timelineRevision
+       FROM sessions WHERE availability = 'archived' ORDER BY created_at`,
+    ).all();
 
     return {
       projects: projectSummarySchema.array().parse(projects),
       workspaces: workspaceSummarySchema.array().parse(workspaces),
-      sessions: sessionSummarySchema.array().parse(sessions),
+      sessions: sessionSummarySchema.array().parse(sessions.map(({ availability: _, ...session }) => session)),
+      archivedSessions: sessionSummarySchema.array().parse(archivedSessions),
     };
   }
 
@@ -523,6 +535,41 @@ export class AuthorityStore {
       this.#db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  changeSessionAvailability(
+    deviceId: string,
+    command: { commandId: string; sessionId: string; observedMetadataRevision: number },
+    availability: "available" | "archived",
+    now: number,
+  ): { kind: "accepted" | "rejected" | "replayed"; error?: string; session?: SessionSummary; cursor: string } {
+    const digest = createHash("sha256").update(JSON.stringify({ ...command, availability })).digest("hex");
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const receipt = this.#db.prepare(`SELECT envelope_digest, outcome_json FROM command_receipts WHERE device_id=? AND command_id=?`).get(deviceId, command.commandId);
+      if (receipt) {
+        this.#db.exec("COMMIT");
+        if (receipt.envelope_digest !== digest) return { kind: "rejected", error: "command-id-conflict", cursor: this.status("").synchronization.cursor };
+        return { ...JSON.parse(String(receipt.outcome_json)), kind: "replayed" };
+      }
+      const row = this.#db.prepare(`SELECT metadata_revision, availability FROM sessions WHERE session_id=?`).get(command.sessionId);
+      let result: any;
+      const cursor = this.status("").synchronization.cursor;
+      if (!row) result = { kind: "rejected", error: "unknown-session", cursor };
+      else if (row.metadata_revision !== command.observedMetadataRevision) result = { kind: "rejected", error: "stale-precondition", cursor };
+      else if (row.availability === availability) result = { kind: "rejected", error: availability === "archived" ? "already-archived" : "not-archived", cursor };
+      else if (availability === "archived" && (this.#db.prepare(`SELECT 1 FROM runs WHERE session_id=? AND state IN ('queued','executing','held','cancelling')`).get(command.sessionId) || this.#db.prepare(`SELECT 1 FROM interactions WHERE session_id=? AND state IN ('open','resolving')`).get(command.sessionId))) result = { kind: "rejected", error: "session-not-quiescent", cursor };
+      else {
+        this.#db.prepare(`UPDATE sessions SET availability=?, residency='sleeping', metadata_revision=metadata_revision+1 WHERE session_id=?`).run(availability, command.sessionId);
+        this.#db.prepare(`UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1`).run(now);
+        const session = this.loadSession(command.sessionId);
+        const nextCursor = this.recordSynchronizationChange({ type: availability === "archived" ? "session.archived" : "session.restored", session });
+        result = { kind: "accepted", session, cursor: nextCursor };
+      }
+      this.#db.prepare(`INSERT INTO command_receipts VALUES (?, ?, ?, ?, ?, ?)`).run(deviceId, command.commandId, digest, JSON.stringify(result), result.cursor, now);
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
   }
 
   /** Commit residency only while the durable Session is fully quiescent. */
@@ -717,12 +764,14 @@ export class AuthorityStore {
       }
 
       const sessionExists = this.#db
-        .prepare("SELECT 1 FROM sessions WHERE session_id = ?")
+        .prepare("SELECT availability FROM sessions WHERE session_id = ?")
         .get(command.sessionId);
       const cursor = this.status("").synchronization.cursor;
       let outcome: SubmitOutcome;
       if (!sessionExists) {
         outcome = { kind: "rejected", error: "unknown-session", cursor, digest };
+      } else if (sessionExists.availability === "archived") {
+        outcome = { kind: "rejected", error: "session-archived", cursor, digest } as SubmitOutcome;
       } else {
         const activeRun = this.#db
           .prepare(
@@ -1955,12 +2004,13 @@ export class AuthorityStore {
     const row = this.#db
       .prepare(
         `SELECT session_id AS sessionId, name, project_id AS projectId,
-                workspace_id AS workspaceId, retention, residency,
+                workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
                 timeline_revision AS timelineRevision
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
+    if (row && row.availability === "available") delete row.availability;
     return sessionSummarySchema.parse(row);
   }
 

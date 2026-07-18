@@ -9,6 +9,8 @@ export const protocolCapabilities = [
   { id: "scope.session", version: 1 },
   { id: "session.create", version: 1 },
   { id: "session.rename", version: 1 },
+  { id: "session.archive", version: 1 },
+  { id: "session.restore", version: 1 },
   { id: "run.submit", version: 1 },
   { id: "presentation.effects", version: 1 },
   { id: "run.follow-up", version: 1 },
@@ -105,6 +107,8 @@ export const sessionSummarySchema = z.object({
   projectId: z.string().nullable(),
   workspaceId: z.string().nullable(),
   retention: z.literal("available"),
+  /** Present for the distinct archived catalog; omitted for compatible normal discovery. */
+  availability: z.literal("archived").optional(),
   residency: z.enum(["sleeping", "resident"]),
   metadataRevision: z.number(),
   timelineRevision: z.number(),
@@ -244,6 +248,10 @@ export const hostChangeSchema = z.discriminatedUnion("type", [
     type: z.literal("session.residency-changed"),
     session: sessionSummarySchema,
   }),
+  z.object({
+    type: z.enum(["session.archived", "session.restored"]),
+    session: sessionSummarySchema,
+  }),
 ]).and(optionalEnvelopeSchema);
 
 export type HostChange = z.infer<typeof hostChangeSchema>;
@@ -307,6 +315,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     projects: z.array(projectSummarySchema),
     workspaces: z.array(workspaceSummarySchema),
     sessions: z.array(sessionSummarySchema),
+    archivedSessions: z.array(sessionSummarySchema),
   }),
   z.object({
     type: z.literal("host.change-set"),
@@ -329,6 +338,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
         projects: z.array(projectSummarySchema),
         workspaces: z.array(workspaceSummarySchema),
         sessions: z.array(sessionSummarySchema),
+        archivedSessions: z.array(sessionSummarySchema),
       }),
       z.object({
         session: sessionSummarySchema,
