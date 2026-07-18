@@ -33,8 +33,13 @@ export interface HostAdapters {
 
 export type AdapterMode = "product" | "deterministic";
 
+const DETERMINISTIC_DPAPI_HEADER = Buffer.from("PIDEX-DPAPI-V1\0");
+
 export function adaptersFor(mode: AdapterMode = "product"): HostAdapters {
   const deterministic = mode === "deterministic";
+  const windows = deterministic
+    ? deterministicWindowsAdapter()
+    : productWindowsAdapter();
 
   return {
     clock: {
@@ -43,21 +48,24 @@ export function adaptersFor(mode: AdapterMode = "product"): HostAdapters {
     pi: { kind: deterministic ? "deterministic" : "real" },
     network: { beforeSend() {} },
     storage: { beforeCommit() {} },
-    windows: deterministic
-      ? {
-          kind: "deterministic",
-          protectForCurrentUser: cleartext =>
-            Buffer.concat([Buffer.from("PIDEX-DPAPI-V1\0"), cleartext]),
-          unprotectForCurrentUser: envelope => envelope.subarray(15),
-          restrictToCurrentUser() {},
-          trustCurrentUserCertificate() {},
-          registerLogonTask() {},
-        }
-      : windowsAdapter(),
+    windows,
   };
 }
 
-function windowsAdapter(): WindowsPlatformAdapter {
+function deterministicWindowsAdapter(): WindowsPlatformAdapter {
+  return {
+    kind: "deterministic",
+    protectForCurrentUser: cleartext =>
+      Buffer.concat([DETERMINISTIC_DPAPI_HEADER, cleartext]),
+    unprotectForCurrentUser: envelope =>
+      envelope.subarray(DETERMINISTIC_DPAPI_HEADER.length),
+    restrictToCurrentUser() {},
+    trustCurrentUserCertificate() {},
+    registerLogonTask() {},
+  };
+}
+
+function productWindowsAdapter(): WindowsPlatformAdapter {
   if (process.platform !== "win32") {
     throw new Error("The product Windows adapter requires Windows");
   }
