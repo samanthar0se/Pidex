@@ -23,11 +23,21 @@ const fileSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
-const sbomSchema = z.object({
+const sbomReferenceSchema = z.object({
   path: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   format: z.literal("cyclonedx-json-1.5"),
 });
+
+const cycloneDxSbomSchema = z
+  .object({
+    bomFormat: z.literal("CycloneDX"),
+    specVersion: z.literal("1.5"),
+    serialNumber: z.string().startsWith("urn:uuid:"),
+    version: z.number().int().positive(),
+    components: z.array(z.object({}).passthrough()),
+  })
+  .passthrough();
 
 export const releaseManifestSchema = z
   .object({
@@ -37,7 +47,7 @@ export const releaseManifestSchema = z
     workerGeneration: z.string().min(1),
     dataSchema: z.number().int().nonnegative(),
     files: z.array(fileSchema).min(1),
-    sbom: sbomSchema,
+    sbom: sbomReferenceSchema,
   })
   .strict();
 export type ReleaseManifest = z.infer<typeof releaseManifestSchema>;
@@ -140,17 +150,11 @@ function validateSbom(
   if (sha256(bytes) !== manifest.sbom.sha256) {
     throw new ReleaseUpdateError("sbom-invalid");
   }
+
   try {
-    const document = z
-      .object({
-        bomFormat: z.literal("CycloneDX"),
-        specVersion: z.literal("1.5"),
-        serialNumber: z.string().startsWith("urn:uuid:"),
-        version: z.number().int().positive(),
-        components: z.array(z.object({}).passthrough()),
-      })
-      .passthrough()
-      .parse(JSON.parse(bytes.toString("utf8")));
+    const document = cycloneDxSbomSchema.parse(
+      JSON.parse(bytes.toString("utf8")),
+    );
     if (document.components.length === 0) {
       throw new Error("empty");
     }

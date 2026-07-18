@@ -1,7 +1,10 @@
 name: security
+
 on: [push, pull_request]
+
 permissions:
   contents: read
+
 jobs:
   product-security:
     runs-on: ubuntu-latest

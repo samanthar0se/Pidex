@@ -9,6 +9,10 @@ import {
   SignedReleaseStore,
 } from "../packages/launcher/src/release-update.js";
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 test("a signed artifact cannot become runnable without its exact nonempty SBOM", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-security-"));
   const source = join(root, "source");
@@ -16,7 +20,6 @@ test("a signed artifact cannot become runnable without its exact nonempty SBOM",
   await mkdir(source);
   await writeFile(join(source, "pidex.exe"), "binary");
   await writeFile(join(source, "pidex.cdx.json"), "{}");
-  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
   const manifest = {
     releaseId: "security-test",
     protocolGeneration: "1",
@@ -24,12 +27,12 @@ test("a signed artifact cannot become runnable without its exact nonempty SBOM",
     workerGeneration: "1",
     dataSchema: 1,
     files: [
-      { path: "pidex.exe", size: 6, sha256: hash("binary") },
-      { path: "pidex.cdx.json", size: 2, sha256: hash("{}") },
+      { path: "pidex.exe", size: 6, sha256: sha256("binary") },
+      { path: "pidex.cdx.json", size: 2, sha256: sha256("{}") },
     ],
     sbom: {
       path: "pidex.cdx.json",
-      sha256: hash("{}"),
+      sha256: sha256("{}"),
       format: "cyclonedx-json-1.5",
     },
   } as const;

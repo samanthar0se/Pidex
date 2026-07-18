@@ -7,9 +7,9 @@
     "dev": "tsx packages/host/src/main.ts",
     "status": "tsx packages/cli/src/main.ts status",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts"
-    ,"secret-scan": "node scripts/secret-scan.mjs"
-    ,"security": "npm run secret-scan && npm audit --omit=dev --audit-level=high && npm run typecheck && npm test"
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "secret-scan": "node scripts/secret-scan.mjs",
+    "security": "npm run secret-scan && npm audit --omit=dev --audit-level=high && npm run typecheck && npm test"
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.12.0",

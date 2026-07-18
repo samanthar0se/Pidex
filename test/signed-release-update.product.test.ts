@@ -13,6 +13,10 @@ import {
   type StagedRelease,
 } from "../packages/launcher/src/release-update.js";
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 test("only a complete signed matching release becomes ready", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-release-"));
   const source = join(root, "download");
@@ -38,19 +42,17 @@ test("only a complete signed matching release becomes ready", async () => {
         {
           path: "daemon.exe",
           size: 10,
-          sha256: createHash("sha256")
-            .update("same-build")
-            .digest("hex"),
+          sha256: sha256("same-build"),
         },
         {
           path: "pidex.cdx.json",
           size: Buffer.byteLength(sbom),
-          sha256: createHash("sha256").update(sbom).digest("hex"),
+          sha256: sha256(sbom),
         },
       ],
       sbom: {
         path: "pidex.cdx.json",
-        sha256: createHash("sha256").update(sbom).digest("hex"),
+        sha256: sha256(sbom),
         format: "cyclonedx-json-1.5",
       },
     };
