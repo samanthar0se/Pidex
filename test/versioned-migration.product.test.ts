@@ -43,10 +43,12 @@ test("authority migration validates a new generation before atomic activation an
     assert.equal(source.prepare("SELECT value FROM facts").get()?.value, "old");
     source.close();
 
+    let protectedBoundaryCreated = false;
     const active = manager.migrate({
       release: "new",
       schema: 2,
       supportedPriorSchemas: [1],
+      createProtectedRecoverySnapshot: () => { protectedBoundaryCreated = true; },
       migrate: db =>
         db.exec(
           "ALTER TABLE facts ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
@@ -58,6 +60,7 @@ test("authority migration validates a new generation before atomic activation an
         ),
     });
     assert.equal(active?.schema, 2);
+    assert.equal(protectedBoundaryCreated, true);
 
     const preserved = new DatabaseSync(oldPath, { readOnly: true });
     assert.equal(

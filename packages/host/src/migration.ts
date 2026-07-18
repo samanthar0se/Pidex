@@ -79,6 +79,8 @@ export interface DataMigrationPlan {
   migrate(db: DatabaseSync, priorSchema: number): void;
   validate?(db: DatabaseSync): void;
   requiredFreeBytes?: number;
+  /** Creates the protected rollback point after preflight and before any new generation. */
+  createProtectedRecoverySnapshot?: () => void;
 }
 
 /** Materializes authority generations and changes only a small atomic pointer. */
@@ -122,6 +124,8 @@ export class DataGenerationManager {
     if (space.bavail * space.bsize < requiredFreeBytes) {
       throw new MigrationError("insufficient-space");
     }
+
+    plan.createProtectedRecoverySnapshot?.();
 
     const directory = `${sanitizePathSegment(plan.release)}-schema-${plan.schema}-${randomUUID()}`;
     const generation = join(this.root, "generations", directory);
