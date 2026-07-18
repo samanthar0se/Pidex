@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Reject conflicting commands and replay receipts
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Synchronization Cursors are opaque and bind durable Host identity, synchronization epoch, and monotonic Host sequence.
 - [ ] Every Client synchronizes a lightweight Host scope and adds/removes detailed Session scopes without changing Session lifecycle.
