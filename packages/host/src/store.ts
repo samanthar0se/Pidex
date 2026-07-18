@@ -220,8 +220,11 @@ const sessionRowSchema = sessionSummarySchema.extend({
   availability: sessionAvailabilitySchema,
 });
 const forkPointSchema = z.object({
-  entryId: z.string(), checkpoint: z.string(), entryOrder: z.number(),
-  finalized: z.coerce.boolean(), kind: z.string(),
+  entryId: z.string(),
+  checkpoint: z.string(),
+  entryOrder: z.number(),
+  finalized: z.coerce.boolean(),
+  kind: z.string(),
 });
 const sessionAvailabilityStateSchema = sessionRowSchema.pick({
   availability: true,
@@ -427,10 +430,14 @@ export class AuthorityStore {
       );
     }
     if (!sessionColumns.some(column => column.name === "parent_session_id")) {
-      this.#db.exec("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(session_id)");
+      this.#db.exec(
+        "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(session_id)",
+      );
     }
     if (!sessionColumns.some(column => column.name === "fork_point_entry_id")) {
-      this.#db.exec("ALTER TABLE sessions ADD COLUMN fork_point_entry_id TEXT");
+      this.#db.exec(
+        "ALTER TABLE sessions ADD COLUMN fork_point_entry_id TEXT",
+      );
     }
     const timelineColumns = this.#db
       .prepare("PRAGMA table_info(timeline_entries)")
@@ -529,8 +536,8 @@ export class AuthorityStore {
         `SELECT session_id AS sessionId, name, project_id AS projectId,
                 workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision
-                , parent_session_id AS parentSessionId,
+                timeline_revision AS timelineRevision,
+                parent_session_id AS parentSessionId,
                 fork_point_entry_id AS forkPointEntryId
          FROM sessions ORDER BY created_at`,
       )
@@ -561,28 +568,7 @@ export class AuthorityStore {
   ): { session: SessionSummary; cursor: string } {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const projectExists = projectId
-        ? this.#db
-            .prepare("SELECT 1 FROM projects WHERE project_id = ?")
-            .get(projectId)
-        : true;
-      if (!projectExists) {
-        throw new Error("unknown-project");
-      }
-
-      if (workspaceId) {
-        const workspace = this.#db
-          .prepare(
-            "SELECT project_id FROM workspaces WHERE workspace_id = ?",
-          )
-          .get(workspaceId);
-        if (!workspace) {
-          throw new Error("unknown-workspace");
-        }
-        if (!projectId || workspace.project_id !== projectId) {
-          throw new Error("workspace-project-mismatch");
-        }
-      }
+      this.validateSessionScope(projectId, workspaceId);
 
       const session: SessionSummary = {
         sessionId: `session_${randomUUID()}`,
@@ -633,59 +619,145 @@ export class AuthorityStore {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
       const parent = this.loadSession(parentSessionId);
-      const point = forkPointSchema.optional().parse(this.#db.prepare(
-        `SELECT entry_id AS entryId, checkpoint, entry_order AS entryOrder,
-                finalized != 0 AS finalized, kind
-         FROM timeline_entries WHERE session_id = ? AND entry_id = ?`,
-      ).get(parentSessionId, forkPointEntryId));
-      if (!point || !point.finalized || point.kind !== "response" ||
-          point.checkpoint !== validatedCheckpoint) {
+      const point = forkPointSchema.optional().parse(
+        this.#db
+          .prepare(
+            `SELECT entry_id AS entryId, checkpoint,
+                    entry_order AS entryOrder,
+                    finalized != 0 AS finalized, kind
+             FROM timeline_entries
+             WHERE session_id = ? AND entry_id = ?`,
+          )
+          .get(parentSessionId, forkPointEntryId),
+      );
+      if (
+        !point ||
+        !point.finalized ||
+        point.kind !== "response" ||
+        point.checkpoint !== validatedCheckpoint
+      ) {
         throw new Error("invalid-fork-point");
       }
-      const targetProject = projectId === undefined ? parent.projectId : projectId;
-      const targetWorkspace = workspaceId === undefined ? parent.workspaceId : workspaceId;
-      this.validateScope(targetProject, targetWorkspace);
-      this.#db.prepare(
-        `INSERT INTO sessions
-         (session_id, project_id, workspace_id, name, retention, availability,
-          residency, metadata_revision, timeline_revision, created_at,
-          parent_session_id, fork_point_entry_id)
-         VALUES (?, ?, ?, 'Untitled Session', 'available', 'available', 'sleeping', 1, 1, ?, ?, ?)`,
-      ).run(childSessionId, targetProject, targetWorkspace, now, parentSessionId, forkPointEntryId);
 
-      const runRows = this.#db.prepare(
-        `SELECT run_id, session_order, prompt, state, created_at, completed_at
-         FROM runs WHERE session_id = ? AND state IN ('completed','failed','cancelled','interrupted')
-         AND run_id IN (SELECT run_id FROM timeline_entries WHERE session_id = ? AND entry_order <= ?)`,
-      ).all(parentSessionId, parentSessionId, point.entryOrder);
-      const runIds = new Map<string, string>();
+      const targetProjectId =
+        projectId === undefined ? parent.projectId : projectId;
+      const targetWorkspaceId =
+        workspaceId === undefined ? parent.workspaceId : workspaceId;
+      this.validateSessionScope(targetProjectId, targetWorkspaceId);
+      this.#db
+        .prepare(
+          `INSERT INTO sessions
+           (session_id, project_id, workspace_id, name, retention, availability,
+            residency, metadata_revision, timeline_revision, created_at,
+            parent_session_id, fork_point_entry_id)
+           VALUES (?, ?, ?, 'Untitled Session', 'available', 'available',
+                   'sleeping', 1, 1, ?, ?, ?)`,
+        )
+        .run(
+          childSessionId,
+          targetProjectId,
+          targetWorkspaceId,
+          now,
+          parentSessionId,
+          forkPointEntryId,
+        );
+
+      const runRows = this.#db
+        .prepare(
+          `SELECT run_id AS parentRunId, session_order AS sessionOrder,
+                  prompt, state, created_at AS createdAt,
+                  completed_at AS completedAt
+           FROM runs
+           WHERE session_id = ?
+             AND state IN ('completed','failed','cancelled','interrupted')
+             AND run_id IN (
+               SELECT run_id FROM timeline_entries
+               WHERE session_id = ? AND entry_order <= ?
+             )`,
+        )
+        .all(parentSessionId, parentSessionId, point.entryOrder);
+      const childRunIdsByParentId = new Map<string, string>();
+      const insertRun = this.#db.prepare(
+        `INSERT INTO runs
+         (run_id, session_id, session_order, prompt, state, created_at,
+          completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
       for (const row of runRows) {
-        const id = `run_${randomUUID()}`; runIds.set(String(row.run_id), id);
-        this.#db.prepare(`INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?, ?)`)
-          .run(id, childSessionId, row.session_order, row.prompt, row.state, row.created_at, row.completed_at);
+        const childRunId = `run_${randomUUID()}`;
+        childRunIdsByParentId.set(String(row.parentRunId), childRunId);
+        insertRun.run(
+          childRunId,
+          childSessionId,
+          row.sessionOrder,
+          row.prompt,
+          row.state,
+          row.createdAt,
+          row.completedAt,
+        );
       }
-      const entries = this.#db.prepare(
-        `SELECT * FROM timeline_entries WHERE session_id = ? AND entry_order <= ? ORDER BY entry_order`,
-      ).all(parentSessionId, point.entryOrder);
+
+      const entries = this.#db
+        .prepare(
+          `SELECT run_id AS parentRunId, entry_order AS entryOrder, kind, text,
+                  checkpoint, blob_id AS blobId, created_at AS createdAt,
+                  revision, finalized, tool_call_id AS toolCallId
+           FROM timeline_entries
+           WHERE session_id = ? AND entry_order <= ?
+           ORDER BY entry_order`,
+        )
+        .all(parentSessionId, point.entryOrder);
+      const insertEntry = this.#db.prepare(
+        `INSERT INTO timeline_entries
+         (entry_id, session_id, run_id, entry_order, kind, text, checkpoint,
+          blob_id, created_at, revision, finalized, tool_call_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
       for (const row of entries) {
-        const mappedRun = runIds.get(String(row.run_id));
-        if (!mappedRun || !Boolean(row.finalized)) throw new Error("invalid-fork-point");
-        this.#db.prepare(
-          `INSERT INTO timeline_entries
-           (entry_id,session_id,run_id,entry_order,kind,text,checkpoint,blob_id,created_at,revision,finalized,tool_call_id)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-        ).run(`entry_${randomUUID()}`, childSessionId, mappedRun, row.entry_order,
-          row.kind, row.text, row.checkpoint, row.blob_id, row.created_at,
-          row.revision, row.finalized, row.tool_call_id);
+        const childRunId = childRunIdsByParentId.get(
+          String(row.parentRunId),
+        );
+        if (!childRunId || !Boolean(row.finalized)) {
+          throw new Error("invalid-fork-point");
+        }
+        insertEntry.run(
+          `entry_${randomUUID()}`,
+          childSessionId,
+          childRunId,
+          row.entryOrder,
+          row.kind,
+          row.text,
+          row.checkpoint,
+          row.blobId,
+          row.createdAt,
+          row.revision,
+          row.finalized,
+          row.toolCallId,
+        );
       }
-      this.#db.prepare(`UPDATE sessions SET timeline_revision = ? WHERE session_id = ?`)
+
+      this.#db
+        .prepare(
+          "UPDATE sessions SET timeline_revision = ? WHERE session_id = ?",
+        )
         .run(entries.length + 1, childSessionId);
-      this.#db.prepare("UPDATE host SET sequence=sequence+1, committed_at=? WHERE singleton=1").run(now);
+      this.#db
+        .prepare(
+          `UPDATE host SET sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(now);
       const session = this.loadSession(childSessionId);
-      const cursor = this.recordSynchronizationChange({ type: "session.forked", session });
+      const cursor = this.recordSynchronizationChange({
+        type: "session.forked",
+        session,
+      });
       this.#db.exec("COMMIT");
       return { session, cursor };
-    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   changeSessionAvailability(
@@ -2292,21 +2364,41 @@ export class AuthorityStore {
   }
 
   checkpointAt(sessionId: string, entryId: string): string | undefined {
-    const row = this.#db.prepare(
-      `SELECT checkpoint FROM timeline_entries WHERE session_id=? AND entry_id=?
-       AND kind='response' AND finalized=1 AND checkpoint IS NOT NULL`,
-    ).get(sessionId, entryId);
+    const row = this.#db
+      .prepare(
+        `SELECT checkpoint FROM timeline_entries
+         WHERE session_id = ? AND entry_id = ? AND kind = 'response'
+           AND finalized = 1 AND checkpoint IS NOT NULL`,
+      )
+      .get(sessionId, entryId);
     return checkpointRowSchema.optional().parse(row)?.checkpoint;
   }
 
-  private validateScope(projectId: string | null, workspaceId: string | null): void {
-    if (projectId && !this.#db.prepare("SELECT 1 FROM projects WHERE project_id=?").get(projectId)) {
+  private validateSessionScope(
+    projectId: string | null,
+    workspaceId: string | null,
+  ): void {
+    const projectExists = projectId
+      ? this.#db
+          .prepare("SELECT 1 FROM projects WHERE project_id = ?")
+          .get(projectId)
+      : true;
+    if (!projectExists) {
       throw new Error("unknown-project");
     }
+
     if (workspaceId) {
-      const workspace = this.#db.prepare("SELECT project_id FROM workspaces WHERE workspace_id=?").get(workspaceId);
-      if (!workspace) throw new Error("unknown-workspace");
-      if (!projectId || workspace.project_id !== projectId) throw new Error("workspace-project-mismatch");
+      const workspace = this.#db
+        .prepare(
+          "SELECT project_id FROM workspaces WHERE workspace_id = ?",
+        )
+        .get(workspaceId);
+      if (!workspace) {
+        throw new Error("unknown-workspace");
+      }
+      if (!projectId || workspace.project_id !== projectId) {
+        throw new Error("workspace-project-mismatch");
+      }
     }
   }
 

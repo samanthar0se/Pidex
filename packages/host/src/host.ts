@@ -90,6 +90,7 @@ interface SessionCreateMessage {
   projectId?: string | null;
   workspaceId?: string | null;
 }
+
 interface SessionForkMessage {
   type: "session.fork";
   commandId: string;
@@ -757,22 +758,56 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
-  async function handleSessionFork(client: WebSocket, command: SessionForkMessage): Promise<void> {
+  async function handleSessionFork(
+    client: WebSocket,
+    command: SessionForkMessage,
+  ): Promise<void> {
     try {
-      const checkpoint = store.checkpointAt(command.parentSessionId, command.forkPointEntryId);
-      if (!checkpoint || !adapters.pi.forkCheckpoint) throw new Error("invalid-fork-point");
+      const checkpoint = store.checkpointAt(
+        command.parentSessionId,
+        command.forkPointEntryId,
+      );
+      if (!checkpoint || !adapters.pi.forkCheckpoint) {
+        throw new Error("invalid-fork-point");
+      }
+
       const childSessionId = `session_${randomUUID()}`;
-      const validated = await adapters.pi.forkCheckpoint(command.parentSessionId, checkpoint, childSessionId);
+      const validatedCheckpoint = await adapters.pi.forkCheckpoint(
+        command.parentSessionId,
+        checkpoint,
+        childSessionId,
+      );
       adapters.storage.beforeCommit();
-      const created = store.forkSession(command.parentSessionId, command.forkPointEntryId,
-        command.projectId, command.workspaceId, childSessionId, validated, adapters.clock.now());
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted" });
-      const changeSet: ServerMessage = { type: "host.change-set", cursor: created.cursor,
-        changes: [{ type: "session.forked", session: created.session }] };
-      for (const socket of admittedClients) sendServerMessage(socket, changeSet);
+      const created = store.forkSession(
+        command.parentSessionId,
+        command.forkPointEntryId,
+        command.projectId,
+        command.workspaceId,
+        childSessionId,
+        validatedCheckpoint,
+        adapters.clock.now(),
+      );
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+      });
+
+      const changeSet: ServerMessage = {
+        type: "host.change-set",
+        cursor: created.cursor,
+        changes: [{ type: "session.forked", session: created.session }],
+      };
+      for (const socket of admittedClients) {
+        sendServerMessage(socket, changeSet);
+      }
     } catch (error) {
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId,
-        outcome: "rejected", error: error instanceof Error ? error.message : "fork-failed" });
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: error instanceof Error ? error.message : "fork-failed",
+      });
     }
   }
 
@@ -1928,12 +1963,28 @@ function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
 }
 
 function isSessionForkMessage(value: unknown): value is SessionForkMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "session.fork" && typeof item.commandId === "string" &&
-    typeof item.parentSessionId === "string" && typeof item.forkPointEntryId === "string" &&
-    (item.projectId === undefined || item.projectId === null || typeof item.projectId === "string") &&
-    (item.workspaceId === undefined || item.workspaceId === null || typeof item.workspaceId === "string");
+  const hasValidProject =
+    item.projectId === undefined ||
+    item.projectId === null ||
+    typeof item.projectId === "string";
+  const hasValidWorkspace =
+    item.workspaceId === undefined ||
+    item.workspaceId === null ||
+    typeof item.workspaceId === "string";
+
+  return (
+    item.type === "session.fork" &&
+    typeof item.commandId === "string" &&
+    typeof item.parentSessionId === "string" &&
+    typeof item.forkPointEntryId === "string" &&
+    hasValidProject &&
+    hasValidWorkspace
+  );
 }
 
 function isSessionRenameMessage(value: unknown): value is SessionRenameMessage {
