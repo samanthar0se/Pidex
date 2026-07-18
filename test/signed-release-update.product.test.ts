@@ -20,6 +20,14 @@ test("only a complete signed matching release becomes ready", async () => {
   try {
     await mkdir(source);
     await writeFile(join(source, "daemon.exe"), "same-build");
+    const sbom = JSON.stringify({
+      bomFormat: "CycloneDX",
+      specVersion: "1.5",
+      serialNumber: "urn:uuid:65d8bd28-9dd0-4dc6-87c8-86530f27ef76",
+      version: 1,
+      components: [{ type: "application", name: "pidex", version: "2.0.0" }],
+    });
+    await writeFile(join(source, "pidex.cdx.json"), sbom);
     const manifest: ReleaseManifest = {
       releaseId: "2.0.0",
       protocolGeneration: "2",
@@ -34,7 +42,17 @@ test("only a complete signed matching release becomes ready", async () => {
             .update("same-build")
             .digest("hex"),
         },
+        {
+          path: "pidex.cdx.json",
+          size: Buffer.byteLength(sbom),
+          sha256: createHash("sha256").update(sbom).digest("hex"),
+        },
       ],
+      sbom: {
+        path: "pidex.cdx.json",
+        sha256: createHash("sha256").update(sbom).digest("hex"),
+        format: "cyclonedx-json-1.5",
+      },
     };
     const metadata = Buffer.from(JSON.stringify(manifest));
     const signingRoot = publicKey.export({ type: "spki", format: "pem" });
@@ -105,6 +123,11 @@ test(
         workerGeneration: "2",
         dataSchema: 2,
         files: [{ path: "x", size: 1, sha256: "0".repeat(64) }],
+        sbom: {
+          path: "x",
+          sha256: "0".repeat(64),
+          format: "cyclonedx-json-1.5",
+        },
       },
     };
     const hooks: ActivationHooks = {
