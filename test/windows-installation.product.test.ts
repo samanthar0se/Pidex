@@ -126,18 +126,30 @@ test("launcher contains the daemon before readiness and closes its Job after rep
   const state = await superviseStartup({
     acquireUserLock: async () => true,
     createDaemonSupervisionJob: async () => ({
-      assignDaemon: async () => { events.push("assigned"); },
-      close: () => { events.push("closed"); },
+      assignDaemon: async () => {
+        events.push("assigned");
+      },
+      close: () => {
+        events.push("closed");
+      },
     }),
-    startRelease: async (_deadline, supervision) => {
-      assert.ok(supervision);
+    startRelease: async (_deadline, supervisionJob) => {
+      assert.ok(supervisionJob);
       events.push("started");
       throw new Error("crashed");
     },
     sleep: async () => {},
   });
+
   assert.equal(state.state, "circuit-open");
-  assert.equal(events[0], "assigned");
-  assert.equal(events.at(-1), "closed");
-  assert.equal(events.filter(event => event === "started").length, 6);
+  assert.deepEqual(events, [
+    "assigned",
+    "started",
+    "started",
+    "started",
+    "started",
+    "started",
+    "started",
+    "closed",
+  ]);
 });

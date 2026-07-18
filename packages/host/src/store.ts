@@ -209,6 +209,9 @@ const submitOutcomeSchema = z.discriminatedUnion("kind", [
 ]);
 const nextRunOrderSchema = z.object({ nextOrder: z.number() });
 const activeRunReferenceSchema = z.object({ runId: z.string() });
+const authorityIntegrityCheckSchema = z.object({
+  integrity_check: z.literal("ok"),
+});
 const timelineEntryReferenceSchema = z.object({ entryId: z.string() });
 const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
@@ -1340,17 +1343,13 @@ export class AuthorityStore {
   }
 
   reconcileAcceptedRuns(now: number): void {
-    const integrity = this.#db.prepare("PRAGMA integrity_check").get() as
-      | { integrity_check?: unknown }
-      | undefined;
-    if (integrity?.integrity_check !== "ok") {
-      throw new Error("authority-integrity-check-failed");
-    }
-    const abnormalSessions = new Set<string>();
+    this.assertAuthorityIntegrity();
+
+    const affectedSessionIds = new Set<string>();
     for (const { runId } of this.executingRuns()) {
-      const accepted = this.loadRun(runId);
-      abnormalSessions.add(accepted.sessionId);
-      if (accepted.state === "cancelling") {
+      const run = this.loadRun(runId);
+      affectedSessionIds.add(run.sessionId);
+      if (run.state === "cancelling") {
         this.settleRun(
           runId,
           "interrupted",
@@ -1384,10 +1383,19 @@ export class AuthorityStore {
         now,
       );
     }
-    for (const sessionId of abnormalSessions) {
-      this.#db.prepare(
-        "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
-      ).run(sessionId);
+
+    const holdQueuedRuns = this.#db.prepare(
+      "UPDATE runs SET state = 'held' WHERE session_id = ? AND state = 'queued'",
+    );
+    for (const sessionId of affectedSessionIds) {
+      holdQueuedRuns.run(sessionId);
+    }
+  }
+
+  private assertAuthorityIntegrity(): void {
+    const result = this.#db.prepare("PRAGMA integrity_check").get();
+    if (!authorityIntegrityCheckSchema.safeParse(result).success) {
+      throw new Error("authority-integrity-check-failed");
     }
   }
 
