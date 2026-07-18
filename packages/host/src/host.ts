@@ -99,6 +99,12 @@ interface SessionRenameMessage {
   observedMetadataRevision: number;
 }
 
+interface SessionSleepMessage {
+  type: "session.sleep";
+  commandId: string;
+  sessionId: string;
+}
+
 interface CapabilityBasisRequirement {
   id: string;
   version: number;
@@ -240,6 +246,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   // An executing tail surviving daemon loss has no proof of normal completion.
   // Settle it conservatively and never dispatch it again to discover the result.
   store.reconcileAcceptedRuns(adapters.clock.now());
+  store.resetResidencyOnStartup();
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
@@ -442,6 +449,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleSessionCreate(webSocket, message);
         } else if (isSessionRenameMessage(message)) {
           handleSessionRename(webSocket, message);
+        } else if (isSessionSleepMessage(message)) {
+          void handleSessionSleep(webSocket, message);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
         } else if (isRunSteerMessage(message)) {
@@ -778,6 +787,47 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         error: "commit-failed",
       };
       sendServerMessage(client, failure);
+    }
+  }
+
+  async function handleSessionSleep(
+    client: WebSocket,
+    command: SessionSleepMessage,
+  ): Promise<void> {
+    try {
+      // Flush before the transactional quiescence recheck. Work accepted while
+      // this await is pending therefore makes the final transition reject.
+      const checkpoint = store.latestCheckpoint(command.sessionId);
+      if (checkpoint) {
+        const flushed = await adapters.pi.flushCheckpoint?.(
+          command.sessionId,
+          checkpoint,
+        );
+        if (flushed !== checkpoint) throw new Error("checkpoint-flush-failed");
+      }
+      adapters.storage.beforeCommit();
+      const result = store.setSessionSleeping(
+        command.sessionId,
+        adapters.clock.now(),
+      );
+      sendServerMessage(client, {
+        type: "command.outcome", commandId: command.commandId, outcome: "accepted",
+      });
+      const job = sessionJobs.get(command.sessionId);
+      job?.close();
+      sessionJobs.delete(command.sessionId);
+      workers.delete(command.sessionId);
+      workerGenerations.delete(command.sessionId);
+      const change: ServerMessage = {
+        type: "host.change-set", cursor: result.cursor,
+        changes: [{ type: "session.residency-changed", session: result.session }],
+      };
+      for (const socket of admittedClients) sendServerMessage(socket, change);
+    } catch (error) {
+      sendServerMessage(client, {
+        type: "command.outcome", commandId: command.commandId, outcome: "rejected",
+        error: error instanceof Error ? error.message : "sleep-failed",
+      });
     }
   }
 
@@ -1795,6 +1845,14 @@ function isViewObserveMessage(value: unknown): value is ViewObserveMessage {
     typeof item.sessionId === "string" &&
     isInvokingView(item)
   );
+}
+
+function isSessionSleepMessage(value: unknown): value is SessionSleepMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "session.sleep" &&
+    typeof item.commandId === "string" && item.commandId.length > 0 &&
+    typeof item.sessionId === "string";
 }
 
 function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {

@@ -240,6 +240,10 @@ export const hostChangeSchema = z.discriminatedUnion("type", [
     type: z.literal("session.renamed"),
     session: sessionSummarySchema,
   }),
+  z.object({
+    type: z.literal("session.residency-changed"),
+    session: sessionSummarySchema,
+  }),
 ]).and(optionalEnvelopeSchema);
 
 export type HostChange = z.infer<typeof hostChangeSchema>;

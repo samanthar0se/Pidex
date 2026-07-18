@@ -523,6 +523,59 @@ export class AuthorityStore {
     }
   }
 
+  /** Commit residency only while the durable Session is fully quiescent. */
+  setSessionSleeping(
+    sessionId: string,
+    now: number,
+  ): { session: SessionSummary; cursor: string } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const session = this.#db
+        .prepare("SELECT residency FROM sessions WHERE session_id = ?")
+        .get(sessionId) as { residency?: string } | undefined;
+      if (!session) throw new Error("unknown-session");
+      if (session.residency === "sleeping") {
+        const current = this.loadSession(sessionId);
+        this.#db.exec("COMMIT");
+        return { session: current, cursor: this.status("internal").synchronization.cursor };
+      }
+      const work = this.#db.prepare(
+        `SELECT 1 FROM runs WHERE session_id = ?
+         AND state IN ('queued','executing','held','cancelling') LIMIT 1`,
+      ).get(sessionId);
+      const interaction = this.#db.prepare(
+        `SELECT 1 FROM interactions WHERE session_id = ?
+         AND state IN ('open','resolving') LIMIT 1`,
+      ).get(sessionId);
+      if (work || interaction) throw new Error("session-not-quiescent");
+      this.#db.prepare(
+        `UPDATE sessions SET residency = 'sleeping',
+         metadata_revision = metadata_revision + 1 WHERE session_id = ?`,
+      ).run(sessionId);
+      this.#db.prepare(
+        "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
+      ).run(now);
+      const sleeping = this.loadSession(sessionId);
+      const cursor = this.recordSynchronizationChange({
+        type: "session.residency-changed",
+        session: sleeping,
+      });
+      this.#db.exec("COMMIT");
+      return { session: sleeping, cursor };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  latestCheckpoint(sessionId: string): string | undefined {
+    const row = this.#db.prepare(
+      `SELECT checkpoint FROM timeline_entries WHERE session_id = ?
+       AND checkpoint IS NOT NULL ORDER BY entry_order DESC LIMIT 1`,
+    ).get(sessionId) as { checkpoint?: string } | undefined;
+    return row?.checkpoint;
+  }
+
   renameSession(
     deviceId: string,
     command: RenameCommand,
@@ -1549,6 +1602,13 @@ export class AuthorityStore {
       )
       .all();
     return activeRunReferenceSchema.array().parse(rows);
+  }
+
+  /** Worker residency is process-local evidence and never survives Host loss. */
+  resetResidencyOnStartup(): void {
+    this.#db.prepare(
+      "UPDATE sessions SET residency = 'sleeping' WHERE residency = 'resident'",
+    ).run();
   }
 
   executingRuns(): Array<{ runId: string }> {
