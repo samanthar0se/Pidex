@@ -44,6 +44,7 @@ import {
   type SubmitCommand,
   type SubmitOutcome,
   type SteerCommand,
+  type StopCommand,
 } from "./store.js";
 
 const DEFAULT_PORT = 7443;
@@ -129,6 +130,11 @@ interface RunQueueActionMessage {
 interface RunSteerMessage extends SteerCommand {
   type: "run.steer";
   requiredCapability: "run.steer";
+}
+
+interface RunStopMessage extends StopCommand {
+  type: "run.stop";
+  requiredCapability: "run.stop";
 }
 
 interface RunPresentationContext {
@@ -421,6 +427,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           handleRunSubmit(webSocket, message);
         } else if (isRunSteerMessage(message)) {
           handleRunSteer(webSocket, message);
+        } else if (isRunStopMessage(message)) {
+          handleRunStop(webSocket, message);
         } else if (isViewObserveMessage(message)) {
           observeView(webSocket, message);
         } else if (isRunQueueActionMessage(message)) {
@@ -916,6 +924,37 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
+  function handleRunStop(client: WebSocket, command: RunStopMessage): void {
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      adapters.storage.beforeCommit();
+      const result = store.acceptStop(deviceId, command, workerGenerations.get(command.sessionId), adapters.clock.now());
+      if (result.kind === "rejected") {
+        sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: result.error, reconciliationCursor: result.cursor, runId: command.runId });
+        return;
+      }
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "accepted", reconciliationCursor: result.cursor, runId: command.runId });
+      if (result.kind === "replayed") return;
+      publishTimelineChange(command.sessionId, { baseRevision: command.observedTimelineRevision, revision: command.observedTimelineRevision + 1, entry: result.entry });
+      for (const socket of admittedClients) {
+        if (scopedSessionIdsByClient.get(socket)?.has(command.sessionId)) {
+          sendServerMessage(socket, { type: "run.execution", sessionId: command.sessionId, runId: command.runId, state: "cancelling", workerGeneration: command.workerGeneration, timelineRevision: command.observedTimelineRevision + 1 });
+        }
+      }
+      for (const interaction of result.withdrawn) {
+        clearInteractionDeadline(interaction.interactionId);
+        interactionResolvers.get(interaction.interactionId)?.({ dismissed: true });
+        interactionResolvers.delete(interaction.interactionId);
+        publishInteraction(interaction);
+      }
+      store.markRunSteeringUnapplied(command.runId);
+      workers.get(command.sessionId)?.stop();
+    } catch (error) {
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: error instanceof Error ? error.message : "stop-failed" });
+    }
+  }
+
   function dispatchRun(run: RunRecord): void {
     const worker =
       workers.get(run.sessionId) ??
@@ -924,6 +963,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const workerGeneration =
       workerGenerations.get(run.sessionId) ?? randomUUID();
     workerGenerations.set(run.sessionId, workerGeneration);
+    const timelineRevision = store.projection().sessions.find(item => item.sessionId === run.sessionId)?.timelineRevision;
+    if (timelineRevision !== undefined) {
+      for (const socket of admittedClients) {
+        if (scopedSessionIdsByClient.get(socket)?.has(run.sessionId)) {
+          sendServerMessage(socket, { type: "run.execution", sessionId: run.sessionId, runId: run.runId, state: "executing", workerGeneration, timelineRevision });
+        }
+      }
+    }
     const presentationContext = presentationContextByRun.get(run.runId);
     void worker
       .execute(
@@ -955,12 +1002,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         if (finalAssistant) {
           publishTimelineChange(run.sessionId, finalAssistant);
         }
-        const completed = store.completeRun(
-          run.runId,
-          executionResult.text,
-          executionResult.checkpoint,
-          adapters.clock.now(),
-        );
+        const isCancelling = store.runs(run.sessionId).find(item => item.runId === run.runId)?.state === "cancelling";
+        const completed = isCancelling
+          ? store.settleRun(run.runId, "cancelled", "Cancelled cooperatively. Partial output and committed side effects were not rolled back.", executionResult.checkpoint, adapters.clock.now())
+          : store.completeRun(run.runId, executionResult.text, executionResult.checkpoint, adapters.clock.now());
         presentationContextByRun.delete(run.runId);
         publishRunCompletion(run.sessionId, completed.run);
         const nextRun = store.dispatchNext(run.sessionId);
@@ -970,8 +1015,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       })
       .catch(error => {
         store.markRunSteeringUnapplied(run.runId);
-        invalidateWorkerGeneration(run.sessionId, workerGeneration);
         try {
+          const isCancelling = store.runs(run.sessionId).find(item => item.runId === run.runId)?.state === "cancelling";
+          if (isCancelling) {
+            const cancelled = store.settleRun(run.runId, "cancelled", "Cancelled cooperatively. Partial output and committed side effects were not rolled back.", null, adapters.clock.now());
+            presentationContextByRun.delete(run.runId);
+            publishRunCompletion(run.sessionId, cancelled.run);
+            return;
+          }
+          invalidateWorkerGeneration(run.sessionId, workerGeneration);
           const errorDetail =
             error instanceof Error ? error.message : "runtime-error";
           const failed = store.settleRun(
@@ -1543,6 +1595,15 @@ function isRunSteerMessage(value: unknown): value is RunSteerMessage {
     item.text.trim().length > 0 &&
     item.text.length <= MAX_RUN_PROMPT_LENGTH
   );
+}
+
+function isRunStopMessage(value: unknown): value is RunStopMessage {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return item.type === "run.stop" && item.requiredCapability === "run.stop" &&
+    typeof item.commandId === "string" && typeof item.sessionId === "string" &&
+    typeof item.runId === "string" && typeof item.workerGeneration === "string" &&
+    item.observedState === "executing" && Number.isSafeInteger(item.observedTimelineRevision) && Number(item.observedTimelineRevision) > 0;
 }
 
 function isInteractionResolveMessage(

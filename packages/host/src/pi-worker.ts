@@ -158,6 +158,7 @@ export class PiSessionWorker {
   #running = false;
   #activeSteeringReceiver?: PiSteeringReceiver;
   #activeCapabilityIds = new Set<string>();
+  #abortController?: AbortController;
 
   constructor(sessionId: string, pi: PiAdapter) {
     this.#sessionId = sessionId;
@@ -211,6 +212,14 @@ export class PiSessionWorker {
     await receiver(text);
   }
 
+  stop(): void {
+    if (!this.#running || !this.#activeCapabilityIds.has("runtime.cancel")) {
+      throw new Error("cancellation-unavailable");
+    }
+    this.#activeSteeringReceiver = undefined;
+    this.#abortController?.abort();
+  }
+
   async execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
@@ -224,6 +233,7 @@ export class PiSessionWorker {
     }
 
     this.#running = true;
+    this.#abortController = new AbortController();
     try {
       const capabilities = await PiSessionWorker.probe(this.#pi);
       const capabilityIds = new Set(capabilities.map(item => item.id));
@@ -263,6 +273,7 @@ export class PiSessionWorker {
           registerSteeringReceiver: receiver => {
             this.#activeSteeringReceiver = receiver;
           },
+          signal: this.#abortController.signal,
         }),
       );
       if (!this.#pi.flushCheckpoint) {
@@ -278,6 +289,7 @@ export class PiSessionWorker {
       return executionResult;
     } finally {
       this.#activeSteeringReceiver = undefined;
+      this.#abortController = undefined;
       this.#activeCapabilityIds.clear();
       this.#running = false;
     }

@@ -15,6 +15,7 @@ export const protocolCapabilities = [
   { id: "run.steer", version: 1 },
   { id: "run.release", version: 1 },
   { id: "run.cancel", version: 1 },
+  { id: "run.stop", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -119,7 +120,7 @@ const terminalRunStateSchema = z.enum([
   "cancelled",
   "interrupted",
 ]);
-const activeRunStateSchema = z.enum(["queued", "executing", "held"]);
+const activeRunStateSchema = z.enum(["queued", "executing", "cancelling", "held"]);
 
 export const runRecordSchema = z.object({
   runId: z.string(),
@@ -354,6 +355,14 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("run.completed"),
     run: terminalRunSchema,
     timeline: z.array(timelineEntrySchema),
+  }),
+  z.object({
+    type: z.literal("run.execution"),
+    sessionId: z.string(),
+    runId: z.string(),
+    state: z.enum(["executing", "cancelling"]),
+    workerGeneration: z.string(),
+    timelineRevision: z.number().int().positive(),
   }),
   z.object({
     type: z.literal("presentation.effect"),

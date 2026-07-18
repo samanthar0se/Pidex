@@ -42,6 +42,8 @@ export interface PiExecuteRequest {
   ) => Promise<PiInteractionResult>;
   /** The runtime registers the receiver belonging to this exact execution. */
   registerSteeringReceiver?: (receiver: PiSteeringReceiver) => void;
+  /** Cooperative cancellation for this exact execution. Pi/tool cleanup settles before execute returns. */
+  signal?: AbortSignal;
 }
 
 export type PiPresentationEffect =
