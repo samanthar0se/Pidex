@@ -4,7 +4,7 @@
 
 **Blocked by:** 39 — Restore the whole Host
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Reidentify is offered only through Host-local recovery when product authority/reference closure fully verifies but Host trust keys are unrecoverable and no usable portable identity exists.
 - [ ] Before commitment, Pidex creates the strongest verified encrypted export still possible and explains consequences.
