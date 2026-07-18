@@ -19,6 +19,12 @@ test("the PWA keeps a bounded non-authoritative per-Host offline working set", a
   assert.match(application, /resourceRevisions/);
   assert.match(application, /loadCachedWorkingSet/);
   assert.match(application, /scope\.current/);
+  assert.match(application, /projections\.clear\(\)/);
+  assert.match(application, /state\.currentScopes\.clear\(\)/);
+  assert.match(
+    application,
+    /await persistWorkingSet\(\);\s+markScopeCurrent/,
+  );
 
   assert.match(shell, /id="last-sync"/);
   assert.match(shell, /Cached data can be incomplete/);

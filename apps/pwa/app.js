@@ -5,6 +5,20 @@ const CACHE_SCHEMA_VERSION = 1;
 const PROTOCOL_BASIS = "1.1";
 const MAX_CACHED_SESSION_PROJECTIONS = 10;
 const MAX_FINALIZED_PAGES = 25;
+const HOST_SCOPE_KEY = "host";
+const SESSION_SCOPE_PREFIX = "session:";
+const CACHE_STORES = {
+  metadata: "metadata",
+  discovery: "discovery",
+  sessionProjections: "session-projections",
+  finalizedPages: "finalized-pages",
+  immutableBlobs: "immutable-blobs",
+};
+const WORKING_SET_STORES = [
+  CACHE_STORES.metadata,
+  CACHE_STORES.discovery,
+  CACHE_STORES.sessionProjections,
+];
 const OFFLINE_STATUS = "Offline · cached state may be stale";
 const ACTIVE_INTERACTION_STATES = ["open", "resolving"];
 const ACTIVE_RUN_STATES = ["executing", "cancelling"];
@@ -68,9 +82,7 @@ function toggleDrawer() {
 function send(command) {
   const targetSessionId = command.sessionId || currentSessionId();
   if (
-    !state.current ||
-    !state.currentScopes.has("host") ||
-    (targetSessionId && !state.currentScopes.has(`session:${targetSessionId}`)) ||
+    !targetScopesCurrent(targetSessionId) ||
     !socket ||
     socket.readyState !== WebSocket.OPEN
   ) {
@@ -206,13 +218,16 @@ async function authenticateStoredDevice() {
 
 function openControl(token) {
   socket?.close();
+  state.currentScopes.clear();
   socket = new WebSocket(
     `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
   );
   socket.onmessage = event => {
     // Preserve wire order while IndexedDB transactions commit. A scope cannot
     // become current before its replacement projection is durable.
-    messageChain = messageChain.then(() => handleMessage(JSON.parse(event.data)));
+    messageChain = messageChain
+      .then(() => handleMessage(JSON.parse(event.data)))
+      .catch(() => setCurrent(false, OFFLINE_STATUS));
   };
   socket.onclose = () => setCurrent(false, OFFLINE_STATUS);
 }
@@ -228,7 +243,7 @@ async function handleMessage(message) {
       );
       return;
     case "host.snapshot":
-      handleHostSnapshot(message);
+      await handleHostSnapshot(message);
       return;
     case "host.change-set":
       for (const change of message.changes) {
@@ -240,20 +255,12 @@ async function handleMessage(message) {
       await persistWorkingSet();
       return;
     case "scope.reset":
-      if (message.barrier.scope.kind === "session") {
-        await resetSessionScope(message);
-      } else {
-        installHostReset(message);
-        await persistWorkingSet();
-        state.currentScopes.add("host");
-        setCurrent(true, "Current");
-      }
+      await handleScopeReset(message);
       return;
     case "scope.current":
       state.cursor = message.cursor;
-      state.currentScopes.add(scopeKey(message.scope));
       await persistWorkingSet();
-      setCurrent(true, "Current");
+      markScopeCurrent(message.scope);
       return;
     case "timeline.change":
       applyTimelineChange(message);
@@ -291,7 +298,7 @@ function sendClientHello(hostId) {
   }));
 }
 
-function handleHostSnapshot(message) {
+async function handleHostSnapshot(message) {
   Object.assign(state, {
     projects: message.projects,
     workspaces: message.workspaces,
@@ -301,12 +308,11 @@ function handleHostSnapshot(message) {
   state.hostId = message.status.hostId;
   state.epoch = message.status.synchronization.epoch;
   state.cursor = message.status.synchronization.cursor;
-  state.currentScopes.add("host");
   localStorage.setItem(EXPECTED_HOST_ID_KEY, message.status.hostId);
   $("#device-state").textContent = `Device · ${message.status.hostId}`;
-  setCurrent(true, "Current");
-  void persistWorkingSet();
   renderCatalogControls();
+  await persistWorkingSet();
+  markScopeCurrent({ kind: "host" });
   route();
 }
 
@@ -323,17 +329,27 @@ async function resetSessionScope(message) {
     olderCursor: snapshot.timelineWindow?.olderCursor || null,
   });
   state.cursor = message.barrier.cursor;
-  state.currentScopes.delete(`session:${scope.sessionId}`);
+  state.currentScopes.delete(sessionScopeKey(scope.sessionId));
   await persistWorkingSet();
-  state.currentScopes.add(`session:${scope.sessionId}`);
-  setCurrent(true, "Current");
+  markScopeCurrent(scope);
   renderCurrentView();
+}
+
+async function handleScopeReset(message) {
+  if (message.barrier.scope.kind === "session") {
+    await resetSessionScope(message);
+    return;
+  }
+
+  installHostReset(message);
+  await persistWorkingSet();
+  markScopeCurrent(message.barrier.scope);
 }
 
 function installHostReset(message) {
   Object.assign(state, message.snapshot);
   state.cursor = message.barrier.cursor;
-  state.currentScopes.delete("host");
+  state.currentScopes.delete(HOST_SCOPE_KEY);
   renderCatalogControls();
   route();
 }
@@ -418,7 +434,8 @@ function setCurrent(current, label) {
       : "Never synchronized on this Device";
   }
   document.body.classList.toggle("stale", !current);
-  $("#new-session").disabled = !current || !state.currentScopes.has("host");
+  $("#new-session").disabled =
+    !current || !state.currentScopes.has(HOST_SCOPE_KEY);
   renderCurrentView();
 }
 
@@ -962,17 +979,28 @@ function bytesToBase64Url(bytes) {
 }
 
 function targetScopesCurrent(sessionId) {
-  return state.current && state.currentScopes.has("host") &&
-    (!sessionId || state.currentScopes.has(`session:${sessionId}`));
+  return state.current && requiredScopesCurrent(sessionId);
+}
+
+function requiredScopesCurrent(sessionId) {
+  if (!state.currentScopes.has(HOST_SCOPE_KEY)) {
+    return false;
+  }
+  return !sessionId || state.currentScopes.has(sessionScopeKey(sessionId));
+}
+
+function markScopeCurrent(scope) {
+  state.currentScopes.add(scopeKey(scope));
+  const current = requiredScopesCurrent(currentSessionId());
+  const label = current ? "Current" : "Reconciling Session";
+  setCurrent(current, label);
 }
 
 function sendScopeSet(sessionId) {
-  const session = [...state.sessions, ...state.archivedSessions]
-    .find(item => item.sessionId === sessionId);
-  const resourceRevisions = session ? {
-    [session.sessionId]: session.metadataRevision,
-    [`timeline:${session.sessionId}`]: session.timelineRevision,
-  } : {};
+  const session = findSession(sessionId);
+  const resourceRevisions = scopeResourceRevisions(session);
+
+  state.currentScopes.clear();
   socket.send(JSON.stringify({
     type: "scope.set",
     sessionIds: sessionId ? [sessionId] : [],
@@ -982,8 +1010,39 @@ function sendScopeSet(sessionId) {
   }));
 }
 
+function scopeResourceRevisions(session) {
+  if (!session) {
+    return {};
+  }
+
+  const resourceRevisions = {
+    [session.sessionId]: session.metadataRevision,
+  };
+  const projection = state.scopes.get(session.sessionId);
+  const timelineRevision = projection?.session?.timelineRevision;
+  if (timelineRevision !== undefined) {
+    resourceRevisions[`timeline:${session.sessionId}`] =
+      timelineRevision;
+  }
+  return resourceRevisions;
+}
+
 function scopeKey(scope) {
-  return scope.kind === "host" ? "host" : `session:${scope.sessionId}`;
+  return scope.kind === "host"
+    ? HOST_SCOPE_KEY
+    : sessionScopeKey(scope.sessionId);
+}
+
+function sessionScopeKey(sessionId) {
+  return `${SESSION_SCOPE_PREFIX}${sessionId}`;
+}
+
+function sessionCatalog() {
+  return [...state.sessions, ...state.archivedSessions];
+}
+
+function findSession(sessionId) {
+  return sessionCatalog().find(session => session.sessionId === sessionId);
 }
 
 function cacheDatabaseName(hostId) {
@@ -992,16 +1051,13 @@ function cacheDatabaseName(hostId) {
 
 function openCache(hostId) {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(cacheDatabaseName(hostId), CACHE_SCHEMA_VERSION);
+    const request = indexedDB.open(
+      cacheDatabaseName(hostId),
+      CACHE_SCHEMA_VERSION,
+    );
     request.onupgradeneeded = () => {
       const database = request.result;
-      for (const name of [
-        "metadata",
-        "discovery",
-        "session-projections",
-        "finalized-pages",
-        "immutable-blobs",
-      ]) {
+      for (const name of Object.values(CACHE_STORES)) {
         if (!database.objectStoreNames.contains(name)) {
           database.createObjectStore(name);
         }
@@ -1010,6 +1066,15 @@ function openCache(hostId) {
     request.onerror = () => reject(request.error);
     request.onsuccess = () => resolve(request.result);
   });
+}
+
+async function withCache(hostId, operation) {
+  const database = await openCache(hostId);
+  try {
+    return await operation(database);
+  } finally {
+    database.close();
+  }
 }
 
 function requestValue(request) {
@@ -1040,20 +1105,18 @@ function cacheBasis(scope, resourceRevisions = {}) {
   };
 }
 
-async function persistWorkingSet() {
-  if (!state.hostId || !state.cursor) {
-    return;
-  }
-  state.lastSuccessfulSync = new Date().toISOString();
-  const database = await openCache(state.hostId);
+async function writeWorkingSet(database, sessions) {
   const transaction = database.transaction(
-    ["metadata", "discovery", "session-projections"],
+    WORKING_SET_STORES,
     "readwrite",
   );
-  transaction.objectStore("metadata").put(cacheBasis("host"), "basis");
-  transaction.objectStore("discovery").put({
-    ...cacheBasis("host", Object.fromEntries(
-      [...state.sessions, ...state.archivedSessions].map(session => [
+  transaction.objectStore(CACHE_STORES.metadata).put(
+    cacheBasis(HOST_SCOPE_KEY),
+    "basis",
+  );
+  transaction.objectStore(CACHE_STORES.discovery).put({
+    ...cacheBasis(HOST_SCOPE_KEY, Object.fromEntries(
+      sessions.map(session => [
         session.sessionId,
         session.metadataRevision,
       ]),
@@ -1063,78 +1126,127 @@ async function persistWorkingSet() {
     sessions: state.sessions,
     archivedSessions: state.archivedSessions,
   }, "catalog");
-  const projections = transaction.objectStore("session-projections");
-  for (const [sessionId, projection] of [...state.scopes].slice(-MAX_CACHED_SESSION_PROJECTIONS)) {
-    const session = [...state.sessions, ...state.archivedSessions]
-      .find(item => item.sessionId === sessionId);
+
+  const projections = transaction.objectStore(
+    CACHE_STORES.sessionProjections,
+  );
+  projections.clear();
+  const cachedScopes = [...state.scopes]
+    .slice(-MAX_CACHED_SESSION_PROJECTIONS);
+  for (const [sessionId, projection] of cachedScopes) {
     projections.put({
-      ...cacheBasis(`session:${sessionId}`, {
-        metadata: session?.metadataRevision,
-        timeline: session?.timelineRevision,
+      ...cacheBasis(sessionScopeKey(sessionId), {
+        metadata: projection.session?.metadataRevision,
+        timeline: projection.session?.timelineRevision,
       }),
       projection,
-      lastViewed: new Date().toISOString(),
+      lastViewed: state.lastSuccessfulSync,
     }, sessionId);
   }
   await transactionDone(transaction);
-  database.close();
-  setCurrent(state.current, state.current ? "Current" : $("#connection-state").textContent);
+}
+
+async function persistWorkingSet() {
+  if (!state.hostId || !state.cursor) {
+    return;
+  }
+
+  const previousSuccessfulSync = state.lastSuccessfulSync;
+  state.lastSuccessfulSync = new Date().toISOString();
+  const sessions = sessionCatalog();
+  try {
+    await withCache(
+      state.hostId,
+      database => writeWorkingSet(database, sessions),
+    );
+  } catch (error) {
+    state.lastSuccessfulSync = previousSuccessfulSync;
+    throw error;
+  }
+
+  const connectionLabel = state.current
+    ? "Current"
+    : $("#connection-state").textContent;
+  setCurrent(state.current, connectionLabel);
 }
 
 async function persistFinalizedPage(sessionId, pageCursor, page) {
   if (!state.hostId || page.entries.some(entry => !entry.finalized)) {
     return;
   }
-  const database = await openCache(state.hostId);
-  const transaction = database.transaction("finalized-pages", "readwrite");
-  const store = transaction.objectStore("finalized-pages");
-  store.put({
-    ...cacheBasis(`session:${sessionId}`, { timeline: page.timelineRevision }),
-    page,
-    fetchedAt: new Date().toISOString(),
-  }, `${sessionId}:${pageCursor}`);
-  const keys = await requestValue(store.getAllKeys());
-  for (const key of keys.slice(0, Math.max(0, keys.length - MAX_FINALIZED_PAGES))) {
-    store.delete(key);
-  }
-  await transactionDone(transaction);
-  database.close();
+  await withCache(state.hostId, async database => {
+    const transaction = database.transaction(
+      CACHE_STORES.finalizedPages,
+      "readwrite",
+    );
+    const store = transaction.objectStore(CACHE_STORES.finalizedPages);
+    store.put({
+      ...cacheBasis(sessionScopeKey(sessionId), {
+        timeline: page.timelineRevision,
+      }),
+      page,
+      fetchedAt: new Date().toISOString(),
+    }, `${sessionId}:${pageCursor}`);
+    const keys = await requestValue(store.getAllKeys());
+    const excessPageCount = Math.max(0, keys.length - MAX_FINALIZED_PAGES);
+    for (const key of keys.slice(0, excessPageCount)) {
+      store.delete(key);
+    }
+    await transactionDone(transaction);
+  });
 }
 
 // Immutable HTTP bodies enter this store only after application-level identity
 // verification; authenticated responses are never delegated to an HTTP cache.
 async function persistVerifiedImmutableBlob(identity, body, verifiedMetadata) {
-  if (!state.hostId || verifiedMetadata.hostId !== state.hostId) return;
-  const database = await openCache(state.hostId);
-  const transaction = database.transaction("immutable-blobs", "readwrite");
-  transaction.objectStore("immutable-blobs").put({
-    ...cacheBasis(verifiedMetadata.scope, verifiedMetadata.resourceRevisions),
-    identity,
-    body,
-  }, identity);
-  await transactionDone(transaction);
-  database.close();
+  if (!state.hostId || verifiedMetadata.hostId !== state.hostId) {
+    return;
+  }
+  await withCache(state.hostId, async database => {
+    const transaction = database.transaction(
+      CACHE_STORES.immutableBlobs,
+      "readwrite",
+    );
+    transaction.objectStore(CACHE_STORES.immutableBlobs).put({
+      ...cacheBasis(verifiedMetadata.scope, verifiedMetadata.resourceRevisions),
+      identity,
+      body,
+    }, identity);
+    await transactionDone(transaction);
+  });
 }
 
 async function loadCachedWorkingSet() {
   const hostId = localStorage.getItem(EXPECTED_HOST_ID_KEY);
-  if (!hostId) return;
+  if (!hostId) {
+    return;
+  }
   try {
-    const database = await openCache(hostId);
-    const transaction = database.transaction(
-      ["metadata", "discovery", "session-projections"],
-      "readonly",
+    const { basis, discovery, projections } = await withCache(
+      hostId,
+      async database => {
+        const transaction = database.transaction(
+          WORKING_SET_STORES,
+          "readonly",
+        );
+        const [basis, discovery, projections] = await Promise.all([
+          requestValue(
+            transaction.objectStore(CACHE_STORES.metadata).get("basis"),
+          ),
+          requestValue(
+            transaction.objectStore(CACHE_STORES.discovery).get("catalog"),
+          ),
+          requestValue(
+            transaction.objectStore(CACHE_STORES.sessionProjections).getAll(),
+          ),
+        ]);
+        await transactionDone(transaction);
+        return { basis, discovery, projections };
+      },
     );
-    const [basis, discovery, projections] = await Promise.all([
-      requestValue(transaction.objectStore("metadata").get("basis")),
-      requestValue(transaction.objectStore("discovery").get("catalog")),
-      requestValue(transaction.objectStore("session-projections").getAll()),
-    ]);
-    await transactionDone(transaction);
-    database.close();
-    if (!basis || !discovery || basis.hostId !== hostId ||
-        basis.cacheSchemaBasis !== CACHE_SCHEMA_VERSION ||
-        basis.protocolBasis !== PROTOCOL_BASIS) return;
+    if (!cacheIsCompatible(basis, discovery, hostId)) {
+      return;
+    }
     Object.assign(state, {
       hostId,
       epoch: basis.epoch,
@@ -1146,7 +1258,8 @@ async function loadCachedWorkingSet() {
       archivedSessions: discovery.archivedSessions,
     });
     state.scopes = new Map(projections.map(item => [
-      item.projection.session?.sessionId || item.scope.slice(8),
+      item.projection.session?.sessionId ||
+        item.scope.slice(SESSION_SCOPE_PREFIX.length),
       item.projection,
     ]));
     renderCatalogControls();
@@ -1155,6 +1268,16 @@ async function loadCachedWorkingSet() {
   } catch {
     // Browser eviction and incompatible disposable cache generations are safe.
   }
+}
+
+function cacheIsCompatible(basis, discovery, hostId) {
+  return Boolean(
+    basis &&
+    discovery &&
+    basis.hostId === hostId &&
+    basis.cacheSchemaBasis === CACHE_SCHEMA_VERSION &&
+    basis.protocolBasis === PROTOCOL_BASIS
+  );
 }
 
 function deviceStore(mode) {
