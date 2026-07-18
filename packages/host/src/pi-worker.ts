@@ -3,14 +3,20 @@ import type { PiAdapter } from "../../adapters/src/index.js";
 
 export const WORKER_PROTOCOL_GENERATION = 1 as const;
 export const BUNDLED_PI_SDK_GENERATION = "pi-sdk@0.1.0";
-const REQUIRED = ["run.execute", "checkpoint.durable"];
+const REQUIRED_WORKER_CAPABILITIES = [
+  "run.execute",
+  "checkpoint.durable",
+] as const;
 
-const readySchema = z.object({
+const workerReadinessSchema = z.object({
   protocolGeneration: z.literal(WORKER_PROTOCOL_GENERATION),
   sdkGeneration: z.literal(BUNDLED_PI_SDK_GENERATION),
   capabilities: z.array(z.string()),
 });
-const resultSchema = z.object({ text: z.string(), checkpoint: z.string().min(1) });
+const executionResultSchema = z.object({
+  text: z.string(),
+  checkpoint: z.string().min(1),
+});
 
 /** One immutable Session binding and one-at-a-time SDK execution boundary. */
 export class PiSessionWorker {
@@ -24,23 +30,37 @@ export class PiSessionWorker {
   }
 
   async execute(prompt: string): Promise<{ text: string; checkpoint: string }> {
-    if (this.#running) throw new Error("worker-busy");
+    if (this.#running) {
+      throw new Error("worker-busy");
+    }
+
     this.#running = true;
     try {
-      if (!this.#pi.probe || !this.#pi.execute) throw new Error("pi-sdk-unavailable");
-      const ready = readySchema.parse(await this.#pi.probe({
-        protocolGeneration: WORKER_PROTOCOL_GENERATION,
-        sdkGeneration: BUNDLED_PI_SDK_GENERATION,
-      }));
-      if (REQUIRED.some(capability => !ready.capabilities.includes(capability))) {
+      if (!this.#pi.probe || !this.#pi.execute) {
+        throw new Error("pi-sdk-unavailable");
+      }
+
+      const readiness = workerReadinessSchema.parse(
+        await this.#pi.probe({
+          protocolGeneration: WORKER_PROTOCOL_GENERATION,
+          sdkGeneration: BUNDLED_PI_SDK_GENERATION,
+        }),
+      );
+      const isMissingRequiredCapability = REQUIRED_WORKER_CAPABILITIES.some(
+        capability => !readiness.capabilities.includes(capability),
+      );
+      if (isMissingRequiredCapability) {
         throw new Error("missing-required-worker-capability");
       }
-      return resultSchema.parse(await this.#pi.execute({
-        sessionId: this.#sessionId,
-        prompt,
-        projectTrust: true,
-        resourceLoader: "public",
-      }));
+
+      return executionResultSchema.parse(
+        await this.#pi.execute({
+          sessionId: this.#sessionId,
+          prompt,
+          projectTrust: true,
+          resourceLoader: "public",
+        }),
+      );
     } finally {
       this.#running = false;
     }

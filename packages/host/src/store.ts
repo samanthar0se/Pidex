@@ -5,16 +5,25 @@ import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { HostAdapters } from "../../adapters/src/index.js";
 import {
+  acceptedRunSchema,
+  completedRunSchema,
   hostChangeSchema,
   projectSummarySchema,
+  runRecordSchema,
   sessionSummarySchema,
+  timelineEntrySchema,
   workspaceSummarySchema,
+  type AcceptedRun,
+  type CompletedRun,
   type HostChange,
   type HostStatus,
   type ProjectSummary,
   type SessionSummary,
+  type TimelineEntry,
   type WorkspaceSummary,
 } from "../../protocol/src/status.js";
+
+export type { RunRecord, TimelineEntry } from "../../protocol/src/status.js";
 
 const CREATE_AUTHORITY_SCHEMA = `
   PRAGMA journal_mode=WAL;
@@ -71,27 +80,56 @@ const CREATE_AUTHORITY_SCHEMA = `
     payload_json TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    session_order INTEGER NOT NULL, prompt TEXT NOT NULL,
+    run_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    session_order INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('accepted','completed')),
-    created_at INTEGER NOT NULL, completed_at INTEGER,
+    created_at INTEGER NOT NULL,
+    completed_at INTEGER,
     UNIQUE(session_id, session_order)
   );
   CREATE TABLE IF NOT EXISTS timeline_entries (
-    entry_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT NOT NULL,
-    entry_order INTEGER NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
-    checkpoint TEXT, created_at INTEGER NOT NULL,
+    entry_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    entry_order INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    checkpoint TEXT,
+    created_at INTEGER NOT NULL,
     UNIQUE(session_id, entry_order)
   );
 `;
 
-export interface RunRecord { runId: string; sessionId: string; sessionOrder: number; prompt: string; state: "accepted" | "completed" }
-export interface TimelineEntry { entryId: string; runId: string; order: number; kind: "prompt" | "response"; text: string }
-export interface SubmitCommand { commandId: string; sessionId: string; prompt: string; requiredCapability: "run.submit" }
+export interface SubmitCommand {
+  commandId: string;
+  sessionId: string;
+  prompt: string;
+  requiredCapability: "run.submit";
+}
+
+const submitOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("accepted"),
+    run: acceptedRunSchema,
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.literal("unknown-session"),
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+]);
+const nextRunOrderSchema = z.object({ nextOrder: z.number() });
+
+export type SubmitOutcome = z.infer<typeof submitOutcomeSchema>;
+
 export type SubmitResult =
-  | { kind: "accepted"; run: RunRecord; cursor: string; digest: string }
-  | { kind: "rejected"; error: "unknown-session"; cursor: string; digest: string }
-  | { kind: "replayed"; outcome: Exclude<SubmitResult, { kind: "replayed" | "command-id-conflict" }>; digest: string }
+  | SubmitOutcome
+  | { kind: "replayed"; outcome: SubmitOutcome; digest: string }
   | { kind: "command-id-conflict" };
 
 export interface RenameCommand {
@@ -376,52 +414,192 @@ export class AuthorityStore {
     }
   }
 
-  submitRun(deviceId: string, command: SubmitCommand, now: number): SubmitResult {
-    const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+  submitRun(
+    deviceId: string,
+    command: SubmitCommand,
+    now: number,
+  ): SubmitResult {
+    const digest = submitCommandDigest(command);
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db.prepare(
-        "SELECT envelope_digest, outcome_json FROM command_receipts WHERE device_id=? AND command_id=?",
-      ).get(deviceId, command.commandId);
+      const receipt = this.#db
+        .prepare(
+          `SELECT envelope_digest, outcome_json FROM command_receipts
+           WHERE device_id = ? AND command_id = ?`,
+        )
+        .get(deviceId, command.commandId);
       if (receipt) {
+        if (receipt.envelope_digest !== digest) {
+          this.#db.exec("COMMIT");
+          return { kind: "command-id-conflict" };
+        }
+
+        const outcome = submitOutcomeSchema.parse(
+          JSON.parse(String(receipt.outcome_json)),
+        );
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) return { kind: "command-id-conflict" };
-        return { kind: "replayed", outcome: JSON.parse(String(receipt.outcome_json)), digest };
+        return { kind: "replayed", outcome, digest };
       }
-      const exists = this.#db.prepare("SELECT 1 FROM sessions WHERE session_id=?").get(command.sessionId);
+
+      const sessionExists = this.#db
+        .prepare("SELECT 1 FROM sessions WHERE session_id = ?")
+        .get(command.sessionId);
       const cursor = this.status("").synchronization.cursor;
-      let outcome: Exclude<SubmitResult, { kind: "replayed" | "command-id-conflict" }>;
-      if (!exists) {
+      let outcome: SubmitOutcome;
+      if (!sessionExists) {
         outcome = { kind: "rejected", error: "unknown-session", cursor, digest };
       } else {
-        const orderRow = this.#db.prepare("SELECT COALESCE(MAX(session_order),0)+1 AS n FROM runs WHERE session_id=?").get(command.sessionId);
-        const run: RunRecord = { runId: `run_${randomUUID()}`, sessionId: command.sessionId, sessionOrder: Number(orderRow?.n), prompt: command.prompt, state: "accepted" };
-        this.#db.prepare("INSERT INTO runs VALUES (?, ?, ?, ?, 'accepted', ?, NULL)").run(run.runId, run.sessionId, run.sessionOrder, run.prompt, now);
-        this.#db.prepare("INSERT INTO timeline_entries VALUES (?, ?, ?, ?, 'prompt', ?, NULL, ?)").run(`entry_${randomUUID()}`, run.sessionId, run.runId, run.sessionOrder * 2 - 1, run.prompt, now);
-        this.#db.prepare("UPDATE sessions SET residency='resident', timeline_revision=timeline_revision+1 WHERE session_id=?").run(run.sessionId);
+        const orderRow = this.#db
+          .prepare(
+            `SELECT COALESCE(MAX(session_order), 0) + 1 AS nextOrder
+             FROM runs WHERE session_id = ?`,
+          )
+          .get(command.sessionId);
+        const sessionOrder = nextRunOrderSchema.parse(orderRow).nextOrder;
+        const run: AcceptedRun = {
+          runId: `run_${randomUUID()}`,
+          sessionId: command.sessionId,
+          sessionOrder,
+          prompt: command.prompt,
+          state: "accepted",
+        };
+        this.#db
+          .prepare(
+            `INSERT INTO runs
+             (run_id, session_id, session_order, prompt, state, created_at,
+              completed_at)
+             VALUES (?, ?, ?, ?, 'accepted', ?, NULL)`,
+          )
+          .run(run.runId, run.sessionId, run.sessionOrder, run.prompt, now);
+        this.#db
+          .prepare(
+            `INSERT INTO timeline_entries
+             (entry_id, session_id, run_id, entry_order, kind, text,
+              checkpoint, created_at)
+             VALUES (?, ?, ?, ?, 'prompt', ?, NULL, ?)`,
+          )
+          .run(
+            `entry_${randomUUID()}`,
+            run.sessionId,
+            run.runId,
+            run.sessionOrder * 2 - 1,
+            run.prompt,
+            now,
+          );
+        this.#db
+          .prepare(
+            `UPDATE sessions
+             SET residency = 'resident',
+                 timeline_revision = timeline_revision + 1
+             WHERE session_id = ?`,
+          )
+          .run(run.sessionId);
         outcome = { kind: "accepted", run, cursor, digest };
       }
-      this.#db.prepare("INSERT INTO command_receipts VALUES (?, ?, ?, ?, ?, ?)").run(deviceId, command.commandId, digest, JSON.stringify(outcome), cursor, now);
+
+      this.#db
+        .prepare(
+          `INSERT INTO command_receipts
+           (device_id, command_id, envelope_digest, outcome_json,
+            commit_cursor, committed_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          deviceId,
+          command.commandId,
+          digest,
+          JSON.stringify(outcome),
+          cursor,
+          now,
+        );
       this.#db.exec("COMMIT");
       return outcome;
-    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
-  completeRun(runId: string, text: string, checkpoint: string, now: number): { run: RunRecord & { state: "completed" }; timeline: TimelineEntry[] } {
+  completeRun(
+    runId: string,
+    text: string,
+    checkpoint: string,
+    now: number,
+  ): { run: CompletedRun; timeline: TimelineEntry[] } {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const row = this.#db.prepare("SELECT run_id AS runId, session_id AS sessionId, session_order AS sessionOrder, prompt, state FROM runs WHERE run_id=?").get(runId) as unknown as RunRecord;
-      if (!row || row.state !== "accepted") throw new Error("run-not-accepted");
-      this.#db.prepare("INSERT INTO timeline_entries VALUES (?, ?, ?, ?, 'response', ?, ?, ?)").run(`entry_${randomUUID()}`, row.sessionId, runId, row.sessionOrder * 2, text, checkpoint, now);
-      this.#db.prepare("UPDATE runs SET state='completed', completed_at=? WHERE run_id=?").run(now, runId);
-      this.#db.prepare("UPDATE sessions SET timeline_revision=timeline_revision+1 WHERE session_id=?").run(row.sessionId);
+      const row = this.#db
+        .prepare(
+          `SELECT run_id AS runId, session_id AS sessionId,
+                  session_order AS sessionOrder, prompt, state
+           FROM runs WHERE run_id = ?`,
+        )
+        .get(runId);
+      if (!row) {
+        throw new Error("run-not-accepted");
+      }
+
+      const acceptedRun = runRecordSchema.parse(row);
+      if (acceptedRun.state !== "accepted") {
+        throw new Error("run-not-accepted");
+      }
+
+      this.#db
+        .prepare(
+          `INSERT INTO timeline_entries
+           (entry_id, session_id, run_id, entry_order, kind, text,
+            checkpoint, created_at)
+           VALUES (?, ?, ?, ?, 'response', ?, ?, ?)`,
+        )
+        .run(
+          `entry_${randomUUID()}`,
+          acceptedRun.sessionId,
+          runId,
+          acceptedRun.sessionOrder * 2,
+          text,
+          checkpoint,
+          now,
+        );
+      this.#db
+        .prepare(
+          `UPDATE runs SET state = 'completed', completed_at = ?
+           WHERE run_id = ?`,
+        )
+        .run(now, runId);
+      this.#db
+        .prepare(
+          `UPDATE sessions
+           SET timeline_revision = timeline_revision + 1
+           WHERE session_id = ?`,
+        )
+        .run(acceptedRun.sessionId);
+      const completedRun = completedRunSchema.parse({
+        ...acceptedRun,
+        state: "completed",
+      });
+      const completion = {
+        run: completedRun,
+        timeline: this.timeline(acceptedRun.sessionId),
+      };
       this.#db.exec("COMMIT");
-      return { run: { ...row, state: "completed" }, timeline: this.timeline(row.sessionId) };
-    } catch (error) { this.#db.exec("ROLLBACK"); throw error; }
+      return completion;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   timeline(sessionId: string): TimelineEntry[] {
-    return this.#db.prepare("SELECT entry_id AS entryId, run_id AS runId, entry_order AS 'order', kind, text FROM timeline_entries WHERE session_id=? ORDER BY entry_order").all(sessionId) as unknown as TimelineEntry[];
+    const rows = this.#db
+      .prepare(
+        `SELECT entry_id AS entryId, run_id AS runId,
+                entry_order AS 'order', kind, text
+         FROM timeline_entries
+         WHERE session_id = ?
+         ORDER BY entry_order`,
+      )
+      .all(sessionId);
+    return timelineEntrySchema.array().parse(rows);
   }
 
   private loadSession(sessionId: string): SessionSummary {
@@ -639,4 +817,10 @@ function renameCommandDigest(command: RenameCommand): string {
     observedMetadataRevision: command.observedMetadataRevision,
   });
   return createHash("sha256").update(envelope).digest("hex");
+}
+
+function submitCommandDigest(command: SubmitCommand): string {
+  return createHash("sha256")
+    .update(JSON.stringify(command))
+    .digest("hex");
 }

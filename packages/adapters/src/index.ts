@@ -2,20 +2,34 @@ export interface Clock {
   now(): number;
 }
 
+export interface PiProbeRequest {
+  protocolGeneration: 1;
+  sdkGeneration: string;
+}
+
+export interface PiProbeResult {
+  protocolGeneration: number;
+  sdkGeneration: string;
+  capabilities: string[];
+}
+
+export interface PiExecuteRequest {
+  sessionId: string;
+  prompt: string;
+  projectTrust: true;
+  resourceLoader: "public";
+}
+
+export interface PiExecuteResult {
+  text: string;
+  checkpoint: string;
+}
+
 export interface PiAdapter {
   readonly kind: "real" | "deterministic";
   /** Pidex's public SDK seam. Implementations must use Pi's resource loader. */
-  probe?(request: { protocolGeneration: 1; sdkGeneration: string }): Promise<{
-    protocolGeneration: number;
-    sdkGeneration: string;
-    capabilities: string[];
-  }>;
-  execute?(request: {
-    sessionId: string;
-    prompt: string;
-    projectTrust: true;
-    resourceLoader: "public";
-  }): Promise<{ text: string; checkpoint: string }>;
+  probe?(request: PiProbeRequest): Promise<PiProbeResult>;
+  execute?(request: PiExecuteRequest): Promise<PiExecuteResult>;
 }
 
 export interface NetworkAdapter {
@@ -136,22 +150,24 @@ export function adaptersFor(mode: AdapterMode = "product"): HostAdapters {
     clock: {
       now: () => (deterministic ? 1_700_000_000_000 : Date.now()),
     },
-    pi: deterministic
-      ? {
-          kind: "deterministic",
-          probe: async request => ({
-            ...request,
-            capabilities: ["run.execute", "checkpoint.durable"],
-          }),
-          execute: async request => ({
-            text: `Deterministic Pi response: ${request.prompt}`,
-            checkpoint: `checkpoint:${request.sessionId}`,
-          }),
-        }
-      : { kind: "real" },
+    pi: deterministic ? deterministicPiAdapter() : { kind: "real" },
     network: { beforeSend() {} },
     storage: { beforeCommit() {} },
     windows,
+  };
+}
+
+function deterministicPiAdapter(): PiAdapter {
+  return {
+    kind: "deterministic",
+    probe: async request => ({
+      ...request,
+      capabilities: ["run.execute", "checkpoint.durable"],
+    }),
+    execute: async request => ({
+      text: `Deterministic Pi response: ${request.prompt}`,
+      checkpoint: `checkpoint:${request.sessionId}`,
+    }),
   };
 }
 

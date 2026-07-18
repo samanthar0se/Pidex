@@ -26,18 +26,21 @@ import {
   PairingError,
   type PairingInstructions,
 } from "./pairing.js";
+import { PiSessionWorker } from "./pi-worker.js";
 import {
   AuthorityStore,
   type InitialCatalog,
   type RenameOutcome,
+  type SubmitCommand,
+  type SubmitOutcome,
 } from "./store.js";
-import { PiSessionWorker } from "./pi-worker.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
 const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
 const MAX_SESSION_NAME_LENGTH = 200;
+const MAX_RUN_PROMPT_LENGTH = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 
@@ -66,7 +69,10 @@ interface SessionRenameMessage {
   requiredCapability: "session.rename";
   observedMetadataRevision: number;
 }
-interface RunSubmitMessage { type: "run.submit"; commandId: string; sessionId: string; prompt: string; requiredCapability: "run.submit" }
+
+interface RunSubmitMessage extends SubmitCommand {
+  type: "run.submit";
+}
 
 interface ScopeSetMessage {
   type: "scope.set";
@@ -608,33 +614,68 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
     const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) return;
+    if (!deviceId) {
+      return;
+    }
+
     try {
       adapters.storage.beforeCommit();
       const result = store.submitRun(deviceId, command, adapters.clock.now());
       if (result.kind === "command-id-conflict") {
-        sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "command-id-conflict" });
+        sendServerMessage(client, {
+          type: "command.outcome",
+          commandId: command.commandId,
+          outcome: "rejected",
+          error: "command-id-conflict",
+        });
         return;
       }
+
       const outcome = result.kind === "replayed" ? result.outcome : result;
-      sendServerMessage(client, {
-        type: "command.outcome", commandId: command.commandId,
-        outcome: outcome.kind === "accepted" ? "accepted" : "rejected",
-        error: outcome.kind === "rejected" ? outcome.error : undefined,
-        runId: outcome.kind === "accepted" ? outcome.run.runId : undefined,
-        receipt: { digest: outcome.digest, commitCursor: outcome.cursor },
-      });
+      sendServerMessage(client, runOutcomeMessage(command.commandId, outcome));
+
       if (outcome.kind === "accepted" && result.kind !== "replayed") {
-        const worker = workers.get(command.sessionId) ?? new PiSessionWorker(command.sessionId, adapters.pi);
+        const worker =
+          workers.get(command.sessionId) ??
+          new PiSessionWorker(command.sessionId, adapters.pi);
         workers.set(command.sessionId, worker);
-        void worker.execute(command.prompt).then(result => {
-          const completed = store.completeRun(outcome.run.runId, result.text, result.checkpoint, adapters.clock.now());
-          for (const socket of admittedClients) sendServerMessage(socket, { type: "run.completed", ...completed });
-        }).catch(() => { /* issue 11 settles abnormal outcomes */ });
+        dispatchAcceptedRun(worker, outcome.run.runId, command.prompt);
       }
     } catch {
-      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "commit-failed" });
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "commit-failed",
+      });
     }
+  }
+
+  function dispatchAcceptedRun(
+    worker: PiSessionWorker,
+    runId: string,
+    prompt: string,
+  ): void {
+    void worker
+      .execute(prompt)
+      .then(executionResult => {
+        const completed = store.completeRun(
+          runId,
+          executionResult.text,
+          executionResult.checkpoint,
+          adapters.clock.now(),
+        );
+        const message: ServerMessage = {
+          type: "run.completed",
+          ...completed,
+        };
+        for (const socket of admittedClients) {
+          sendServerMessage(socket, message);
+        }
+      })
+      .catch(() => {
+        // Issue 11 settles abnormal Run outcomes.
+      });
   }
 
   return {
@@ -764,12 +805,47 @@ function isSessionRenameMessage(value: unknown): value is SessionRenameMessage {
 }
 
 function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
-  if (!value || typeof value !== "object") return false;
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
   const item = value as Record<string, unknown>;
-  return item.type === "run.submit" && typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" && typeof item.prompt === "string" &&
-    item.prompt.trim().length > 0 && item.prompt.length <= 100_000 &&
-    item.requiredCapability === "run.submit";
+  return (
+    item.type === "run.submit" &&
+    typeof item.commandId === "string" &&
+    typeof item.sessionId === "string" &&
+    typeof item.prompt === "string" &&
+    item.prompt.trim().length > 0 &&
+    item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
+    item.requiredCapability === "run.submit"
+  );
+}
+
+function runOutcomeMessage(
+  commandId: string,
+  outcome: SubmitOutcome,
+): ServerMessage {
+  const receipt = {
+    digest: outcome.digest,
+    commitCursor: outcome.cursor,
+  };
+  if (outcome.kind === "accepted") {
+    return {
+      type: "command.outcome",
+      commandId,
+      outcome: "accepted",
+      runId: outcome.run.runId,
+      receipt,
+    };
+  }
+
+  return {
+    type: "command.outcome",
+    commandId,
+    outcome: "rejected",
+    error: outcome.error,
+    receipt,
+  };
 }
 
 function renameOutcomeMessage(

@@ -102,6 +102,35 @@ export type ProjectSummary = z.infer<typeof projectSummarySchema>;
 export type WorkspaceSummary = z.infer<typeof workspaceSummarySchema>;
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
+export const runRecordSchema = z.object({
+  runId: z.string(),
+  sessionId: z.string(),
+  sessionOrder: z.number(),
+  prompt: z.string(),
+  state: z.enum(["accepted", "completed"]),
+});
+
+export const acceptedRunSchema = runRecordSchema.extend({
+  state: z.literal("accepted"),
+});
+
+export const completedRunSchema = runRecordSchema.extend({
+  state: z.literal("completed"),
+});
+
+export const timelineEntrySchema = z.object({
+  entryId: z.string(),
+  runId: z.string(),
+  order: z.number(),
+  kind: z.enum(["prompt", "response"]),
+  text: z.string(),
+});
+
+export type RunRecord = z.infer<typeof runRecordSchema>;
+export type AcceptedRun = z.infer<typeof acceptedRunSchema>;
+export type CompletedRun = z.infer<typeof completedRunSchema>;
+export type TimelineEntry = z.infer<typeof timelineEntrySchema>;
+
 export const synchronizationScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("host") }),
   z.object({ kind: z.literal("session"), sessionId: z.string() }),
@@ -202,8 +231,8 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("run.completed"),
-    run: z.object({ runId: z.string(), sessionId: z.string(), sessionOrder: z.number(), prompt: z.string(), state: z.literal("completed") }),
-    timeline: z.array(z.object({ entryId: z.string(), runId: z.string(), order: z.number(), kind: z.enum(["prompt", "response"]), text: z.string() })),
+    run: completedRunSchema,
+    timeline: z.array(timelineEntrySchema),
   }),
 ]).and(optionalEnvelopeSchema);
 
