@@ -122,6 +122,29 @@ export interface WindowsPlatformAdapter {
   inspectPidexFirewall(port: number): FirewallHealth;
   applyPidexFirewall(operation: FirewallOperation): void;
   writeCoarseEvent(event: CoarseWindowsEvent): void;
+  /**
+   * Creates a Session worker suspended, assigns it to a fresh non-breakaway
+   * kill-on-close Job, and resumes it only after assignment succeeds.  The
+   * native implementation must not return a handle for an uncontained worker.
+   */
+  createContainedSessionWorker(sessionId: string): SessionJob;
+}
+
+export interface SessionJob {
+  readonly sessionId: string;
+  /** Terminates the worker and every descendant still held by this Job. */
+  terminate(): void;
+  /** Closes the kill-on-close Job. Safe to call repeatedly. */
+  close(): void;
+}
+
+export class SessionContainmentError extends Error {
+  readonly code = "session-containment-setup-failed" as const;
+
+  constructor(detail: string, options?: ErrorOptions) {
+    super(`${detail}`, options);
+    this.name = "SessionContainmentError";
+  }
 }
 
 export interface PrivateInterface {
@@ -293,6 +316,11 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
     inspectPidexFirewall: () => ({ state: "healthy" }),
     applyPidexFirewall() {},
     writeCoarseEvent() {},
+    createContainedSessionWorker: sessionId => ({
+      sessionId,
+      terminate() {},
+      close() {},
+    }),
   };
 }
 
@@ -342,5 +370,13 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new Error("Pidex Windows Firewall bridge is not bundled");
     },
     writeCoarseEvent() {},
+    createContainedSessionWorker() {
+      // The packaged native bridge uses CREATE_SUSPENDED, a Job configured
+      // with KILL_ON_JOB_CLOSE and no breakaway flags, AssignProcessToJobObject,
+      // then ResumeThread. Never fall back to an escapable child.
+      throw new SessionContainmentError(
+        "Pidex Windows Session Job bridge is not bundled",
+      );
+    },
   };
 }

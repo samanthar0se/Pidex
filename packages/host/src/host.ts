@@ -11,6 +11,7 @@ import {
   type PiPresentationEffect,
   type PiInteractionRequest,
   type PiInteractionResult,
+  type SessionJob,
   type WindowsPlatformAdapter,
 } from "../../adapters/src/index.js";
 import {
@@ -58,6 +59,8 @@ const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
+const FORCED_CANCELLATION_DETAIL =
+  "Cancelled by force-stopping the contained Session process tree. Recoverable partial output was retained; committed side effects may remain and were not rolled back.";
 const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
@@ -196,6 +199,9 @@ export interface HostOptions {
   initialCatalog?: InitialCatalog;
   /** Per-Client delivery bound; exceeding it disconnects only that Client. */
   maxOutboundBytes?: number;
+  /** Test seam; production contract is ten seconds plus five seconds. */
+  cooperativeStopTimeoutMs?: number;
+  forcedReconciliationTimeoutMs?: number;
 }
 
 export interface StartedHost {
@@ -294,6 +300,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
   const deliveries = new Map<WebSocket, ClientDelivery>();
   const workers = new Map<string, PiSessionWorker>();
+  const sessionJobs = new Map<string, SessionJob>();
+  const stopTimers = new Map<string, NodeJS.Timeout[]>();
+  const forceEnforcedRuns = new Set<string>();
   const workerGenerations = new Map<string, string>();
   const viewsByClient = new Map<WebSocket, Map<string, ViewIdentity>>();
   const presentationContextByRun = new Map<string, RunPresentationContext>();
@@ -985,7 +994,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         publishInteraction(interaction);
       }
       store.markRunSteeringUnapplied(command.runId);
-      workers.get(command.sessionId)?.stop();
+      try {
+        workers.get(command.sessionId)?.stop();
+      } catch {
+        // Accepted intent still escalates when cooperative cancellation is
+        // unavailable or the worker IPC has already stopped responding.
+      }
+      scheduleForcedStop(command.sessionId, command.runId, command.workerGeneration);
     } catch (error) {
       sendServerMessage(client, {
         type: "command.outcome",
@@ -996,7 +1011,65 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
   }
 
+  function clearStopTimers(runId: string): void {
+    for (const timer of stopTimers.get(runId) ?? []) clearTimeout(timer);
+    stopTimers.delete(runId);
+  }
+
+  function scheduleForcedStop(
+    sessionId: string,
+    runId: string,
+    workerGeneration: string,
+  ): void {
+    const cooperativeTimer = setTimeout(() => {
+      const run = store.runs(sessionId).find(item => item.runId === runId);
+      if (run?.state !== "cancelling") return clearStopTimers(runId);
+      // A Job is per Session: closing it cannot affect daemon or siblings.
+      forceEnforcedRuns.add(runId);
+      sessionJobs.get(sessionId)?.terminate();
+      sessionJobs.get(sessionId)?.close();
+      sessionJobs.delete(sessionId);
+      const reconciliationTimer = setTimeout(() => {
+        const current = store.runs(sessionId).find(item => item.runId === runId);
+        if (current?.state !== "cancelling") return clearStopTimers(runId);
+        const cancelled = store.settleRun(
+          runId, "cancelled", FORCED_CANCELLATION_DETAIL, null,
+          adapters.clock.now(),
+        );
+        presentationContextByRun.delete(runId);
+        invalidateWorkerGeneration(sessionId, workerGeneration);
+        publishRunCompletion(sessionId, cancelled.run);
+        clearStopTimers(runId);
+      }, options.forcedReconciliationTimeoutMs ?? 5_000);
+      stopTimers.set(runId, [reconciliationTimer]);
+    }, options.cooperativeStopTimeoutMs ?? 10_000);
+    stopTimers.set(runId, [cooperativeTimer]);
+  }
+
   function dispatchRun(run: RunRecord): void {
+    if (!sessionJobs.has(run.sessionId)) {
+      try {
+        // This operation is the suspended-create/assign/resume boundary. A
+        // failure must happen before any Pi, shell, tool, or extension runs.
+        sessionJobs.set(
+          run.sessionId,
+          adapters.windows.createContainedSessionWorker(run.sessionId),
+        );
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "unknown";
+        const failed = store.settleRun(
+          run.runId,
+          "failed",
+          `session-containment-setup-failed: ${detail}`,
+          null,
+          adapters.clock.now(),
+        );
+        presentationContextByRun.delete(run.runId);
+        publishRunCompletion(run.sessionId, failed.run);
+        store.holdQueued(run.sessionId);
+        return;
+      }
+    }
     const worker =
       workers.get(run.sessionId) ??
       new PiSessionWorker(run.sessionId, adapters.pi);
@@ -1040,6 +1113,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           waitForInteractionResolution(run.sessionId, run.runId, request),
       )
       .then(executionResult => {
+        clearStopTimers(run.runId);
         const finalAssistant = store.finalizeAssistant(
           run.sessionId,
           run.runId,
@@ -1075,6 +1149,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         }
       })
       .catch(error => {
+        clearStopTimers(run.runId);
         store.markRunSteeringUnapplied(run.runId);
         try {
           const currentRun = store
@@ -1084,10 +1159,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             const cancelled = store.settleRun(
               run.runId,
               "cancelled",
-              COOPERATIVE_CANCELLATION_DETAIL,
+              forceEnforcedRuns.has(run.runId)
+                ? FORCED_CANCELLATION_DETAIL
+                : COOPERATIVE_CANCELLATION_DETAIL,
               null,
               adapters.clock.now(),
             );
+            forceEnforcedRuns.delete(run.runId);
+            if (!sessionJobs.has(run.sessionId)) {
+              invalidateWorkerGeneration(run.sessionId, workerGeneration);
+            }
             presentationContextByRun.delete(run.runId);
             publishRunCompletion(run.sessionId, cancelled.run);
             return;
@@ -1473,6 +1554,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         clearTimeout(timer);
       }
       interactionDeadlineTimers.clear();
+      for (const runId of stopTimers.keys()) clearStopTimers(runId);
+      for (const job of sessionJobs.values()) job.close();
+      sessionJobs.clear();
       for (const webSocket of webSocketServer.clients) {
         webSocket.close();
       }
