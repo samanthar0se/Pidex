@@ -4,7 +4,7 @@
 
 **Blocked by:** 17 — Steer exact executing Runs; 21 — Force-stop an uncooperative Session tree; 22 — Sleep and wake Sessions at quiescence
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Worker exit or IPC loss completes every pending worker request with a typed failure and affects only the bound Session.
 - [ ] Recovery compares durable Run acceptance, worker checkpoint evidence, and the Pi artifact through the matching pinned worker boundary.

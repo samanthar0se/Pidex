@@ -4,7 +4,7 @@
 
 **Blocked by:** 22 — Sleep and wake Sessions at quiescence
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Plain Archive accepts only a quiescent Session and never silently cancels, drains, or waits for work.
 - [ ] The PWA may offer an explicit Stop-then-Archive flow, but Stop and Archive remain separate commands with separate receipts/outcomes.
