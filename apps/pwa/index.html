@@ -1,16 +1,435 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#11110f"><link rel="manifest" href="/manifest.webmanifest"><title>Pidex</title>
-  <style>
-    :root{color-scheme:light;--ink:#24231f;--muted:#77736a;--line:#e5e1d8;--paper:#fbfaf7;--side:#f1efe9;--accent:#176b55;--danger:#a33b31;font:14px/1.45 ui-sans-serif,system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--paper)}button,input,select,textarea{font:inherit}button{cursor:pointer}.shell{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.sidebar{background:var(--side);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;padding:16px}.brand{font-weight:700;letter-spacing:.08em;margin:0 0 18px}.primary{width:100%;padding:9px;border:1px solid #cbc6ba;border-radius:8px;background:#fff;text-align:left}.search{width:100%;margin:12px 0 8px;padding:8px;border:1px solid var(--line);border-radius:7px;background:#faf9f6}.sidebar-links{display:flex;justify-content:space-between;padding:5px 2px}.sidebar a{color:inherit;text-decoration:none}.sessions{overflow:auto;flex:1}.sessions h2{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 5px}.session-link{display:block;padding:7px;border-radius:7px}.session-link[aria-current=page]{background:#fff}.session-link small{display:block;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.host-card{border-top:1px solid var(--line);padding-top:12px;color:var(--muted);font-size:12px}.host-card strong{color:var(--ink)}.main{min-width:0;overflow:auto}.view{max-width:900px;margin:auto;padding:28px 42px 150px}.view-header{display:flex;align-items:start;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:18px}.view-header h1{font-size:20px;margin:0}.scope,.sync-label{color:var(--muted);font-size:12px}.actions{display:flex;gap:7px;flex-wrap:wrap}.actions button{background:transparent;border:1px solid var(--line);border-radius:7px;padding:6px 9px}.timeline{padding:24px 0}.entry{padding:12px 0;border-bottom:1px solid #eeeae2;white-space:pre-wrap}.entry[data-kind=prompt]{font-weight:600}.entry-meta{color:var(--muted);font-size:11px;text-transform:uppercase}.interaction{position:sticky;bottom:116px;background:#fff8dd;border:1px solid #ead99c;border-radius:9px;padding:12px;z-index:2}.composer{position:fixed;bottom:0;left:280px;right:0;background:linear-gradient(transparent,var(--paper) 25%);padding:28px 42px 18px}.composer-inner{max-width:816px;margin:auto;background:white;border:1px solid #d8d3c8;border-radius:12px;padding:9px;box-shadow:0 4px 18px #0000000d}.composer textarea{width:100%;min-height:60px;resize:vertical;border:0;outline:0}.composer-row{display:flex;gap:8px;justify-content:flex-end;align-items:center}.composer button{border:0;border-radius:7px;padding:7px 13px;background:var(--ink);color:white}.composer #stop-run{background:var(--danger)}dialog{border:1px solid var(--line);border-radius:12px;box-shadow:0 20px 60px #0003;min-width:360px}dialog label{display:block;margin:12px 0}dialog input,dialog select{width:100%;padding:7px}.empty{text-align:center;color:var(--muted);padding-top:20vh}.pending{opacity:.55}.danger{color:var(--danger)}[hidden]{display:none!important}@media(max-width:720px){.shell{grid-template-columns:1fr}.sidebar{display:none}.view{padding:20px 18px 150px}.composer{left:0;padding:28px 18px 12px}}
-  </style>
-</head>
-<body><div class="shell">
-  <aside class="sidebar"><p class="brand" aria-label="Pidex Host">PIDEX</p><button class="primary" id="new-session">＋ New Session</button><input class="search" id="session-search" type="search" placeholder="Search Sessions" aria-label="Search Sessions"><div class="sidebar-links"><a href="/" data-route>Sessions</a><a href="/archived" data-route>Archived</a></div><nav class="sessions" id="sessions" aria-label="Sessions"></nav><div class="host-card"><strong id="connection-state">Connecting</strong><br><span id="device-state">Device authentication</span><br><button id="settings" disabled title="Settings are not available in this release">Settings</button></div></aside>
-  <main class="main"><section id="pairing" hidden class="view"><h1>Pair this Device</h1><p>This Device gains complete Pidex and Host-user authority.</p><button id="pair-device">Pair Device</button></section><section id="content" class="view"><div class="empty"><h1>Pidex</h1><p>Choose a Session or start something new.</p></div></section></main>
-</div>
-<dialog id="new-session-view"><form method="dialog"><h2>New Session</h2><p class="scope">Nothing is created on the Host until you create an empty Session or submit a prompt.</p><label>Project<select id="session-project"><option value="">Host-unscoped</option></select></label><label>Workspace<select id="session-workspace"><option value="">No Workspace</option></select></label><label>First prompt (optional)<textarea id="new-prompt" rows="4"></textarea></label><div class="actions"><button value="cancel" id="cancel-session">Cancel</button><button type="button" id="create-session">Create empty Session</button><button type="button" id="create-and-run">Create & Run</button></div></form></dialog>
-<template id="session-view"><header class="view-header"><div><h1 id="session-title"></h1><div class="scope" id="session-scope"></div></div><div class="actions"><button id="rename-session">Rename</button><button id="fork-session">Fork</button><button id="archive-session">Archive</button></div></header><div id="runtime-controls" class="actions"><select id="run-model" hidden aria-label="Model"></select><select id="run-mode" hidden aria-label="Mode"></select></div><section id="interaction" class="interaction" hidden aria-label="Open Interactions"></section><section id="timeline" class="timeline" aria-label="Session Timeline"></section><button id="older-timeline" hidden>Load older history</button><div class="composer"><div class="composer-inner"><textarea id="run-input" aria-label="Composer" placeholder="Ask Pi…"></textarea><div class="composer-row"><span class="sync-label" id="composer-state"></span><button id="release-run" hidden>Release held</button><button id="cancel-run" hidden>Cancel queued</button><button id="stop-run" hidden>Stop</button><button id="submit-run">Run</button></div></div></div></template>
-<script type="module" src="/app.js"></script></body></html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="theme-color" content="#11110f">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <title>Pidex</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #24231f;
+        --muted: #77736a;
+        --line: #e5e1d8;
+        --paper: #fbfaf7;
+        --side: #f1efe9;
+        --accent: #176b55;
+        --danger: #a33b31;
+        font: 14px/1.45 ui-sans-serif, system-ui, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--paper);
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        height: 100vh;
+      }
+
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        padding: 16px;
+        background: var(--side);
+        border-right: 1px solid var(--line);
+      }
+
+      .brand {
+        margin: 0 0 18px;
+        font-weight: 700;
+        letter-spacing: .08em;
+      }
+
+      .primary {
+        width: 100%;
+        padding: 9px;
+        text-align: left;
+        background: #fff;
+        border: 1px solid #cbc6ba;
+        border-radius: 8px;
+      }
+
+      .search {
+        width: 100%;
+        margin: 12px 0 8px;
+        padding: 8px;
+        background: #faf9f6;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+      }
+
+      .sidebar-links {
+        display: flex;
+        justify-content: space-between;
+        padding: 5px 2px;
+      }
+
+      .sidebar a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .sessions {
+        flex: 1;
+        overflow: auto;
+      }
+
+      .sessions h2 {
+        margin: 18px 6px 5px;
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+      }
+
+      .session-link {
+        display: block;
+        padding: 7px;
+        border-radius: 7px;
+      }
+
+      .session-link[aria-current=page] {
+        background: #fff;
+      }
+
+      .session-link small {
+        display: block;
+        overflow: hidden;
+        color: var(--muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .host-card {
+        padding-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+        border-top: 1px solid var(--line);
+      }
+
+      .host-card strong {
+        color: var(--ink);
+      }
+
+      .main {
+        min-width: 0;
+        overflow: auto;
+      }
+
+      .view {
+        max-width: 900px;
+        margin: auto;
+        padding: 28px 42px 150px;
+      }
+
+      .view-header {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        padding-bottom: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .view-header h1 {
+        margin: 0;
+        font-size: 20px;
+      }
+
+      .scope,
+      .sync-label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .actions button {
+        padding: 6px 9px;
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+      }
+
+      .timeline {
+        padding: 24px 0;
+      }
+
+      .entry {
+        padding: 12px 0;
+        white-space: pre-wrap;
+        border-bottom: 1px solid #eeeae2;
+      }
+
+      .entry[data-kind=prompt] {
+        font-weight: 600;
+      }
+
+      .entry-meta {
+        color: var(--muted);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .interaction {
+        position: sticky;
+        bottom: 116px;
+        z-index: 2;
+        padding: 12px;
+        background: #fff8dd;
+        border: 1px solid #ead99c;
+        border-radius: 9px;
+      }
+
+      .composer {
+        position: fixed;
+        right: 0;
+        bottom: 0;
+        left: 280px;
+        padding: 28px 42px 18px;
+        background: linear-gradient(transparent, var(--paper) 25%);
+      }
+
+      .composer-inner {
+        max-width: 816px;
+        margin: auto;
+        padding: 9px;
+        background: white;
+        border: 1px solid #d8d3c8;
+        border-radius: 12px;
+        box-shadow: 0 4px 18px #0000000d;
+      }
+
+      .composer textarea {
+        width: 100%;
+        min-height: 60px;
+        resize: vertical;
+        border: 0;
+        outline: 0;
+      }
+
+      .composer-row {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .composer button {
+        padding: 7px 13px;
+        color: white;
+        background: var(--ink);
+        border: 0;
+        border-radius: 7px;
+      }
+
+      .composer #stop-run {
+        background: var(--danger);
+      }
+
+      dialog {
+        min-width: 360px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        box-shadow: 0 20px 60px #0003;
+      }
+
+      dialog label {
+        display: block;
+        margin: 12px 0;
+      }
+
+      dialog input,
+      dialog select {
+        width: 100%;
+        padding: 7px;
+      }
+
+      .empty {
+        padding-top: 20vh;
+        color: var(--muted);
+        text-align: center;
+      }
+
+      .pending {
+        opacity: .55;
+      }
+
+      .danger {
+        color: var(--danger);
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      @media (max-width: 720px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          display: none;
+        }
+
+        .view {
+          padding: 20px 18px 150px;
+        }
+
+        .composer {
+          left: 0;
+          padding: 28px 18px 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <p class="brand" aria-label="Pidex Host">PIDEX</p>
+        <button class="primary" id="new-session">＋ New Session</button>
+        <input
+          class="search"
+          id="session-search"
+          type="search"
+          placeholder="Search Sessions"
+          aria-label="Search Sessions"
+        >
+        <div class="sidebar-links">
+          <a href="/" data-route>Sessions</a>
+          <a href="/archived" data-route>Archived</a>
+        </div>
+        <nav class="sessions" id="sessions" aria-label="Sessions"></nav>
+        <div class="host-card">
+          <strong id="connection-state">Connecting</strong><br>
+          <span id="device-state">Device authentication</span><br>
+          <button
+            id="settings"
+            disabled
+            title="Settings are not available in this release"
+          >
+            Settings
+          </button>
+        </div>
+      </aside>
+      <main class="main">
+        <section id="pairing" hidden class="view">
+          <h1>Pair this Device</h1>
+          <p>This Device gains complete Pidex and Host-user authority.</p>
+          <button id="pair-device">Pair Device</button>
+        </section>
+        <section id="content" class="view">
+          <div class="empty">
+            <h1>Pidex</h1>
+            <p>Choose a Session or start something new.</p>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="new-session-view">
+      <form method="dialog">
+        <h2>New Session</h2>
+        <p class="scope">
+          Nothing is created on the Host until you create an empty Session or
+          submit a prompt.
+        </p>
+        <label>
+          Project
+          <select id="session-project">
+            <option value="">Host-unscoped</option>
+          </select>
+        </label>
+        <label>
+          Workspace
+          <select id="session-workspace">
+            <option value="">No Workspace</option>
+          </select>
+        </label>
+        <label>
+          First prompt (optional)
+          <textarea id="new-prompt" rows="4"></textarea>
+        </label>
+        <div class="actions">
+          <button value="cancel" id="cancel-session">Cancel</button>
+          <button type="button" id="create-session">
+            Create empty Session
+          </button>
+          <button type="button" id="create-and-run">Create &amp; Run</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="session-view">
+      <header class="view-header">
+        <div>
+          <h1 id="session-title"></h1>
+          <div class="scope" id="session-scope"></div>
+        </div>
+        <div class="actions">
+          <button id="rename-session">Rename</button>
+          <button id="fork-session">Fork</button>
+          <button id="archive-session">Archive</button>
+        </div>
+      </header>
+      <div id="runtime-controls" class="actions">
+        <select id="run-model" hidden aria-label="Model"></select>
+        <select id="run-mode" hidden aria-label="Mode"></select>
+      </div>
+      <section
+        id="interaction"
+        class="interaction"
+        hidden
+        aria-label="Open Interactions"
+      ></section>
+      <section
+        id="timeline"
+        class="timeline"
+        aria-label="Session Timeline"
+      ></section>
+      <button id="older-timeline" hidden>Load older history</button>
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea
+            id="run-input"
+            aria-label="Composer"
+            placeholder="Ask Pi…"
+          ></textarea>
+          <div class="composer-row">
+            <span class="sync-label" id="composer-state"></span>
+            <button id="release-run" hidden>Release held</button>
+            <button id="cancel-run" hidden>Cancel queued</button>
+            <button id="stop-run" hidden>Stop</button>
+            <button id="submit-run">Run</button>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -1,56 +1,908 @@
 const $ = (selector, root = document) => root.querySelector(selector);
-const state = { projects: [], workspaces: [], sessions: [], archivedSessions: [], capabilities: new Map(), scopes: new Map(), current: false, pending: new Set(), apiToken: null };
-let socket;
-const supported = ["scope.host","scope.session","session.create","session.rename","session.archive","session.restore","session.fork","run.submit","run.follow-up","run.steer","run.release","run.cancel","run.stop","pi.model.select","pi.mode.select","pi.input.text","presentation.effects","pi.interaction.basic"];
-const pairingSecret = new URL(location.href).searchParams.get("pair");
 
-function send(command) { if (!state.current || !socket || socket.readyState !== WebSocket.OPEN) return false; command.commandId ??= crypto.randomUUID(); state.pending.add(command.commandId); socket.send(JSON.stringify(command)); renderCurrentView(); return true; }
-function navigate(path) { history.pushState({}, "", path); route(); }
-document.addEventListener("click", event => { const link = event.target.closest("[data-route]"); if (link) { event.preventDefault(); navigate(link.pathname); } });
+const EXPECTED_HOST_ID_KEY = "pidex.expectedHostId";
+const OFFLINE_STATUS = "Offline · cached state may be stale";
+const ACTIVE_INTERACTION_STATES = ["open", "resolving"];
+const ACTIVE_RUN_STATES = ["executing", "cancelling"];
+const FAILED_RUN_STATES = ["failed", "cancelled", "interrupted"];
+const supportedCapabilities = [
+  "scope.host",
+  "scope.session",
+  "session.create",
+  "session.rename",
+  "session.archive",
+  "session.restore",
+  "session.fork",
+  "run.submit",
+  "run.follow-up",
+  "run.steer",
+  "run.release",
+  "run.cancel",
+  "run.stop",
+  "pi.model.select",
+  "pi.mode.select",
+  "pi.input.text",
+  "presentation.effects",
+  "pi.interaction.basic",
+];
+const state = {
+  projects: [],
+  workspaces: [],
+  sessions: [],
+  archivedSessions: [],
+  capabilities: new Map(),
+  scopes: new Map(),
+  current: false,
+  pending: new Set(),
+  apiToken: null,
+};
+
+const pairingSecret = new URL(location.href).searchParams.get("pair");
+let socket;
+
+function send(command) {
+  if (
+    !state.current ||
+    !socket ||
+    socket.readyState !== WebSocket.OPEN
+  ) {
+    return false;
+  }
+
+  command.commandId ??= crypto.randomUUID();
+  state.pending.add(command.commandId);
+  socket.send(JSON.stringify(command));
+  renderCurrentView();
+  return true;
+}
+
+function navigate(path) {
+  history.pushState({}, "", path);
+  route();
+}
+
+document.addEventListener("click", event => {
+  const link = event.target.closest("[data-route]");
+  if (!link) {
+    return;
+  }
+
+  event.preventDefault();
+  navigate(link.pathname);
+});
 addEventListener("popstate", route);
-addEventListener("offline", () => setCurrent(false, "Offline · cached state may be stale"));
-addEventListener("online", () => { setCurrent(false, "Reconnecting"); authenticateStoredDevice(); });
-addEventListener("visibilitychange", () => { if (document.hidden) setCurrent(false, "Stale · return to reconcile"); else if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type:"scope.set", sessionIds: currentSessionId() ? [currentSessionId()] : [], protocolVersion:"1.1" })); });
+addEventListener("offline", () => setCurrent(false, OFFLINE_STATUS));
+addEventListener("online", () => {
+  setCurrent(false, "Reconnecting");
+  authenticateStoredDevice();
+});
+addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    setCurrent(false, "Stale · return to reconcile");
+    return;
+  }
+
+  if (socket?.readyState === WebSocket.OPEN) {
+    const selectedSessionId = currentSessionId();
+    socket.send(JSON.stringify({
+      type: "scope.set",
+      sessionIds: selectedSessionId ? [selectedSessionId] : [],
+      protocolVersion: "1.1",
+    }));
+  }
+});
 
 $("#new-session").onclick = () => $("#new-session-view").showModal();
 $("#session-search").oninput = renderSidebar;
 $("#session-project").onchange = renderWorkspaceOptions;
 $("#create-session").onclick = () => createSession("");
-$("#create-and-run").onclick = () => createSession($("#new-prompt").value.trim());
+$("#create-and-run").onclick = () => {
+  createSession($("#new-prompt").value.trim());
+};
 
-if (pairingSecret) { history.replaceState({}, "", location.pathname); $("#pairing").hidden = false; $("#content").hidden = true; $("#pair-device").onclick = pairDevice; } else authenticateStoredDevice();
-
-async function pairDevice() { const keys = await crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},false,["sign","verify"]); const publicKey = await crypto.subtle.exportKey("jwk",keys.publicKey); const challenge = await post("/pair/challenge",{secret:pairingSecret,publicKey}); const signature = await sign(keys.privateKey,challenge.challenge); const device = await post("/pair/complete",{pairingId:challenge.pairingId,signature:b64(signature)}); await saveDevice({deviceId:device.deviceId,privateKey:keys.privateKey}); location.href="/"; }
-async function authenticateStoredDevice() { const device = await loadDevice(); if (!device) { setCurrent(false,"Pairing required"); return; } try { const challenge=await post("/pair/auth-challenge",{deviceId:device.deviceId}); const signature=await sign(device.privateKey,challenge.challenge); const auth=await post("/pair/authenticate",{authenticationId:challenge.authenticationId,signature:b64(signature)}); state.apiToken=auth.session; openControl(auth.session); } catch { setCurrent(false,"Offline · cached state may be stale"); } }
-function openControl(token) { socket?.close(); socket=new WebSocket(`wss://${location.host}/control?session=${encodeURIComponent(token)}`); socket.onmessage=event=>handle(JSON.parse(event.data)); socket.onclose=()=>setCurrent(false,"Offline · cached state may be stale"); }
-function handle(message) {
-  if(message.type==="host.hello") return socket.send(JSON.stringify({type:"client.hello",expectedHostId:localStorage.getItem("pidex.expectedHostId")||message.hostId,protocols:[{major:1,minor:1}],capabilities:supported.map(id=>({id,minVersion:1,maxVersion:1}))}));
-  if(message.type==="protocol.admitted") { state.capabilities=new Map(message.capabilities.map(c=>[c.id,c])); return; }
-  if(message.type==="host.snapshot") { Object.assign(state,{projects:message.projects,workspaces:message.workspaces,sessions:message.sessions,archivedSessions:message.archivedSessions}); localStorage.setItem("pidex.expectedHostId",message.status.hostId); $("#device-state").textContent=`Device · ${message.status.hostId}`; setCurrent(true,"Current"); renderCatalogControls(); route(); return; }
-  if(message.type==="host.change-set") { for(const c of message.changes) applyChange(c); renderSidebar(); renderCurrentView(); return; }
-  if(message.type==="scope.reset" && message.barrier.scope.kind==="session") { state.scopes.set(message.barrier.scope.sessionId,{...message.snapshot,timeline:[...(message.snapshot.timelineWindow?.entries||message.snapshot.timeline||[])],olderCursor:message.snapshot.timelineWindow?.olderCursor||null}); setCurrent(true,"Current"); renderCurrentView(); return; }
-  if(message.type==="scope.current") { setCurrent(true,"Current"); return; }
-  if(message.type==="timeline.change") { const scope=state.scopes.get(message.sessionId); if(scope){ const i=scope.timeline.findIndex(e=>e.entryId===message.entry.entryId); i<0?scope.timeline.push(message.entry):scope.timeline.splice(i,1,message.entry); renderCurrentView(); } return; }
-  if(message.type==="interaction.change") { const scope=state.scopes.get(message.interaction.sessionId); if(scope){ const i=(scope.interactions||=[]).findIndex(x=>x.interactionId===message.interaction.interactionId); i<0?scope.interactions.push(message.interaction):scope.interactions.splice(i,1,message.interaction); renderCurrentView(); } return; }
-  if(message.type==="run.execution"||message.type==="run.completed") { const id=message.sessionId||message.run.sessionId; const scope=state.scopes.get(id); if(scope){ const run=message.run||{...message,runId:message.runId}; const i=(scope.runs||=[]).findIndex(x=>x.runId===run.runId); i<0?scope.runs.push(run):scope.runs.splice(i,1,run); renderSidebar(); renderCurrentView(); } return; }
-  if(message.type==="command.outcome") { state.pending.delete(message.commandId); if(message.outcome==="rejected") announce(`Command rejected: ${message.error}`); renderCurrentView(); }
-  if(message.type==="protocol.update-required"||message.type==="delivery.resynchronize") setCurrent(false,message.type==="protocol.update-required"?"Update required":"Resynchronizing");
+if (pairingSecret) {
+  history.replaceState({}, "", location.pathname);
+  $("#pairing").hidden = false;
+  $("#content").hidden = true;
+  $("#pair-device").onclick = pairDevice;
+} else {
+  authenticateStoredDevice();
 }
-function applyChange(c){ state.sessions=state.sessions.filter(s=>s.sessionId!==c.session.sessionId);state.archivedSessions=state.archivedSessions.filter(s=>s.sessionId!==c.session.sessionId);if(c.type==="session.archived")state.archivedSessions.push(c.session);else state.sessions.push(c.session); }
-function setCurrent(value,label){state.current=value;$("#connection-state").textContent=label;document.body.classList.toggle("stale",!value);renderCurrentView();}
-function renderCatalogControls(){ $("#session-project").replaceChildren(new Option("Host-unscoped",""),...state.projects.map(p=>new Option(p.name,p.projectId))); renderWorkspaceOptions(); }
-function renderWorkspaceOptions(){const id=$("#session-project").value;$("#session-workspace").replaceChildren(new Option("No Workspace",""),...state.workspaces.filter(w=>w.projectId===id).map(w=>new Option(w.name,w.workspaceId)));}
-function createSession(prompt){ const id=crypto.randomUUID(); const command={type:"session.create",commandId:id,projectId:$("#session-project").value||null,workspaceId:$("#session-workspace").value||null}; if(send(command)){ $("#new-session-view").close(); $("#new-prompt").value=""; if(prompt){ const wait=setInterval(()=>{const created=state.sessions.at(-1);if(created){clearInterval(wait);navigate(`/sessions/${created.sessionId}`);send({type:"run.submit",sessionId:created.sessionId,prompt,requiredCapability:"run.submit"});}},50); setTimeout(()=>clearInterval(wait),5000); } } }
-function route(){renderSidebar(); const id=currentSessionId(); if(id&&socket?.readyState===WebSocket.OPEN){state.current=false;$("#connection-state").textContent="Reconciling Session";socket.send(JSON.stringify({type:"scope.set",sessionIds:[id],protocolVersion:"1.1"}));} renderCurrentView();}
-function renderSidebar(){const archived=location.pathname==="/archived";const query=$("#session-search").value.toLowerCase();const sessions=(archived?state.archivedSessions:state.sessions).filter(s=>`${s.name} ${groupName(s)}`.toLowerCase().includes(query));const groups=new Map();for(const s of sessions.sort((a,b)=>b.timelineRevision-a.timelineRevision)){const key=groupName(s);groups.set(key,[...(groups.get(key)||[]),s]);}$("#sessions").replaceChildren(...[...groups].flatMap(([name,list])=>{const h=document.createElement("h2");h.textContent=name;return[h,...list.map(sessionLink)];}));}
-function sessionLink(s){const a=document.createElement("a");a.href=`/sessions/${s.sessionId}`;a.dataset.route="";a.className="session-link";a.setAttribute("aria-current",currentSessionId()===s.sessionId?"page":"false");const cue=sessionCue(s);a.append(document.createTextNode(s.name));const small=document.createElement("small");small.textContent=cue;a.append(small);return a;}
-function sessionCue(s){const scope=state.scopes.get(s.sessionId);const runs=scope?.runs||[];const interactions=(scope?.interactions||[]).filter(i=>["open","resolving"].includes(i.state));if(runs.some(r=>["executing","cancelling"].includes(r.state)))return "● Run executing";if(interactions.length)return `◆ ${interactions.length} open Interaction${interactions.length>1?"s":""}`;if(runs.some(r=>r.state==="held"))return "Held work";if(runs.some(r=>r.state==="queued"))return "Queued work";const last=[...runs].reverse().find(r=>["failed","cancelled","interrupted"].includes(r.state));if(last)return `Last Run ${last.state}`;return s.residency==="sleeping"?"Sleeping":"Resident";}
-function renderCurrentView(){const content=$("#content");if(location.pathname==="/archived"){content.innerHTML=`<header class="view-header"><div><h1>Archived Sessions</h1><div class="scope">Readable, restorable Fork parents</div></div></header>`;for(const s of state.archivedSessions){const b=document.createElement("button");b.textContent=`Restore ${s.name}`;b.disabled=!can("session.restore");b.onclick=()=>send({type:"session.restore",sessionId:s.sessionId,observedMetadataRevision:s.metadataRevision});content.append(b);}return;}const id=currentSessionId(),session=state.sessions.find(s=>s.sessionId===id)||state.archivedSessions.find(s=>s.sessionId===id);if(!session){content.innerHTML='<div class="empty"><h1>Pidex</h1><p>Choose a Session or start something new.</p></div>';return;}content.replaceChildren($("#session-view").content.cloneNode(true));$("#session-title").textContent=session.name;$("#session-scope").textContent=`${groupName(session)} · ${session.sessionId}`;wireSession(session);}
-function wireSession(session){const scope=state.scopes.get(session.sessionId);const timeline=$("#timeline");if(!scope)timeline.textContent="Loading complete Timeline…";else timeline.replaceChildren(...scope.timeline.map(entryNode));const older=$("#older-timeline");older.hidden=!scope?.olderCursor;older.onclick=()=>loadOlder(session.sessionId,scope);const open=(scope?.interactions||[]).filter(i=>["open","resolving"].includes(i.state));renderInteractions(open);const runs=scope?.runs||[];const executing=runs.find(r=>["executing","cancelling"].includes(r.state));const queued=runs.find(r=>r.state==="queued");const held=runs.find(r=>r.state==="held");const input=$("#run-input");input.disabled=!state.current;$("#composer-state").textContent=state.current?sessionCue(session):$("#connection-state").textContent;$("#submit-run").disabled=!can(executing?"run.follow-up":"run.submit");$("#submit-run").textContent=executing?"Queue follow-up":"Run";$("#submit-run").onclick=()=>{if(input.value.trim()&&send({type:executing?"run.follow-up":"run.submit",sessionId:session.sessionId,prompt:input.value,requiredCapability:executing?"run.follow-up":"run.submit"}))input.value="";};const stop=$("#stop-run");stop.hidden=!executing?.workerGeneration||!can("run.stop");stop.onclick=()=>send({type:"run.stop",sessionId:session.sessionId,runId:executing.runId,workerGeneration:executing.workerGeneration,observedState:"executing",observedTimelineRevision:session.timelineRevision,requiredCapability:"run.stop"});queueButton("#release-run",held,"run.release");queueButton("#cancel-run",held||queued,"run.cancel");$("#rename-session").hidden=!can("session.rename");$("#rename-session").onclick=()=>{const name=prompt("Session name",session.name);if(name?.trim())send({type:"session.rename",sessionId:session.sessionId,name:name.trim(),requiredCapability:"session.rename",observedMetadataRevision:session.metadataRevision});};$("#archive-session").hidden=session.availability==="archived"||!can("session.archive");$("#archive-session").onclick=()=>send({type:"session.archive",sessionId:session.sessionId,observedMetadataRevision:session.metadataRevision});$("#fork-session").hidden=!can("session.fork");$("#fork-session").onclick=()=>{const point=[...(scope?.timeline||[])].reverse().find(e=>e.finalized);if(point)send({type:"session.fork",parentSessionId:session.sessionId,forkPointEntryId:point.entryId});else announce("No stable Fork point is available");};for(const [id,el] of [["pi.model.select",$("#run-model")],["pi.mode.select",$("#run-mode")]]){const cap=state.capabilities.get(id);el.hidden=!cap;if(cap)el.replaceChildren(...(cap.constraints?.values||[]).map(v=>new Option(v,v)));}}
-function queueButton(selector,run,type){const b=$(selector);b.hidden=!run||!can(type);b.onclick=()=>send({type,runId:run.runId});}
-function renderInteractions(items){const area=$("#interaction");area.hidden=!items.length;if(!items.length)return;let index=0;const draw=()=>{const i=items[index];area.replaceChildren();const title=document.createElement("strong");title.textContent=`Interaction ${index+1} of ${items.length}`;const p=document.createElement("p");p.textContent=i.payload.message;const control=i.kind==="select"?document.createElement("select"):i.kind==="confirm"?document.createElement("input"):document.createElement("textarea");if(i.kind==="select")control.replaceChildren(...i.payload.options.map(v=>new Option(v,v)));if(i.kind==="confirm")control.type="checkbox";const respond=document.createElement("button");respond.textContent="Respond";respond.onclick=()=>send({type:"interaction.resolve",interactionId:i.interactionId,workerGeneration:i.workerGeneration,observedRevision:i.revision,dismiss:false,value:i.kind==="confirm"?control.checked:control.value});const dismiss=document.createElement("button");dismiss.textContent="Dismiss";dismiss.onclick=()=>send({type:"interaction.resolve",interactionId:i.interactionId,workerGeneration:i.workerGeneration,observedRevision:i.revision,dismiss:true});const next=document.createElement("button");next.textContent="Next";next.disabled=items.length<2;next.onclick=()=>{index=(index+1)%items.length;draw();};area.append(title,p,control,respond,dismiss,next);};draw();}
-function entryNode(e){const div=document.createElement("article");div.className="entry";div.dataset.kind=e.kind;const meta=document.createElement("div");meta.className="entry-meta";meta.textContent=`${e.kind}${e.finalized?"":" · streaming"}`;const text=document.createElement("div");text.textContent=e.text;div.append(meta,text);return div;}
-async function loadOlder(id,scope){const response=await fetch(`/api/sessions/${encodeURIComponent(id)}/timeline?cursor=${encodeURIComponent(scope.olderCursor)}&limit=100`,{headers:{authorization:`Bearer ${state.apiToken}`}});if(response.ok){const page=await response.json();scope.timeline=[...page.entries,...scope.timeline];scope.olderCursor=page.olderCursor;renderCurrentView();}}
-function can(id){return state.current&&state.capabilities.has(id)&&!state.pending.size;}function currentSessionId(){return location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];}function groupName(s){const p=state.projects.find(x=>x.projectId===s.projectId),w=state.workspaces.find(x=>x.workspaceId===s.workspaceId);return w?`${p?.name} / ${w.name}`:p?`${p.name} / Project Sessions`:"Host-unscoped";}function announce(text){$("#composer-state")?$("#composer-state").textContent=text:alert(text);}
-async function post(path,body){const r=await fetch(path,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body),credentials:"omit"});const value=await r.json();if(!r.ok)throw Error(value.error);return value;}function sign(key,text){return crypto.subtle.sign({name:"ECDSA",hash:"SHA-256"},key,new TextEncoder().encode(text));}function b64(bytes){return btoa(String.fromCharCode(...new Uint8Array(bytes))).replaceAll("+","-").replaceAll("/","_").replace(/=+$/,"");}
-function store(mode){return new Promise((resolve,reject)=>{const r=indexedDB.open("pidex-device",1);r.onupgradeneeded=()=>r.result.createObjectStore("identity");r.onerror=()=>reject(r.error);r.onsuccess=()=>resolve(r.result.transaction("identity",mode).objectStore("identity"));});}async function saveDevice(value){const s=await store("readwrite");await new Promise((resolve,reject)=>{const r=s.put(value,"device");r.onsuccess=resolve;r.onerror=()=>reject(r.error);});}async function loadDevice(){const s=await store("readonly");return new Promise((resolve,reject)=>{const r=s.get("device");r.onsuccess=()=>resolve(r.result);r.onerror=()=>reject(r.error);});}
+
+async function pairDevice() {
+  const keys = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign", "verify"],
+  );
+  const publicKey = await crypto.subtle.exportKey("jwk", keys.publicKey);
+  const challenge = await post("/pair/challenge", {
+    secret: pairingSecret,
+    publicKey,
+  });
+  const signature = await sign(keys.privateKey, challenge.challenge);
+  const device = await post("/pair/complete", {
+    pairingId: challenge.pairingId,
+    signature: bytesToBase64Url(signature),
+  });
+
+  await saveDevice({
+    deviceId: device.deviceId,
+    privateKey: keys.privateKey,
+  });
+  location.href = "/";
+}
+
+async function authenticateStoredDevice() {
+  const device = await loadDevice();
+  if (!device) {
+    setCurrent(false, "Pairing required");
+    return;
+  }
+
+  try {
+    const challenge = await post("/pair/auth-challenge", {
+      deviceId: device.deviceId,
+    });
+    const signature = await sign(
+      device.privateKey,
+      challenge.challenge,
+    );
+    const authentication = await post("/pair/authenticate", {
+      authenticationId: challenge.authenticationId,
+      signature: bytesToBase64Url(signature),
+    });
+
+    state.apiToken = authentication.session;
+    openControl(authentication.session);
+  } catch {
+    setCurrent(false, OFFLINE_STATUS);
+  }
+}
+
+function openControl(token) {
+  socket?.close();
+  socket = new WebSocket(
+    `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
+  );
+  socket.onmessage = event => handleMessage(JSON.parse(event.data));
+  socket.onclose = () => setCurrent(false, OFFLINE_STATUS);
+}
+
+function handleMessage(message) {
+  switch (message.type) {
+    case "host.hello":
+      sendClientHello(message.hostId);
+      return;
+    case "protocol.admitted":
+      state.capabilities = new Map(
+        message.capabilities.map(capability => [capability.id, capability]),
+      );
+      return;
+    case "host.snapshot":
+      handleHostSnapshot(message);
+      return;
+    case "host.change-set":
+      for (const change of message.changes) {
+        applyHostChange(change);
+      }
+      renderSidebar();
+      renderCurrentView();
+      return;
+    case "scope.reset":
+      if (message.barrier.scope.kind === "session") {
+        resetSessionScope(message);
+      }
+      return;
+    case "scope.current":
+      setCurrent(true, "Current");
+      return;
+    case "timeline.change":
+      applyTimelineChange(message);
+      return;
+    case "interaction.change":
+      applyInteractionChange(message.interaction);
+      return;
+    case "run.execution":
+    case "run.completed":
+      applyRunChange(message);
+      return;
+    case "command.outcome":
+      handleCommandOutcome(message);
+      return;
+    case "protocol.update-required":
+      setCurrent(false, "Update required");
+      return;
+    case "delivery.resynchronize":
+      setCurrent(false, "Resynchronizing");
+      return;
+  }
+}
+
+function sendClientHello(hostId) {
+  const expectedHostId = localStorage.getItem(EXPECTED_HOST_ID_KEY) || hostId;
+  socket.send(JSON.stringify({
+    type: "client.hello",
+    expectedHostId,
+    protocols: [{ major: 1, minor: 1 }],
+    capabilities: supportedCapabilities.map(id => ({
+      id,
+      minVersion: 1,
+      maxVersion: 1,
+    })),
+  }));
+}
+
+function handleHostSnapshot(message) {
+  Object.assign(state, {
+    projects: message.projects,
+    workspaces: message.workspaces,
+    sessions: message.sessions,
+    archivedSessions: message.archivedSessions,
+  });
+  localStorage.setItem(EXPECTED_HOST_ID_KEY, message.status.hostId);
+  $("#device-state").textContent = `Device · ${message.status.hostId}`;
+  setCurrent(true, "Current");
+  renderCatalogControls();
+  route();
+}
+
+function resetSessionScope(message) {
+  const { scope } = message.barrier;
+  const { snapshot } = message;
+  const timeline = [
+    ...(snapshot.timelineWindow?.entries || snapshot.timeline || []),
+  ];
+
+  state.scopes.set(scope.sessionId, {
+    ...snapshot,
+    timeline,
+    olderCursor: snapshot.timelineWindow?.olderCursor || null,
+  });
+  setCurrent(true, "Current");
+  renderCurrentView();
+}
+
+function applyTimelineChange(message) {
+  const scope = state.scopes.get(message.sessionId);
+  if (!scope) {
+    return;
+  }
+
+  replaceOrAppend(scope.timeline, message.entry, "entryId");
+  renderCurrentView();
+}
+
+function applyInteractionChange(interaction) {
+  const scope = state.scopes.get(interaction.sessionId);
+  if (!scope) {
+    return;
+  }
+
+  scope.interactions ||= [];
+  replaceOrAppend(scope.interactions, interaction, "interactionId");
+  renderCurrentView();
+}
+
+function applyRunChange(message) {
+  const sessionId = message.sessionId || message.run.sessionId;
+  const scope = state.scopes.get(sessionId);
+  if (!scope) {
+    return;
+  }
+
+  const run = message.run || { ...message, runId: message.runId };
+  scope.runs ||= [];
+  replaceOrAppend(scope.runs, run, "runId");
+  renderSidebar();
+  renderCurrentView();
+}
+
+function replaceOrAppend(items, replacement, identityProperty) {
+  const replacementIndex = items.findIndex(
+    item => item[identityProperty] === replacement[identityProperty],
+  );
+  if (replacementIndex < 0) {
+    items.push(replacement);
+  } else {
+    items.splice(replacementIndex, 1, replacement);
+  }
+}
+
+function handleCommandOutcome(message) {
+  state.pending.delete(message.commandId);
+  if (message.outcome === "rejected") {
+    announce(`Command rejected: ${message.error}`);
+  }
+  renderCurrentView();
+}
+
+function applyHostChange(change) {
+  const changedSessionId = change.session.sessionId;
+  state.sessions = state.sessions.filter(
+    session => session.sessionId !== changedSessionId,
+  );
+  state.archivedSessions = state.archivedSessions.filter(
+    session => session.sessionId !== changedSessionId,
+  );
+
+  if (change.type === "session.archived") {
+    state.archivedSessions.push(change.session);
+  } else {
+    state.sessions.push(change.session);
+  }
+}
+
+function setCurrent(current, label) {
+  state.current = current;
+  $("#connection-state").textContent = label;
+  document.body.classList.toggle("stale", !current);
+  renderCurrentView();
+}
+
+function renderCatalogControls() {
+  const projectOptions = state.projects.map(
+    project => new Option(project.name, project.projectId),
+  );
+  $("#session-project").replaceChildren(
+    new Option("Host-unscoped", ""),
+    ...projectOptions,
+  );
+  renderWorkspaceOptions();
+}
+
+function renderWorkspaceOptions() {
+  const selectedProjectId = $("#session-project").value;
+  const workspaceOptions = state.workspaces
+    .filter(workspace => workspace.projectId === selectedProjectId)
+    .map(workspace => new Option(workspace.name, workspace.workspaceId));
+
+  $("#session-workspace").replaceChildren(
+    new Option("No Workspace", ""),
+    ...workspaceOptions,
+  );
+}
+
+function createSession(firstPrompt) {
+  const commandId = crypto.randomUUID();
+  const command = {
+    type: "session.create",
+    commandId,
+    projectId: $("#session-project").value || null,
+    workspaceId: $("#session-workspace").value || null,
+  };
+  if (!send(command)) {
+    return;
+  }
+
+  $("#new-session-view").close();
+  $("#new-prompt").value = "";
+  if (!firstPrompt) {
+    return;
+  }
+
+  const waitForSession = setInterval(() => {
+    const createdSession = state.sessions.at(-1);
+    if (!createdSession) {
+      return;
+    }
+
+    clearInterval(waitForSession);
+    navigate(`/sessions/${createdSession.sessionId}`);
+    send({
+      type: "run.submit",
+      sessionId: createdSession.sessionId,
+      prompt: firstPrompt,
+      requiredCapability: "run.submit",
+    });
+  }, 50);
+  setTimeout(() => clearInterval(waitForSession), 5_000);
+}
+
+function route() {
+  renderSidebar();
+  const selectedSessionId = currentSessionId();
+  if (selectedSessionId && socket?.readyState === WebSocket.OPEN) {
+    state.current = false;
+    $("#connection-state").textContent = "Reconciling Session";
+    socket.send(JSON.stringify({
+      type: "scope.set",
+      sessionIds: [selectedSessionId],
+      protocolVersion: "1.1",
+    }));
+  }
+  renderCurrentView();
+}
+
+function renderSidebar() {
+  const showArchivedSessions = location.pathname === "/archived";
+  const query = $("#session-search").value.toLowerCase();
+  const catalog = showArchivedSessions
+    ? state.archivedSessions
+    : state.sessions;
+  const matchingSessions = catalog.filter(session => {
+    const searchableText = `${session.name} ${sessionGroupName(session)}`;
+    return searchableText.toLowerCase().includes(query);
+  });
+  matchingSessions.sort(
+    (left, right) => right.timelineRevision - left.timelineRevision,
+  );
+
+  const groups = new Map();
+  for (const session of matchingSessions) {
+    const groupName = sessionGroupName(session);
+    const sessions = groups.get(groupName) || [];
+    sessions.push(session);
+    groups.set(groupName, sessions);
+  }
+
+  const groupElements = [...groups].flatMap(([name, sessions]) => {
+    const heading = document.createElement("h2");
+    heading.textContent = name;
+    return [heading, ...sessions.map(createSessionLink)];
+  });
+  $("#sessions").replaceChildren(...groupElements);
+}
+
+function createSessionLink(session) {
+  const link = document.createElement("a");
+  link.href = `/sessions/${session.sessionId}`;
+  link.dataset.route = "";
+  link.className = "session-link";
+  link.setAttribute(
+    "aria-current",
+    currentSessionId() === session.sessionId ? "page" : "false",
+  );
+  link.append(document.createTextNode(session.name));
+
+  const cue = document.createElement("small");
+  cue.textContent = sessionCue(session);
+  link.append(cue);
+  return link;
+}
+
+function sessionCue(session) {
+  const scope = state.scopes.get(session.sessionId);
+  const runs = scope?.runs || [];
+  const interactions = (scope?.interactions || []).filter(interaction =>
+    ACTIVE_INTERACTION_STATES.includes(interaction.state)
+  );
+
+  if (runs.some(run => ACTIVE_RUN_STATES.includes(run.state))) {
+    return "● Run executing";
+  }
+  if (interactions.length) {
+    const plural = interactions.length > 1 ? "s" : "";
+    return `◆ ${interactions.length} open Interaction${plural}`;
+  }
+  if (runs.some(run => run.state === "held")) {
+    return "Held work";
+  }
+  if (runs.some(run => run.state === "queued")) {
+    return "Queued work";
+  }
+
+  const lastFailedRun = [...runs]
+    .reverse()
+    .find(run => FAILED_RUN_STATES.includes(run.state));
+  if (lastFailedRun) {
+    return `Last Run ${lastFailedRun.state}`;
+  }
+  if (session.residency === "sleeping") {
+    return "Sleeping";
+  }
+  return "Resident";
+}
+
+function renderCurrentView() {
+  if (location.pathname === "/archived") {
+    renderArchivedSessions();
+    return;
+  }
+
+  const selectedSessionId = currentSessionId();
+  const session = state.sessions.find(
+    item => item.sessionId === selectedSessionId,
+  ) || state.archivedSessions.find(
+    item => item.sessionId === selectedSessionId,
+  );
+  if (!session) {
+    $("#content").innerHTML =
+      '<div class="empty"><h1>Pidex</h1>' +
+      "<p>Choose a Session or start something new.</p></div>";
+    return;
+  }
+
+  const sessionView = $("#session-view").content.cloneNode(true);
+  $("#content").replaceChildren(sessionView);
+  $("#session-title").textContent = session.name;
+  $("#session-scope").textContent =
+    `${sessionGroupName(session)} · ${session.sessionId}`;
+  wireSessionView(session);
+}
+
+function renderArchivedSessions() {
+  const content = $("#content");
+  content.innerHTML =
+    '<header class="view-header"><div><h1>Archived Sessions</h1>' +
+    '<div class="scope">Readable, restorable Fork parents</div>' +
+    "</div></header>";
+
+  for (const session of state.archivedSessions) {
+    const restoreButton = document.createElement("button");
+    restoreButton.textContent = `Restore ${session.name}`;
+    restoreButton.disabled = !can("session.restore");
+    restoreButton.onclick = () => send({
+      type: "session.restore",
+      sessionId: session.sessionId,
+      observedMetadataRevision: session.metadataRevision,
+    });
+    content.append(restoreButton);
+  }
+}
+
+function wireSessionView(session) {
+  const scope = state.scopes.get(session.sessionId);
+  renderTimeline(scope);
+
+  const olderTimelineButton = $("#older-timeline");
+  olderTimelineButton.hidden = !scope?.olderCursor;
+  olderTimelineButton.onclick = () => loadOlder(session.sessionId, scope);
+
+  const openInteractions = (scope?.interactions || []).filter(interaction =>
+    ACTIVE_INTERACTION_STATES.includes(interaction.state)
+  );
+  renderInteractions(openInteractions);
+
+  const runs = scope?.runs || [];
+  const executingRun = runs.find(run => ACTIVE_RUN_STATES.includes(run.state));
+  const queuedRun = runs.find(run => run.state === "queued");
+  const heldRun = runs.find(run => run.state === "held");
+
+  wireComposer(session, executingRun);
+  wireRunControls(session, executingRun, queuedRun, heldRun);
+  wireSessionControls(session, scope);
+  renderRuntimeControls();
+}
+
+function renderTimeline(scope) {
+  const timeline = $("#timeline");
+  if (!scope) {
+    timeline.textContent = "Loading complete Timeline…";
+    return;
+  }
+  timeline.replaceChildren(...scope.timeline.map(createTimelineEntry));
+}
+
+function wireComposer(session, executingRun) {
+  const input = $("#run-input");
+  input.disabled = !state.current;
+  $("#composer-state").textContent = state.current
+    ? sessionCue(session)
+    : $("#connection-state").textContent;
+
+  const commandType = executingRun ? "run.follow-up" : "run.submit";
+  const submitButton = $("#submit-run");
+  submitButton.disabled = !can(commandType);
+  submitButton.textContent = executingRun ? "Queue follow-up" : "Run";
+  submitButton.onclick = () => {
+    if (!input.value.trim()) {
+      return;
+    }
+
+    const sent = send({
+      type: commandType,
+      sessionId: session.sessionId,
+      prompt: input.value,
+      requiredCapability: commandType,
+    });
+    if (sent) {
+      input.value = "";
+    }
+  };
+}
+
+function wireRunControls(session, executingRun, queuedRun, heldRun) {
+  const stopButton = $("#stop-run");
+  stopButton.hidden = !executingRun?.workerGeneration || !can("run.stop");
+  stopButton.onclick = () => send({
+    type: "run.stop",
+    sessionId: session.sessionId,
+    runId: executingRun.runId,
+    workerGeneration: executingRun.workerGeneration,
+    observedState: "executing",
+    observedTimelineRevision: session.timelineRevision,
+    requiredCapability: "run.stop",
+  });
+
+  wireQueuedRunButton("#release-run", heldRun, "run.release");
+  wireQueuedRunButton("#cancel-run", heldRun || queuedRun, "run.cancel");
+}
+
+function wireQueuedRunButton(selector, run, commandType) {
+  const button = $(selector);
+  button.hidden = !run || !can(commandType);
+  button.onclick = () => send({ type: commandType, runId: run.runId });
+}
+
+function wireSessionControls(session, scope) {
+  const renameButton = $("#rename-session");
+  renameButton.hidden = !can("session.rename");
+  renameButton.onclick = () => {
+    const proposedName = prompt("Session name", session.name);
+    if (proposedName?.trim()) {
+      send({
+        type: "session.rename",
+        sessionId: session.sessionId,
+        name: proposedName.trim(),
+        requiredCapability: "session.rename",
+        observedMetadataRevision: session.metadataRevision,
+      });
+    }
+  };
+
+  const archiveButton = $("#archive-session");
+  archiveButton.hidden =
+    session.availability === "archived" || !can("session.archive");
+  archiveButton.onclick = () => send({
+    type: "session.archive",
+    sessionId: session.sessionId,
+    observedMetadataRevision: session.metadataRevision,
+  });
+
+  const forkButton = $("#fork-session");
+  forkButton.hidden = !can("session.fork");
+  forkButton.onclick = () => {
+    const forkPoint = [...(scope?.timeline || [])]
+      .reverse()
+      .find(entry => entry.finalized);
+    if (!forkPoint) {
+      announce("No stable Fork point is available");
+      return;
+    }
+
+    send({
+      type: "session.fork",
+      parentSessionId: session.sessionId,
+      forkPointEntryId: forkPoint.entryId,
+    });
+  };
+}
+
+function renderRuntimeControls() {
+  const controls = [
+    ["pi.model.select", $("#run-model")],
+    ["pi.mode.select", $("#run-mode")],
+  ];
+  for (const [capabilityId, select] of controls) {
+    const capability = state.capabilities.get(capabilityId);
+    select.hidden = !capability;
+    if (capability) {
+      const options = (capability.constraints?.values || []).map(
+        value => new Option(value, value),
+      );
+      select.replaceChildren(...options);
+    }
+  }
+}
+
+function renderInteractions(interactions) {
+  const area = $("#interaction");
+  area.hidden = !interactions.length;
+  if (!interactions.length) {
+    return;
+  }
+
+  let selectedIndex = 0;
+  const drawSelectedInteraction = () => {
+    const interaction = interactions[selectedIndex];
+    area.replaceChildren();
+
+    const title = document.createElement("strong");
+    title.textContent =
+      `Interaction ${selectedIndex + 1} of ${interactions.length}`;
+
+    const message = document.createElement("p");
+    message.textContent = interaction.payload.message;
+
+    const control = createInteractionControl(interaction);
+    const respondButton = document.createElement("button");
+    respondButton.textContent = "Respond";
+    respondButton.onclick = () => {
+      send({
+        type: "interaction.resolve",
+        interactionId: interaction.interactionId,
+        workerGeneration: interaction.workerGeneration,
+        observedRevision: interaction.revision,
+        dismiss: false,
+        value: interactionValue(interaction, control),
+      });
+    };
+
+    const dismissButton = document.createElement("button");
+    dismissButton.textContent = "Dismiss";
+    dismissButton.onclick = () => send({
+      type: "interaction.resolve",
+      interactionId: interaction.interactionId,
+      workerGeneration: interaction.workerGeneration,
+      observedRevision: interaction.revision,
+      dismiss: true,
+    });
+
+    const nextButton = document.createElement("button");
+    nextButton.textContent = "Next";
+    nextButton.disabled = interactions.length < 2;
+    nextButton.onclick = () => {
+      selectedIndex = (selectedIndex + 1) % interactions.length;
+      drawSelectedInteraction();
+    };
+
+    area.append(
+      title,
+      message,
+      control,
+      respondButton,
+      dismissButton,
+      nextButton,
+    );
+  };
+
+  drawSelectedInteraction();
+}
+
+function createInteractionControl(interaction) {
+  if (interaction.kind === "select") {
+    const select = document.createElement("select");
+    const options = interaction.payload.options.map(
+      value => new Option(value, value),
+    );
+    select.replaceChildren(...options);
+    return select;
+  }
+
+  if (interaction.kind === "confirm") {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    return checkbox;
+  }
+
+  return document.createElement("textarea");
+}
+
+function interactionValue(interaction, control) {
+  if (interaction.kind === "confirm") {
+    return control.checked;
+  }
+  return control.value;
+}
+
+function createTimelineEntry(entry) {
+  const item = document.createElement("article");
+  item.className = "entry";
+  item.dataset.kind = entry.kind;
+
+  const metadata = document.createElement("div");
+  metadata.className = "entry-meta";
+  metadata.textContent = entry.finalized
+    ? entry.kind
+    : `${entry.kind} · streaming`;
+
+  const text = document.createElement("div");
+  text.textContent = entry.text;
+  item.append(metadata, text);
+  return item;
+}
+
+async function loadOlder(sessionId, scope) {
+  const encodedSessionId = encodeURIComponent(sessionId);
+  const encodedCursor = encodeURIComponent(scope.olderCursor);
+  const response = await fetch(
+    `/api/sessions/${encodedSessionId}/timeline?cursor=${encodedCursor}&limit=100`,
+    { headers: { authorization: `Bearer ${state.apiToken}` } },
+  );
+  if (!response.ok) {
+    return;
+  }
+
+  const page = await response.json();
+  scope.timeline = [...page.entries, ...scope.timeline];
+  scope.olderCursor = page.olderCursor;
+  renderCurrentView();
+}
+
+function can(capabilityId) {
+  return state.current &&
+    state.capabilities.has(capabilityId) &&
+    !state.pending.size;
+}
+
+function currentSessionId() {
+  return location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
+}
+
+function sessionGroupName(session) {
+  const project = state.projects.find(
+    item => item.projectId === session.projectId,
+  );
+  const workspace = state.workspaces.find(
+    item => item.workspaceId === session.workspaceId,
+  );
+
+  if (workspace) {
+    return `${project?.name} / ${workspace.name}`;
+  }
+  if (project) {
+    return `${project.name} / Project Sessions`;
+  }
+  return "Host-unscoped";
+}
+
+function announce(text) {
+  const composerState = $("#composer-state");
+  if (composerState) {
+    composerState.textContent = text;
+  } else {
+    alert(text);
+  }
+}
+
+async function post(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    credentials: "omit",
+  });
+  const value = await response.json();
+  if (!response.ok) {
+    throw Error(value.error);
+  }
+  return value;
+}
+
+function sign(privateKey, challenge) {
+  return crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    privateKey,
+    new TextEncoder().encode(challenge),
+  );
+}
+
+function bytesToBase64Url(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/, "");
+}
+
+function deviceStore(mode) {
+  return new Promise((resolve, reject) => {
+    const openRequest = indexedDB.open("pidex-device", 1);
+    openRequest.onupgradeneeded = () => {
+      openRequest.result.createObjectStore("identity");
+    };
+    openRequest.onerror = () => reject(openRequest.error);
+    openRequest.onsuccess = () => {
+      const transaction = openRequest.result.transaction("identity", mode);
+      resolve(transaction.objectStore("identity"));
+    };
+  });
+}
+
+async function saveDevice(value) {
+  const store = await deviceStore("readwrite");
+  await new Promise((resolve, reject) => {
+    const request = store.put(value, "device");
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadDevice() {
+  const store = await deviceStore("readonly");
+  return new Promise((resolve, reject) => {
+    const request = store.get("device");
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
