@@ -39,6 +39,18 @@ const state = {
 
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let socket;
+const mobileLayout = matchMedia("(max-width: 720px)");
+const standalonePwa = matchMedia("(display-mode: standalone)");
+
+function openDrawer() {
+  document.body.classList.add("drawer-open");
+  $("#drawer-toggle").setAttribute("aria-expanded", "true");
+}
+
+function closeDrawer() {
+  document.body.classList.remove("drawer-open");
+  $("#drawer-toggle").setAttribute("aria-expanded", "false");
+}
 
 function send(command) {
   if (
@@ -58,6 +70,7 @@ function send(command) {
 
 function navigate(path) {
   history.pushState({}, "", path);
+  closeDrawer();
   route();
 }
 
@@ -90,6 +103,24 @@ addEventListener("visibilitychange", () => {
       protocolVersion: "1.1",
     }));
   }
+});
+addEventListener("pageshow", event => {
+  // Safari may restore a standalone PWA from its page cache. Reconcile the
+  // View without coupling its lifecycle to Session execution or ownership.
+  if (event.persisted) {
+    setCurrent(false, "Reconnecting after suspension");
+    authenticateStoredDevice();
+  }
+});
+mobileLayout.addEventListener("change", closeDrawer);
+$("#drawer-toggle").onclick = () => {
+  document.body.classList.contains("drawer-open")
+    ? closeDrawer()
+    : openDrawer();
+};
+$("#drawer-backdrop").onclick = closeDrawer;
+addEventListener("keydown", event => {
+  if (event.key === "Escape") closeDrawer();
 });
 
 $("#new-session").onclick = () => $("#new-session-view").showModal();
@@ -337,6 +368,11 @@ function setCurrent(current, label) {
   state.current = current;
   $("#connection-state").textContent = label;
   document.body.classList.toggle("stale", !current);
+  const mobileHostState = $("#mobile-host-state");
+  if (mobileHostState) {
+    mobileHostState.hidden = state.current;
+    mobileHostState.textContent = `Host · ${label}`;
+  }
   renderCurrentView();
 }
 
@@ -518,6 +554,9 @@ function renderCurrentView() {
   $("#session-title").textContent = session.name;
   $("#session-scope").textContent =
     `${sessionGroupName(session)} · ${session.sessionId}`;
+  const mobileHostState = $("#mobile-host-state");
+  mobileHostState.hidden = state.current;
+  mobileHostState.textContent = `Host · ${$("#connection-state").textContent}`;
   wireSessionView(session);
 }
 
