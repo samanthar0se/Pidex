@@ -29,6 +29,7 @@ import {
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
+import { DurabilityCoverageMonitor, type CoverageDiagnostic, type DurabilityCoverage, type DurabilityRole } from "./durability-coverage.js";
 import {
   PairingAuthority,
   PairingError,
@@ -217,6 +218,10 @@ export interface HostOptions {
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
+  installationDir?: string;
+  piCheckpointDir?: string;
+  coverageRefreshTimeoutMs?: number;
+  onDiagnostic?: (event: CoverageDiagnostic) => void;
 }
 
 export interface StartedHost {
@@ -228,6 +233,9 @@ export interface StartedHost {
   revokeDevice(deviceId: string): void;
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
+  doctor(): Promise<{ check: "storage"; outcome: "healthy" | "degraded"; coverage: DurabilityCoverage }>;
+  exportSupport(): Promise<{ durability: DurabilityCoverage }>;
+  updateStorageRoots(roots: Partial<Record<DurabilityRole, string>>): void;
   close(): Promise<void>;
 }
 
@@ -262,7 +270,22 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     adapters.windows,
   );
   const warnings = configureFirewall(adapters.windows, firewallPort);
+  const coverage = new DurabilityCoverageMonitor(adapters.windows, {
+    "host-data": options.dataDir,
+    "installation-release": options.installationDir ?? options.dataDir,
+    "pi-checkpoint": options.piCheckpointDir ?? options.dataDir,
+  }, () => adapters.clock.now(), options.coverageRefreshTimeoutMs ?? 2_000, options.onDiagnostic ?? (() => {}));
+  const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => { void coverage.refresh(); });
+  void coverage.refresh();
   const pairing = new PairingAuthority(adapters.clock, store);
+
+  function status(): HostStatus {
+    const durability = coverage.current();
+    const durabilityWarnings: HostStatus["warnings"] = durability.roles.flatMap(role =>
+      role.state === "covered" ? [] : [{ severity: "medium" as const, code: "durability-coverage-degraded" as const, role: role.role, state: role.state, reason: role.reason, detail: `Durability coverage for ${role.role} is ${role.state}.` }],
+    );
+    return { ...store.status(RELEASE_ID, warnings), warnings: [...warnings, ...durabilityWarnings], durability };
+  }
 
   const server = createServer(
     {
@@ -359,7 +382,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         JSON.stringify({
           type: "delivery.resynchronize",
           reason: "outbound-queue-overflow",
-          lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+          lastCursor: status().synchronization.cursor,
         } satisfies ServerMessage),
       );
       client.close(4009, "resynchronize:outbound-queue-overflow");
@@ -480,16 +503,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     sendServerMessage(webSocket, {
       type: "host.hello",
-      hostId: store.status(RELEASE_ID, warnings).hostId,
+      hostId: status().hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
   });
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
-    const status = store.status(RELEASE_ID, warnings);
-    if (hello.expectedHostId !== status.hostId) {
-      sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
+    const currentStatus = status();
+    if (hello.expectedHostId !== currentStatus.hostId) {
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "host-mismatch");
       return;
     }
 
@@ -497,7 +520,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       .filter(protocol => protocol.major === protocolMajor)
       .sort((a, b) => b.minor - a.minor)[0];
     if (!offered) {
-      sendProtocolUpdateRequired(client, status.hostId, "no-common-major");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "no-common-major");
       return;
     }
 
@@ -514,7 +537,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         !admittedCapabilities.some(capability => capability.id === requiredId),
     );
     if (missingRequiredCapability) {
-      sendProtocolUpdateRequired(client, status.hostId, "missing-capability");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "missing-capability");
       return;
     }
 
@@ -525,7 +548,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     );
     sendServerMessage(client, {
       type: "protocol.admitted",
-      hostId: status.hostId,
+      hostId: currentStatus.hostId,
       protocol: {
         major: protocolMajor,
         minor: Math.min(protocolMinor, offered.minor),
@@ -535,7 +558,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sendServerMessage(client, {
       type: "host.snapshot",
       protocolVersion,
-      status,
+      status: currentStatus,
       ...store.projection(),
     });
   }
@@ -555,7 +578,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
-    const status = store.status(RELEASE_ID, warnings);
+    const currentStatus = status();
     const allSessions = [
       ...projection.sessions,
       ...projection.archivedSessions,
@@ -587,7 +610,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       sendServerMessage(client, {
         type: "scope.current",
         scope: { kind: "host" },
-        cursor: status.synchronization.cursor,
+        cursor: currentStatus.synchronization.cursor,
       });
     } else {
       let reason: ScopeResetReason;
@@ -606,7 +629,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         reason,
         barrier: {
           scope: { kind: "host" },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
             allSessions.map(session => [
               session.sessionId,
@@ -638,7 +661,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(client, {
           type: "scope.current",
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
         });
         continue;
       }
@@ -650,7 +673,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             : "revision-mismatch",
         barrier: {
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: {
             metadata: session.metadataRevision,
             timeline: session.timelineRevision,
@@ -1736,11 +1759,18 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   return {
     origin: canonicalOrigin,
     createPairing: () => pairing.create(canonicalOrigin),
-    status: () => store.status(RELEASE_ID, warnings),
+    status,
+    doctor: async () => {
+      const refreshed = await coverage.refresh();
+      return { check: "storage", outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded", coverage: refreshed };
+    },
+    exportSupport: async () => ({ durability: await coverage.refresh() }),
+    updateStorageRoots: roots => coverage.setRoots(roots),
     revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
+      stopVolumeObservation();
       stopAdvertisement();
       for (const timer of interactionDeadlineTimers.values()) {
         clearTimeout(timer);

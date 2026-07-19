@@ -128,7 +128,15 @@ export interface WindowsPlatformAdapter {
    * native implementation must not return a handle for an uncontained worker.
    */
   createContainedSessionWorker(sessionId: string): SessionJob;
+  /** Classifies a root for the recovery-oriented Windows storage boundary. */
+  classifyStorageRoot(path: string): Promise<StorageClassification>;
+  /** Reports volume topology changes; the returned function removes the observer. */
+  observeVolumeChanges(listener: () => void): () => void;
 }
+
+export type StorageClassification =
+  | { fileSystem: "NTFS"; driveType: "fixed" }
+  | { fileSystem: string; driveType: "fixed" | "remote" | "removable" | "unknown" };
 
 export interface SessionJob {
   readonly sessionId: string;
@@ -321,6 +329,8 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       terminate() {},
       close() {},
     }),
+    classifyStorageRoot: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    observeVolumeChanges: () => () => {},
   };
 }
 
@@ -377,6 +387,12 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new SessionContainmentError(
         "Pidex Windows Session Job bridge is not bundled",
       );
+    },
+    async classifyStorageRoot() {
+      throw new Error("Pidex Windows storage classification bridge is not bundled");
+    },
+    observeVolumeChanges() {
+      return () => {};
     },
   };
 }
