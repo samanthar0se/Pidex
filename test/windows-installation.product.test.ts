@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { X509Certificate } from "node:crypto";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adaptersFor } from "../packages/adapters/src/index.js";
@@ -71,6 +79,27 @@ test("per-user installation rejects an invalid durable identity", async () => {
         }),
       /Installation identity is invalid/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("certificate identity changes regenerate a leaf valid for an IPv4 origin", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-certificate-ip-"));
+  const windows = adaptersFor("deterministic").windows;
+
+  try {
+    ensureCertificate(root, "localhost", windows);
+    const initialCa = await readFile(join(root, "tls", "pidex-ca.pem"));
+
+    ensureCertificate(root, "192.168.1.227", windows);
+    const certificate = new X509Certificate(
+      await readFile(join(root, "tls", "host.pem")),
+    );
+    const replacementCa = await readFile(join(root, "tls", "pidex-ca.pem"));
+
+    assert.equal(certificate.checkIP("192.168.1.227"), "192.168.1.227");
+    assert.deepEqual(replacementCa, initialCa);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

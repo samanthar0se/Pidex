@@ -35,7 +35,7 @@ $env:PIDEX_ADAPTERS = "deterministic"
 npm run dev
 ```
 
-The development Host serves `https://localhost:7443` using generated local certificate material in `.pidex-data/`. The deterministic adapter returns predictable Pi responses and avoids the unbundled native Windows bridge. Optional environment variables are `PIDEX_DATA_DIR` and `PIDEX_PORT`.
+The development Host serves `https://localhost:7443` using generated local certificate material in `.pidex-data/`. Deterministic startup prints a one-time pairing URL; open it and select **Pair Device**. The deterministic adapter returns predictable Pi responses and avoids the unbundled native Windows bridge. Optional environment variables are `PIDEX_DATA_DIR`, `PIDEX_PORT`, and deterministic-only `PIDEX_HOSTNAME` for LAN development.
 
 ```bash
 npm run typecheck

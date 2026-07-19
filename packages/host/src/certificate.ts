@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { X509Certificate } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
 
@@ -23,12 +31,25 @@ export function ensureCertificate(
   };
   mkdirSync(directory, { recursive: true });
 
-  const certificateExists = Object.values(paths).every(path => existsSync(path));
+  const certificateFilesExist = Object.values(paths).every(path =>
+    existsSync(path),
+  );
+  const certificateExists =
+    certificateFilesExist &&
+    certificateCoversHostname(paths.hostCertificatePath, hostname);
 
   if (!certificateExists) {
     windows.restrictToCurrentUser(directory);
-    generateCertificate(directory, hostname, windows, paths);
-    windows.trustCurrentUserCertificate(paths.caCertificatePath);
+    generateCertificate(
+      directory,
+      hostname,
+      windows,
+      paths,
+      certificateFilesExist,
+    );
+    if (!certificateFilesExist) {
+      windows.trustCurrentUserCertificate(paths.caCertificatePath);
+    }
   }
 
   return {
@@ -38,6 +59,17 @@ export function ensureCertificate(
     cert: readFileSync(paths.hostCertificatePath),
     ca: readFileSync(paths.caCertificatePath),
   };
+}
+
+function certificateCoversHostname(path: string, hostname: string): boolean {
+  try {
+    const certificate = new X509Certificate(readFileSync(path));
+    return isIP(hostname)
+      ? certificate.checkIP(hostname) !== undefined
+      : certificate.checkHost(hostname) !== undefined;
+  } catch {
+    return false;
+  }
 }
 
 interface CertificatePaths {
@@ -52,6 +84,7 @@ function generateCertificate(
   hostname: string,
   windows: WindowsPlatformAdapter,
   paths: CertificatePaths,
+  reuseCertificateAuthority: boolean,
 ): void {
   const caPrivateKeyPath = join(directory, ".ca-key.pem");
   const hostPrivateKeyPath = join(directory, ".leaf-key.pem");
@@ -67,13 +100,22 @@ function generateCertificate(
   ];
 
   try {
-    runOpenSsl([
-      "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-      "-keyout", caPrivateKeyPath,
-      "-out", paths.caCertificatePath,
-      "-days", "3650",
-      "-subj", "/CN=Pidex Private CA",
-    ]);
+    if (reuseCertificateAuthority) {
+      writeFileSync(
+        caPrivateKeyPath,
+        windows.unprotectForCurrentUser(
+          readFileSync(paths.protectedCaKeyPath),
+        ),
+      );
+    } else {
+      runOpenSsl([
+        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+        "-keyout", caPrivateKeyPath,
+        "-out", paths.caCertificatePath,
+        "-days", "3650",
+        "-subj", "/CN=Pidex Private CA",
+      ]);
+    }
     runOpenSsl([
       "req", "-newkey", "rsa:2048", "-nodes",
       "-keyout", hostPrivateKeyPath,
@@ -82,7 +124,7 @@ function generateCertificate(
     ]);
     writeFileSync(
       extensionsPath,
-      `subjectAltName=DNS:${hostname},DNS:localhost,IP:127.0.0.1\n`,
+      `subjectAltName=${isIP(hostname) ? "IP" : "DNS"}:${hostname},DNS:localhost,IP:127.0.0.1\n`,
     );
     runOpenSsl([
       "x509", "-req",
@@ -94,10 +136,12 @@ function generateCertificate(
       "-days", "825",
       "-extfile", extensionsPath,
     ]);
-    writeFileSync(
-      paths.protectedCaKeyPath,
-      windows.protectForCurrentUser(readFileSync(caPrivateKeyPath)),
-    );
+    if (!reuseCertificateAuthority) {
+      writeFileSync(
+        paths.protectedCaKeyPath,
+        windows.protectForCurrentUser(readFileSync(caPrivateKeyPath)),
+      );
+    }
     writeFileSync(
       paths.protectedHostKeyPath,
       windows.protectForCurrentUser(readFileSync(hostPrivateKeyPath)),

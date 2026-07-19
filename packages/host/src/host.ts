@@ -2430,11 +2430,15 @@ function handleApiRequest(
 }
 
 function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
-  const asset = PWA_ASSETS[request.url ?? ""];
+  const pathname = new URL(
+    request.url ?? "/",
+    "https://pidex.invalid",
+  ).pathname;
+  const asset = PWA_ASSETS[pathname];
   if (asset) {
     return asset;
   }
-  if (request.method === "GET" && request.url?.startsWith("/sessions/")) {
+  if (request.method === "GET" && pathname.startsWith("/sessions/")) {
     return PWA_ASSETS["/"];
   }
   return undefined;
