@@ -316,6 +316,38 @@ export class AuthorityGenerationStore {
     if (!existsSync(tlsDirectory)) {
       return digests;
     }
+
+    const generationsDirectory = join(tlsDirectory, "generations");
+    if (existsSync(generationsDirectory)) {
+      try {
+        validateRetainedCertificateIdentity(
+          this.#dataDir,
+          this.adapters.windows,
+        );
+      } catch (error) {
+        throw new LegacyCleanupRefusalError(
+          "tls-continuity-lost",
+          error instanceof Error ? error.message : undefined,
+        );
+      }
+
+      const generationIds = readdirSync(generationsDirectory, {
+        withFileTypes: true,
+      })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name)
+        .sort();
+      for (const generationId of generationIds) {
+        for (const name of LEGACY_TLS_FILES) {
+          const filePath = join(generationsDirectory, generationId, name);
+          digests[`${generationId}/${name}`] = createHash("sha256")
+            .update(readFileSync(filePath))
+            .digest("hex");
+        }
+      }
+      return digests;
+    }
+
     for (const name of LEGACY_TLS_FILES) {
       const filePath = join(tlsDirectory, name);
       if (!existsSync(filePath)) {
