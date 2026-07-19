@@ -44,6 +44,16 @@ const CREATE_AUTHORITY_SCHEMA = `
     readiness TEXT NOT NULL,
     committed_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS authority_generation (
+    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+    generation_id TEXT NOT NULL,
+    predecessor_id TEXT,
+    activation_index INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    format_version INTEGER NOT NULL,
+    release_min TEXT NOT NULL,
+    release_max TEXT NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS devices (
     device_id TEXT PRIMARY KEY,
     public_key_jwk TEXT NOT NULL,
@@ -390,6 +400,16 @@ export interface InitialCatalog {
   workspaces?: WorkspaceSummary[];
 }
 
+export interface AuthorityGenerationMetadata {
+  generationId: string;
+  predecessorId: string | null;
+  activationIndex: number;
+  schemaVersion: number;
+  formatVersion: number;
+  releaseMin: string;
+  releaseMax: string;
+}
+
 type CursorBasis =
   | { compatible: true; sequence: number }
   | {
@@ -512,6 +532,25 @@ export class AuthorityStore {
         .prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)")
         .run(workspace.workspaceId, workspace.projectId, workspace.name);
     }
+  }
+
+  initializeGeneration(metadata: AuthorityGenerationMetadata): void {
+    this.#db
+      .prepare(
+        `INSERT INTO authority_generation (
+           singleton, generation_id, predecessor_id, activation_index,
+           schema_version, format_version, release_min, release_max
+         ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        metadata.generationId,
+        metadata.predecessorId,
+        metadata.activationIndex,
+        metadata.schemaVersion,
+        metadata.formatVersion,
+        metadata.releaseMin,
+        metadata.releaseMax,
+      );
   }
 
   projection(): {
