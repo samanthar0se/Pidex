@@ -39,22 +39,48 @@ import {
   WorkerLossError,
   WORKER_PROTOCOL_GENERATION,
 } from "./pi-worker.js";
+import { AuthorityGenerationStore } from "./authority-generation.js";
 import {
   AuthorityStore,
   type InitialCatalog,
   type RenameOutcome,
-  type SubmitCommand,
   type SubmitOutcome,
-  type SteerCommand,
-  type StopCommand,
 } from "./store.js";
+import {
+  capabilityBasisKey,
+  isInteractionResolveMessage,
+  isRevokeMessage,
+  isRunQueueActionMessage,
+  isRunSteerMessage,
+  isRunStopMessage,
+  isRunSubmitMessage,
+  isScopeSetMessage,
+  isSessionAvailabilityMessage,
+  isSessionCreateMessage,
+  isSessionForkMessage,
+  isSessionRenameMessage,
+  isSessionSleepMessage,
+  isViewObserveMessage,
+  supportsCapabilityBasis,
+  type InteractionResolveMessage,
+  type RunQueueActionMessage,
+  type RunSteerMessage,
+  type RunStopMessage,
+  type RunSubmitMessage,
+  type ScopeSetMessage,
+  type SessionAvailabilityMessage,
+  type SessionCreateMessage,
+  type SessionForkMessage,
+  type SessionRenameMessage,
+  type SessionSleepMessage,
+  type ViewIdentity,
+  type ViewObserveMessage,
+} from "./control-messages.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
 const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
-const MAX_SESSION_NAME_LENGTH = 200;
-const MAX_RUN_PROMPT_LENGTH = 100_000;
 const MAX_INTERACTION_RESPONSE_BYTES = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
@@ -79,97 +105,9 @@ interface PwaAsset {
   contentType: string;
 }
 
-interface DeviceRevokeMessage {
-  type: "device.revoke";
-  deviceId: string;
-}
-
-interface SessionCreateMessage {
-  type: "session.create";
-  commandId: string;
-  projectId?: string | null;
-  workspaceId?: string | null;
-}
-
-interface SessionRenameMessage {
-  type: "session.rename";
-  commandId: string;
-  sessionId: string;
-  name: string;
-  requiredCapability: "session.rename";
-  observedMetadataRevision: number;
-}
-
-interface SessionSleepMessage {
-  type: "session.sleep";
-  commandId: string;
-  sessionId: string;
-}
-interface SessionAvailabilityMessage {
-  type: "session.archive" | "session.restore";
-  commandId: string;
-  sessionId: string;
-  observedMetadataRevision: number;
-}
-
-interface CapabilityBasisRequirement {
-  id: string;
-  version: number;
-}
-
-interface ViewIdentity {
-  viewId: string;
-  draftRevision: number;
-}
-
-interface RunSubmitMessage extends SubmitCommand {
-  type: "run.submit" | "run.follow-up";
-  requiredCapabilityBasis?: CapabilityBasisRequirement[];
-  invokingView?: ViewIdentity;
-}
-
-interface ViewObserveMessage extends ViewIdentity {
-  type: "view.observe";
-  sessionId: string;
-}
-
-interface ScopeSetMessage {
-  type: "scope.set";
-  sessionIds: string[];
-  cursor?: string;
-  resourceRevisions?: Record<string, number>;
-  protocolVersion: string;
-}
-
-interface RunQueueActionMessage {
-  type: "run.release" | "run.cancel";
-  commandId: string;
-  runId: string;
-}
-
-interface RunSteerMessage extends SteerCommand {
-  type: "run.steer";
-  requiredCapability: "run.steer";
-}
-
-interface RunStopMessage extends StopCommand {
-  type: "run.stop";
-  requiredCapability: "run.stop";
-}
-
 interface RunPresentationContext {
   client: WebSocket;
   invokingView?: ViewIdentity;
-}
-
-interface InteractionResolveMessage {
-  type: "interaction.resolve";
-  commandId: string;
-  interactionId: string;
-  workerGeneration: number;
-  observedRevision: number;
-  dismiss?: boolean;
-  value?: unknown;
 }
 
 type ScopeResetReason = Extract<
@@ -245,11 +183,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       constraints: capability.constraints,
     }));
   const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
-  const store = new AuthorityStore(
-    join(options.dataDir, "authority.sqlite"),
+  const store = new AuthorityGenerationStore(
+    options.dataDir,
+    RELEASE_ID.replace("pidex@", ""),
     adapters,
-    options.initialCatalog,
-  );
+  ).openBridge(options.initialCatalog);
   // An executing tail surviving daemon loss has no proof of normal completion.
   // Settle it conservatively and never dispatch it again to discover the result.
   store.reconcileAcceptedRuns(adapters.clock.now());
@@ -454,6 +392,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           revokeDevice(message.deviceId);
         } else if (isSessionCreateMessage(message)) {
           handleSessionCreate(webSocket, message);
+        } else if (isSessionForkMessage(message)) {
+          void handleSessionFork(webSocket, message);
         } else if (isSessionRenameMessage(message)) {
           handleSessionRename(webSocket, message);
         } else if (isSessionSleepMessage(message)) {
@@ -744,6 +684,59 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         error: error instanceof Error ? error.message : "invalid-scope",
       };
       sendServerMessage(client, outcome);
+    }
+  }
+
+  async function handleSessionFork(
+    client: WebSocket,
+    command: SessionForkMessage,
+  ): Promise<void> {
+    try {
+      const checkpoint = store.checkpointAt(
+        command.parentSessionId,
+        command.forkPointEntryId,
+      );
+      if (!checkpoint || !adapters.pi.forkCheckpoint) {
+        throw new Error("invalid-fork-point");
+      }
+
+      const childSessionId = `session_${randomUUID()}`;
+      const validatedCheckpoint = await adapters.pi.forkCheckpoint(
+        command.parentSessionId,
+        checkpoint,
+        childSessionId,
+      );
+      adapters.storage.beforeCommit();
+      const created = store.forkSession(
+        command.parentSessionId,
+        command.forkPointEntryId,
+        command.projectId,
+        command.workspaceId,
+        childSessionId,
+        validatedCheckpoint,
+        adapters.clock.now(),
+      );
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+      });
+
+      const changeSet: ServerMessage = {
+        type: "host.change-set",
+        cursor: created.cursor,
+        changes: [{ type: "session.forked", session: created.session }],
+      };
+      for (const socket of admittedClients) {
+        sendServerMessage(socket, changeSet);
+      }
+    } catch (error) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: error instanceof Error ? error.message : "fork-failed",
+      });
     }
   }
 
@@ -1810,39 +1803,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   };
 }
 
-function isScopeSetMessage(value: unknown): value is ScopeSetMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  const hasValidSessionIds =
-    Array.isArray(item.sessionIds) &&
-    item.sessionIds.every(sessionId => typeof sessionId === "string");
-  const hasValidCursor =
-    item.cursor === undefined || typeof item.cursor === "string";
-  const hasValidResourceRevisions =
-    item.resourceRevisions === undefined ||
-    isNumericRecord(item.resourceRevisions);
-
-  return (
-    item.type === "scope.set" &&
-    typeof item.protocolVersion === "string" &&
-    hasValidSessionIds &&
-    hasValidCursor &&
-    hasValidResourceRevisions
-  );
-}
-
-function isNumericRecord(value: unknown): value is Record<string, number> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.values(value).every(item => typeof item === "number")
-  );
-}
-
 function findObservedTimelineRevision(
   request: ScopeSetMessage,
   sessionId: string,
@@ -1870,208 +1830,6 @@ function replaceableChangeKey(message: ServerMessage): string | undefined {
   }
 
   return `session.renamed:${change.session.sessionId}`;
-}
-
-function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const hasValidProject =
-    !("projectId" in value) ||
-    value.projectId === undefined ||
-    value.projectId === null ||
-    typeof value.projectId === "string";
-  const hasValidWorkspace =
-    !("workspaceId" in value) ||
-    value.workspaceId === undefined ||
-    value.workspaceId === null ||
-    typeof value.workspaceId === "string";
-
-  return (
-    "type" in value &&
-    value.type === "session.create" &&
-    "commandId" in value &&
-    typeof value.commandId === "string" &&
-    hasValidProject &&
-    hasValidWorkspace
-  );
-}
-
-function isSessionRenameMessage(value: unknown): value is SessionRenameMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  return (
-    "type" in value &&
-    value.type === "session.rename" &&
-    "commandId" in value &&
-    typeof value.commandId === "string" &&
-    "sessionId" in value &&
-    typeof value.sessionId === "string" &&
-    "name" in value &&
-    typeof value.name === "string" &&
-    value.name.trim().length > 0 &&
-    value.name.length <= MAX_SESSION_NAME_LENGTH &&
-    "requiredCapability" in value &&
-    value.requiredCapability === "session.rename" &&
-    "observedMetadataRevision" in value &&
-    typeof value.observedMetadataRevision === "number" &&
-    Number.isSafeInteger(value.observedMetadataRevision) &&
-    value.observedMetadataRevision > 0
-  );
-}
-
-function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    (item.type === "run.submit" || item.type === "run.follow-up") &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    typeof item.prompt === "string" &&
-    item.prompt.trim().length > 0 &&
-    item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
-    item.requiredCapability === item.type &&
-    (item.invokingView === undefined || isInvokingView(item.invokingView)) &&
-    (item.requiredCapabilityBasis === undefined ||
-      (Array.isArray(item.requiredCapabilityBasis) &&
-        item.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
-  );
-}
-
-function isInvokingView(value: unknown): value is ViewIdentity {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.viewId === "string" &&
-    item.viewId.length > 0 &&
-    item.viewId.length <= 200 &&
-    Number.isSafeInteger(item.draftRevision) &&
-    Number(item.draftRevision) >= 0
-  );
-}
-
-function isViewObserveMessage(value: unknown): value is ViewObserveMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "view.observe" &&
-    typeof item.sessionId === "string" &&
-    isInvokingView(item)
-  );
-}
-
-function isSessionSleepMessage(value: unknown): value is SessionSleepMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "session.sleep" &&
-    typeof item.commandId === "string" &&
-    item.commandId.length > 0 &&
-    typeof item.sessionId === "string"
-  );
-}
-
-function isSessionAvailabilityMessage(
-  value: unknown,
-): value is SessionAvailabilityMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    (item.type === "session.archive" || item.type === "session.restore") &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    Number.isSafeInteger(item.observedMetadataRevision) &&
-    Number(item.observedMetadataRevision) > 0
-  );
-}
-
-function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    (item.type === "run.release" || item.type === "run.cancel") &&
-    typeof item.commandId === "string" &&
-    typeof item.runId === "string"
-  );
-}
-
-function isRunSteerMessage(value: unknown): value is RunSteerMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "run.steer" &&
-    item.requiredCapability === "run.steer" &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    typeof item.runId === "string" &&
-    typeof item.workerGeneration === "string" &&
-    Number.isSafeInteger(item.observedTimelineRevision) &&
-    Number(item.observedTimelineRevision) > 0 &&
-    typeof item.text === "string" &&
-    item.text.trim().length > 0 &&
-    item.text.length <= MAX_RUN_PROMPT_LENGTH
-  );
-}
-
-function isRunStopMessage(value: unknown): value is RunStopMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "run.stop" &&
-    item.requiredCapability === "run.stop" &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    typeof item.runId === "string" &&
-    typeof item.workerGeneration === "string" &&
-    item.observedState === "executing" &&
-    Number.isSafeInteger(item.observedTimelineRevision) &&
-    Number(item.observedTimelineRevision) > 0
-  );
-}
-
-function isInteractionResolveMessage(
-  value: unknown,
-): value is InteractionResolveMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "interaction.resolve" &&
-    typeof item.commandId === "string" &&
-    typeof item.interactionId === "string" &&
-    Number.isSafeInteger(item.workerGeneration) &&
-    Number.isSafeInteger(item.observedRevision) &&
-    (item.dismiss === undefined || typeof item.dismiss === "boolean")
-  );
 }
 
 function isValidInteractionValue(
@@ -2105,30 +1863,6 @@ function interactionPayload(
     payload.defaultValue = request.defaultValue;
   }
   return payload;
-}
-
-function isCapabilityBasisRequirement(
-  value: unknown,
-): value is CapabilityBasisRequirement {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return typeof item.id === "string" && Number.isSafeInteger(item.version);
-}
-
-function capabilityBasisKey(requirement: CapabilityBasisRequirement): string {
-  return `${requirement.id}@${requirement.version}`;
-}
-
-function supportsCapabilityBasis(
-  admittedBasis: ReadonlySet<string> | undefined,
-  requiredBasis: readonly CapabilityBasisRequirement[] = [],
-): boolean {
-  return requiredBasis.every(
-    requirement => admittedBasis?.has(capabilityBasisKey(requirement)) === true,
-  );
 }
 
 function runOutcomeMessage(
@@ -2294,19 +2028,6 @@ function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
     return PWA_ASSETS["/"];
   }
   return undefined;
-}
-
-function isRevokeMessage(value: unknown): value is DeviceRevokeMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  return (
-    "type" in value &&
-    value.type === "device.revoke" &&
-    "deviceId" in value &&
-    typeof value.deviceId === "string"
-  );
 }
 
 function configureFirewall(

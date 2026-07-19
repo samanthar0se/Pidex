@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { get } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,6 +70,10 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
     } finally {
       await initialHost.close();
     }
+
+    const generations = await readdir(join(dataDir, "authority", "generations"));
+    assert.equal(generations.length, 0);
+    await readFile(join(dataDir, "authority.sqlite"));
 
     const restartedHost = await startHost({
       dataDir,

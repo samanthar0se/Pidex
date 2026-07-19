@@ -100,6 +100,12 @@ export interface PiAdapter {
   execute?(request: PiExecuteRequest): Promise<PiExecuteResult>;
   /** Flushes the private Pi artifact and proves the returned checkpoint is stable. */
   flushCheckpoint?(sessionId: string, checkpoint: string): Promise<string>;
+  /** Creates a private child artifact from a checkpoint validated by this runtime. */
+  forkCheckpoint?(
+    parentSessionId: string,
+    checkpoint: string,
+    childSessionId: string,
+  ): Promise<string>;
 }
 
 export interface NetworkAdapter {
@@ -292,6 +298,7 @@ function deterministicPiAdapter(): PiAdapter {
       checkpoint: `checkpoint:${request.sessionId}`,
     }),
     flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
+    forkCheckpoint: async (_parentSessionId, checkpoint) => checkpoint,
   };
 }
 

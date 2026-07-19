@@ -29,126 +29,10 @@ import {
   type TimelineWindow,
   type WorkspaceSummary,
 } from "../../protocol/src/status.js";
+import { initializeAuthoritySchema } from "./authority-schema.js";
 import { RunArtifactStore } from "./run-artifacts.js";
 
 export type { RunRecord, TimelineEntry } from "../../protocol/src/status.js";
-
-const CREATE_AUTHORITY_SCHEMA = `
-  PRAGMA journal_mode=WAL;
-  PRAGMA synchronous=FULL;
-  CREATE TABLE IF NOT EXISTS host (
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-    host_id TEXT NOT NULL,
-    epoch TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    readiness TEXT NOT NULL,
-    committed_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS devices (
-    device_id TEXT PRIMARY KEY,
-    public_key_jwk TEXT NOT NULL,
-    paired_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS revoked_devices (
-    device_id TEXT PRIMARY KEY,
-    paired_at INTEGER NOT NULL,
-    revoked_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS projects (
-    project_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS workspaces (
-    workspace_id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(project_id),
-    name TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    session_id TEXT PRIMARY KEY,
-    project_id TEXT REFERENCES projects(project_id),
-    workspace_id TEXT REFERENCES workspaces(workspace_id),
-    name TEXT NOT NULL DEFAULT 'Untitled Session',
-    retention TEXT NOT NULL CHECK(retention='available'),
-    availability TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','archived')),
-    residency TEXT NOT NULL CHECK(residency IN ('sleeping','resident')),
-    metadata_revision INTEGER NOT NULL,
-    timeline_revision INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS command_receipts (
-    device_id TEXT NOT NULL,
-    command_id TEXT NOT NULL,
-    envelope_digest TEXT NOT NULL,
-    outcome_json TEXT NOT NULL,
-    commit_cursor TEXT NOT NULL,
-    committed_at INTEGER NOT NULL,
-    PRIMARY KEY(device_id, command_id)
-  );
-  CREATE TABLE IF NOT EXISTS synchronization_changes (
-    sequence INTEGER PRIMARY KEY,
-    payload_json TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    session_order INTEGER NOT NULL,
-    prompt TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(
-      state IN (
-        'queued', 'executing', 'cancelling', 'held', 'completed',
-        'failed', 'cancelled', 'interrupted'
-      )
-    ),
-    created_at INTEGER NOT NULL,
-    completed_at INTEGER,
-    UNIQUE(session_id, session_order)
-  );
-  CREATE TABLE IF NOT EXISTS timeline_entries (
-    entry_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    entry_order INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    text TEXT NOT NULL,
-    checkpoint TEXT,
-    blob_id TEXT,
-    created_at INTEGER NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1,
-    finalized INTEGER NOT NULL DEFAULT 1,
-    tool_call_id TEXT,
-    UNIQUE(session_id, entry_order)
-  );
-  CREATE TABLE IF NOT EXISTS interactions (
-    interaction_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    run_id TEXT REFERENCES runs(run_id),
-    worker_generation INTEGER NOT NULL,
-    correlation_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('select','confirm','input','editor')),
-    payload_json TEXT NOT NULL,
-    provenance TEXT,
-    state TEXT NOT NULL CHECK(state IN ('open','resolving','responded','dismissed','expired','withdrawn')),
-    revision INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    deadline_at INTEGER,
-    terminal_cause TEXT,
-    responded_at INTEGER,
-    responding_device_label TEXT,
-    application_proven INTEGER,
-    UNIQUE(session_id, worker_generation, correlation_id)
-  );
-  CREATE TABLE IF NOT EXISTS steering (
-    command_id TEXT NOT NULL,
-    device_id TEXT NOT NULL,
-    run_id TEXT NOT NULL REFERENCES runs(run_id),
-    worker_generation TEXT NOT NULL,
-    text TEXT NOT NULL,
-    entry_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('accepted','applied','unapplied')),
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(device_id, command_id)
-  );
-`;
 
 export interface SubmitCommand {
   commandId: string;
@@ -219,6 +103,13 @@ const sessionResidencyRowSchema = sessionSummarySchema.pick({ residency: true })
 const sessionAvailabilitySchema = z.enum(["available", "archived"]);
 const sessionRowSchema = sessionSummarySchema.extend({
   availability: sessionAvailabilitySchema,
+});
+const forkPointSchema = z.object({
+  entryId: z.string(),
+  checkpoint: z.string(),
+  entryOrder: z.number(),
+  finalized: z.coerce.boolean(),
+  kind: z.string(),
 });
 const sessionAvailabilityStateSchema = sessionRowSchema.pick({
   availability: true,
@@ -384,6 +275,16 @@ export interface InitialCatalog {
   workspaces?: WorkspaceSummary[];
 }
 
+export interface AuthorityGenerationMetadata {
+  generationId: string;
+  predecessorId: string | null;
+  activationIndex: number;
+  schemaVersion: number;
+  formatVersion: number;
+  releaseMin: string;
+  releaseMax: string;
+}
+
 type CursorBasis =
   | { compatible: true; sequence: number }
   | {
@@ -411,72 +312,7 @@ export class AuthorityStore {
     mkdirSync(dataDir, { recursive: true });
     this.#runArtifacts = new RunArtifactStore(dataDir);
     this.#db = new DatabaseSync(path);
-    this.#db.exec(CREATE_AUTHORITY_SCHEMA);
-    const sessionColumns = this.#db.prepare("PRAGMA table_info(sessions)").all();
-    if (!sessionColumns.some(column => column.name === "name")) {
-      this.#db.exec(
-        "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",
-      );
-    }
-    if (!sessionColumns.some(column => column.name === "availability")) {
-      this.#db.exec(
-        "ALTER TABLE sessions ADD COLUMN availability TEXT NOT NULL DEFAULT 'available'",
-      );
-    }
-    const timelineColumns = this.#db
-      .prepare("PRAGMA table_info(timeline_entries)")
-      .all();
-    if (!timelineColumns.some(column => column.name === "blob_id")) {
-      this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN blob_id TEXT");
-    }
-    if (!timelineColumns.some(column => column.name === "revision")) {
-      this.#db.exec(
-        "ALTER TABLE timeline_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
-      );
-    }
-    if (!timelineColumns.some(column => column.name === "finalized")) {
-      this.#db.exec(
-        "ALTER TABLE timeline_entries ADD COLUMN finalized INTEGER NOT NULL DEFAULT 1",
-      );
-    }
-    if (!timelineColumns.some(column => column.name === "tool_call_id")) {
-      this.#db.exec(
-        "ALTER TABLE timeline_entries ADD COLUMN tool_call_id TEXT",
-      );
-    }
-    const runsTable = this.#db
-      .prepare(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'",
-      )
-      .get();
-    const runSql = String(runsTable?.sql ?? "");
-    if (runSql.includes("'accepted'")) {
-      this.#db.exec(`
-        ALTER TABLE runs RENAME TO runs_legacy;
-        CREATE TABLE runs (
-          run_id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES sessions(session_id),
-          session_order INTEGER NOT NULL,
-          prompt TEXT NOT NULL,
-          state TEXT NOT NULL CHECK(
-            state IN (
-              'queued', 'executing', 'cancelling', 'held', 'completed',
-              'failed', 'cancelled', 'interrupted'
-            )
-          ),
-          created_at INTEGER NOT NULL,
-          completed_at INTEGER,
-          UNIQUE(session_id, session_order)
-        );
-        INSERT INTO runs
-          SELECT run_id, session_id, session_order, prompt,
-                 CASE state WHEN 'accepted' THEN 'executing' ELSE state END,
-                 created_at, completed_at
-          FROM runs_legacy;
-        DROP TABLE runs_legacy;
-      `);
-    }
-
+    initializeAuthoritySchema(this.#db);
     const existingHost = this.#db
       .prepare("SELECT 1 FROM host WHERE singleton=1")
       .get();
@@ -496,6 +332,25 @@ export class AuthorityStore {
         .prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)")
         .run(workspace.workspaceId, workspace.projectId, workspace.name);
     }
+  }
+
+  initializeGeneration(metadata: AuthorityGenerationMetadata): void {
+    this.#db
+      .prepare(
+        `INSERT INTO authority_generation (
+           singleton, generation_id, predecessor_id, activation_index,
+           schema_version, format_version, release_min, release_max
+         ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        metadata.generationId,
+        metadata.predecessorId,
+        metadata.activationIndex,
+        metadata.schemaVersion,
+        metadata.formatVersion,
+        metadata.releaseMin,
+        metadata.releaseMax,
+      );
   }
 
   projection(): {
@@ -520,7 +375,9 @@ export class AuthorityStore {
         `SELECT session_id AS sessionId, name, project_id AS projectId,
                 workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision
+                timeline_revision AS timelineRevision,
+                parent_session_id AS parentSessionId,
+                fork_point_entry_id AS forkPointEntryId
          FROM sessions ORDER BY created_at`,
       )
       .all();
@@ -550,28 +407,7 @@ export class AuthorityStore {
   ): { session: SessionSummary; cursor: string } {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const projectExists = projectId
-        ? this.#db
-            .prepare("SELECT 1 FROM projects WHERE project_id = ?")
-            .get(projectId)
-        : true;
-      if (!projectExists) {
-        throw new Error("unknown-project");
-      }
-
-      if (workspaceId) {
-        const workspace = this.#db
-          .prepare(
-            "SELECT project_id FROM workspaces WHERE workspace_id = ?",
-          )
-          .get(workspaceId);
-        if (!workspace) {
-          throw new Error("unknown-workspace");
-        }
-        if (!projectId || workspace.project_id !== projectId) {
-          throw new Error("workspace-project-mismatch");
-        }
-      }
+      this.validateSessionScope(projectId, workspaceId);
 
       const session: SessionSummary = {
         sessionId: `session_${randomUUID()}`,
@@ -599,6 +435,160 @@ export class AuthorityStore {
         .run(now);
       const cursor = this.recordSynchronizationChange({
         type: "session.created",
+        session,
+      });
+      this.#db.exec("COMMIT");
+      return { session, cursor };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** Atomically creates an inert child and copies only finalized durable history. */
+  forkSession(
+    parentSessionId: string,
+    forkPointEntryId: string,
+    projectId: string | null | undefined,
+    workspaceId: string | null | undefined,
+    childSessionId: string,
+    validatedCheckpoint: string,
+    now: number,
+  ): { session: SessionSummary; cursor: string } {
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const parent = this.loadSession(parentSessionId);
+      const point = forkPointSchema.optional().parse(
+        this.#db
+          .prepare(
+            `SELECT entry_id AS entryId, checkpoint,
+                    entry_order AS entryOrder,
+                    finalized != 0 AS finalized, kind
+             FROM timeline_entries
+             WHERE session_id = ? AND entry_id = ?`,
+          )
+          .get(parentSessionId, forkPointEntryId),
+      );
+      if (
+        !point ||
+        !point.finalized ||
+        point.kind !== "response" ||
+        point.checkpoint !== validatedCheckpoint
+      ) {
+        throw new Error("invalid-fork-point");
+      }
+
+      const targetProjectId =
+        projectId === undefined ? parent.projectId : projectId;
+      const targetWorkspaceId =
+        workspaceId === undefined ? parent.workspaceId : workspaceId;
+      this.validateSessionScope(targetProjectId, targetWorkspaceId);
+      this.#db
+        .prepare(
+          `INSERT INTO sessions
+           (session_id, project_id, workspace_id, name, retention, availability,
+            residency, metadata_revision, timeline_revision, created_at,
+            parent_session_id, fork_point_entry_id)
+           VALUES (?, ?, ?, 'Untitled Session', 'available', 'available',
+                   'sleeping', 1, 1, ?, ?, ?)`,
+        )
+        .run(
+          childSessionId,
+          targetProjectId,
+          targetWorkspaceId,
+          now,
+          parentSessionId,
+          forkPointEntryId,
+        );
+
+      const runRows = this.#db
+        .prepare(
+          `SELECT run_id AS parentRunId, session_order AS sessionOrder,
+                  prompt, state, created_at AS createdAt,
+                  completed_at AS completedAt
+           FROM runs
+           WHERE session_id = ?
+             AND state IN ('completed','failed','cancelled','interrupted')
+             AND run_id IN (
+               SELECT run_id FROM timeline_entries
+               WHERE session_id = ? AND entry_order <= ?
+             )`,
+        )
+        .all(parentSessionId, parentSessionId, point.entryOrder);
+      const childRunIdsByParentId = new Map<string, string>();
+      const insertRun = this.#db.prepare(
+        `INSERT INTO runs
+         (run_id, session_id, session_order, prompt, state, created_at,
+          completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const row of runRows) {
+        const childRunId = `run_${randomUUID()}`;
+        childRunIdsByParentId.set(String(row.parentRunId), childRunId);
+        insertRun.run(
+          childRunId,
+          childSessionId,
+          row.sessionOrder,
+          row.prompt,
+          row.state,
+          row.createdAt,
+          row.completedAt,
+        );
+      }
+
+      const entries = this.#db
+        .prepare(
+          `SELECT run_id AS parentRunId, entry_order AS entryOrder, kind, text,
+                  checkpoint, blob_id AS blobId, created_at AS createdAt,
+                  revision, finalized, tool_call_id AS toolCallId
+           FROM timeline_entries
+           WHERE session_id = ? AND entry_order <= ?
+           ORDER BY entry_order`,
+        )
+        .all(parentSessionId, point.entryOrder);
+      const insertEntry = this.#db.prepare(
+        `INSERT INTO timeline_entries
+         (entry_id, session_id, run_id, entry_order, kind, text, checkpoint,
+          blob_id, created_at, revision, finalized, tool_call_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const row of entries) {
+        const childRunId = childRunIdsByParentId.get(
+          String(row.parentRunId),
+        );
+        if (!childRunId || !Boolean(row.finalized)) {
+          throw new Error("invalid-fork-point");
+        }
+        insertEntry.run(
+          `entry_${randomUUID()}`,
+          childSessionId,
+          childRunId,
+          row.entryOrder,
+          row.kind,
+          row.text,
+          row.checkpoint,
+          row.blobId,
+          row.createdAt,
+          row.revision,
+          row.finalized,
+          row.toolCallId,
+        );
+      }
+
+      this.#db
+        .prepare(
+          "UPDATE sessions SET timeline_revision = ? WHERE session_id = ?",
+        )
+        .run(entries.length + 1, childSessionId);
+      this.#db
+        .prepare(
+          `UPDATE host SET sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(now);
+      const session = this.loadSession(childSessionId);
+      const cursor = this.recordSynchronizationChange({
+        type: "session.forked",
         session,
       });
       this.#db.exec("COMMIT");
@@ -2217,7 +2207,9 @@ export class AuthorityStore {
         `SELECT session_id AS sessionId, name, project_id AS projectId,
                 workspace_id AS workspaceId, retention, availability, residency,
                 metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision
+                timeline_revision AS timelineRevision,
+                parent_session_id AS parentSessionId,
+                fork_point_entry_id AS forkPointEntryId
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
@@ -2225,6 +2217,45 @@ export class AuthorityStore {
     return availability === "archived"
       ? { ...session, availability }
       : session;
+  }
+
+  checkpointAt(sessionId: string, entryId: string): string | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT checkpoint FROM timeline_entries
+         WHERE session_id = ? AND entry_id = ? AND kind = 'response'
+           AND finalized = 1 AND checkpoint IS NOT NULL`,
+      )
+      .get(sessionId, entryId);
+    return checkpointRowSchema.optional().parse(row)?.checkpoint;
+  }
+
+  private validateSessionScope(
+    projectId: string | null,
+    workspaceId: string | null,
+  ): void {
+    const projectExists = projectId
+      ? this.#db
+          .prepare("SELECT 1 FROM projects WHERE project_id = ?")
+          .get(projectId)
+      : true;
+    if (!projectExists) {
+      throw new Error("unknown-project");
+    }
+
+    if (workspaceId) {
+      const workspace = this.#db
+        .prepare(
+          "SELECT project_id FROM workspaces WHERE workspace_id = ?",
+        )
+        .get(workspaceId);
+      if (!workspace) {
+        throw new Error("unknown-workspace");
+      }
+      if (!projectId || workspace.project_id !== projectId) {
+        throw new Error("workspace-project-mismatch");
+      }
+    }
   }
 
   private sessionHasActiveWork(sessionId: string): boolean {

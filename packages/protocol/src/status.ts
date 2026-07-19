@@ -11,6 +11,7 @@ export const protocolCapabilities = [
   { id: "session.rename", version: 1 },
   { id: "session.archive", version: 1 },
   { id: "session.restore", version: 1 },
+  { id: "session.fork", version: 1 },
   { id: "run.submit", version: 1 },
   { id: "presentation.effects", version: 1 },
   { id: "run.follow-up", version: 1 },
@@ -112,6 +113,8 @@ export const sessionSummarySchema = z.object({
   residency: z.enum(["sleeping", "resident"]),
   metadataRevision: z.number(),
   timelineRevision: z.number(),
+  parentSessionId: z.string().nullable().optional(),
+  forkPointEntryId: z.string().nullable().optional(),
 });
 
 export type ProjectSummary = z.infer<typeof projectSummarySchema>;
@@ -238,6 +241,10 @@ const synchronizationBarrierSchema = z.object({
 export const hostChangeSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("session.created"),
+    session: sessionSummarySchema,
+  }),
+  z.object({
+    type: z.literal("session.forked"),
     session: sessionSummarySchema,
   }),
   z.object({
