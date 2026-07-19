@@ -9,7 +9,7 @@ import test from "node:test";
 const HOST_STARTUP_TIMEOUT_MS = 10_000;
 
 test(
-  "development entry point selects deterministic adapters and prints launch guidance",
+  "development entry point defaults to deterministic adapters and prints launch guidance",
   { timeout: HOST_STARTUP_TIMEOUT_MS + 5_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
@@ -20,7 +20,7 @@ test(
         cwd: process.cwd(),
         env: {
           ...process.env,
-          PIDEX_ADAPTERS: "product",
+          PIDEX_ADAPTERS: undefined,
           PIDEX_DATA_DIR: dataDir,
           PIDEX_HOSTNAME: "192.0.2.10",
           PIDEX_PORT: "0",

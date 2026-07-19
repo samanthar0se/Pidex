@@ -35,14 +35,15 @@ npm run dev
 ```
 
 The development Host serves `https://localhost:7443` using generated local
-certificate material in `.pidex-data/`. Startup always uses deterministic
+certificate material in `.pidex-data-dev/`. Startup defaults to deterministic
 adapters, prints a one-time pairing URL, and prints certificate-trust guidance
 without changing the system trust store. Open the pairing URL and select
 **Pair Device**.
 
 The deterministic adapter returns predictable Pi responses and avoids the
 unbundled native Windows bridge. Optional environment variables are
-`PIDEX_DATA_DIR`, `PIDEX_PORT`, and `PIDEX_HOSTNAME` for LAN development.
+`PIDEX_ADAPTERS`, `PIDEX_DATA_DIR`, `PIDEX_PORT`, and deterministic-only
+`PIDEX_HOSTNAME`; explicit values override the development defaults.
 
 ```bash
 npm run typecheck
@@ -50,7 +51,8 @@ npm test
 npm run security
 ```
 
-For access from another LAN device, read `docs/development-lan-access.md`; never commit `.pidex-data/`.
+For access from another LAN device, read `docs/development-lan-access.md`; never
+commit `.pidex-data/` or `.pidex-data-dev/`.
 
 ## Agent Guidance
 

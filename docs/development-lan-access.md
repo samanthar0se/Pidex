@@ -49,15 +49,15 @@ Remove-NetFirewallRule -DisplayName "Pidex 7443 (Private LAN)"
 ## Trust the development CA
 
 Opening the port only resolves TCP timeouts. Copy the public
-`.pidex-data/tls/pidex-ca.pem` file to the other Windows machine, verify that it
-came from the Host, and import it for that user. For example, from PowerShell
-on the other machine, transfer it over SSH with the source and destination on
-the same command line:
+`.pidex-data-dev/tls/pidex-ca.pem` file to the other Windows machine, verify
+that it came from the Host, and import it for that user. For example, from
+PowerShell on the other machine, transfer it over SSH with the source and
+destination on the same command line:
 
 ```powershell
 $hostUser = "User"
 $hostAddress = "192.168.1.227"
-scp "${hostUser}@${hostAddress}:C:/git/Pidex/.pidex-data/tls/pidex-ca.pem" "$HOME\Downloads\pidex-ca.pem"
+scp "${hostUser}@${hostAddress}:C:/git/Pidex/.pidex-data-dev/tls/pidex-ca.pem" "$HOME\Downloads\pidex-ca.pem"
 ```
 
 Confirm that the transfer succeeded before importing the certificate:
@@ -69,9 +69,9 @@ certutil -user -addstore Root "$HOME\Downloads\pidex-ca.pem"
 
 Restart the browser, open the printed `https://<LAN-IP>:7443/?pair=...` URL, and
 select **Pair Device**. Never transfer `pidex-ca-key.dpapi`, `host-key.dpapi`,
-the SQLite files, or the rest of `.pidex-data/`. Remove the development CA from
-the other machine when it is no longer needed; do not replace trust with a
-disabled certificate check.
+the SQLite files, or the rest of `.pidex-data-dev/`. Remove the development CA
+from the other machine when it is no longer needed; do not replace trust with
+a disabled certificate check.
 
-Runtime data under `.pidex-data/` contains Host-local state and certificate
+Runtime data under `.pidex-data-dev/` contains Host-local state and certificate
 material and must not be committed.
