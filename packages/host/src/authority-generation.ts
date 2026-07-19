@@ -80,16 +80,10 @@ export class AuthorityGenerationStore {
       this.#createGenesis(catalog);
     }
 
-    const selected = this.#select();
-    this.#repairSelector(selected.envelope.generationId);
-    return new AuthorityStore(
-      join(selected.directory, "authority.sqlite"),
-      this.adapters,
-      catalog,
-    );
+    return this.#openCanonical(catalog);
   }
 
-  /** Bridge release B never cuts over: canonical presence alone is one-way. */
+  /** Uses legacy authority until canonical state has already been published. */
   openBridge(catalog: InitialCatalog = {}): AuthorityStore {
     if (this.#sealedDirectories().length === 0) {
       return new AuthorityStore(
@@ -99,6 +93,10 @@ export class AuthorityGenerationStore {
       );
     }
 
+    return this.#openCanonical(catalog);
+  }
+
+  #openCanonical(catalog: InitialCatalog): AuthorityStore {
     const selected = this.#select();
     this.#repairSelector(selected.envelope.generationId);
     return new AuthorityStore(
@@ -298,6 +296,10 @@ export class AuthorityGenerationStore {
       const row = database
         .prepare("SELECT * FROM authority_generation WHERE singleton=1")
         .get();
+      if (!row) {
+        throw new Error("SQLite metadata disagreement");
+      }
+
       const expected = [
         envelope.generationId,
         envelope.predecessorId,
@@ -307,7 +309,7 @@ export class AuthorityGenerationStore {
         envelope.releaseMin,
         envelope.releaseMax,
       ];
-      const actual = row && [
+      const actual = [
         row.generation_id,
         row.predecessor_id,
         row.activation_index,
@@ -316,10 +318,7 @@ export class AuthorityGenerationStore {
         row.release_min,
         row.release_max,
       ];
-      const metadataDisagrees =
-        !actual ||
-        expected.some((value, index) => value !== actual[index]);
-      if (metadataDisagrees) {
+      if (expected.some((value, index) => value !== actual[index])) {
         throw new Error("SQLite metadata disagreement");
       }
     } finally {

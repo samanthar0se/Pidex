@@ -13,8 +13,15 @@ function hostIdentity(databasePath: string): { hostId: string; epoch: string } {
   try {
     const row = database.prepare(
       "SELECT host_id AS hostId, epoch FROM host WHERE singleton=1",
-    ).get() as { hostId: string; epoch: string };
-    return row;
+    ).get();
+    if (
+      !row ||
+      typeof row.hostId !== "string" ||
+      typeof row.epoch !== "string"
+    ) {
+      throw new Error("Host identity is missing or invalid");
+    }
+    return { hostId: row.hostId, epoch: row.epoch };
   } finally {
     database.close();
   }
@@ -47,13 +54,31 @@ test("bridge release permanently prefers discovered canonical authority", async 
     bridgeHost.rotateSynchronizationEpoch();
     await bridgeHost.close();
 
-    assert.equal(hostIdentity(join(dataDir, "authority.sqlite")).hostId, legacyIdentity);
-    assert.notEqual(hostIdentity(canonicalDatabase).epoch, canonicalIdentity.epoch);
+    assert.equal(
+      hostIdentity(join(dataDir, "authority.sqlite")).hostId,
+      legacyIdentity,
+    );
+    assert.notEqual(
+      hostIdentity(canonicalDatabase).epoch,
+      canonicalIdentity.epoch,
+    );
 
     // A discoverable but damaged canonical generation fails closed; legacy is
     // never reopened as a fallback after the one-way cutover marker exists.
-    await writeFile(join(dataDir, "authority", "generations", generation, "envelope.json"), "{}");
-    await assert.rejects(startHost({ dataDir, port: 0, adapters }), /invalid-generation/);
+    await writeFile(
+      join(
+        dataDir,
+        "authority",
+        "generations",
+        generation,
+        "envelope.json",
+      ),
+      "{}",
+    );
+    await assert.rejects(
+      startHost({ dataDir, port: 0, adapters }),
+      /invalid-generation/,
+    );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
