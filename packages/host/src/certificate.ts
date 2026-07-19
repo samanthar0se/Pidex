@@ -21,126 +21,320 @@ import {
   writeCandidate,
 } from "../../durability/src/index.js";
 
-export interface HostCertificate { key: Buffer; cert: Buffer; ca: Buffer }
+export interface HostCertificate {
+  key: Buffer;
+  cert: Buffer;
+  ca: Buffer;
+}
+
+const TLS_MATERIAL_NAMES = [
+  "pidex-ca.pem",
+  "pidex-ca-key.dpapi",
+  "host.pem",
+  "host-key.dpapi",
+] as const;
+
+type TlsMaterialName = (typeof TLS_MATERIAL_NAMES)[number];
+type TlsMaterial<T> = Record<TlsMaterialName, T>;
 
 interface TlsIdentity {
   schemaVersion: 1;
   generationId: string;
   hostname: string;
-  digests: Record<MaterialName, string>;
+  digests: TlsMaterial<string>;
 }
 
-type MaterialName = "pidex-ca.pem" | "pidex-ca-key.dpapi" | "host.pem" | "host-key.dpapi";
-const MATERIALS: MaterialName[] = ["pidex-ca.pem", "pidex-ca-key.dpapi", "host.pem", "host-key.dpapi"];
-
 /** Selects only a complete, cryptographically coherent retained TLS generation. */
-export function ensureCertificate(dataDir: string, hostname: string, windows: WindowsPlatformAdapter): HostCertificate {
+export function ensureCertificate(
+  dataDir: string,
+  hostname: string,
+  windows: WindowsPlatformAdapter,
+): HostCertificate {
   const tlsRoot = join(dataDir, "tls");
-  const generations = join(tlsRoot, "generations");
-  mkdirSync(generations, { recursive: true });
+  const generationsDirectory = join(tlsRoot, "generations");
+  mkdirSync(generationsDirectory, { recursive: true });
   windows.restrictToCurrentUser(tlsRoot);
 
-  let generation = selectGeneration(generations, hostname, windows);
-  if (!generation) {
-    generation = publishGeneration(tlsRoot, generations, hostname, windows);
+  let generationId = selectGeneration(
+    generationsDirectory,
+    hostname,
+    windows,
+  );
+  if (!generationId) {
+    generationId = publishGeneration(
+      tlsRoot,
+      generationsDirectory,
+      hostname,
+      windows,
+    );
   }
 
   // The selector is a rebuildable hint. Validation never relies on it.
   replaceRebuildableFile({
     target: join(tlsRoot, "Generation"),
-    materialize: writeCandidate(`${generation}\n`),
-    validate: path => readFileSync(path, "utf8").trim() === generation,
+    materialize: writeCandidate(`${generationId}\n`),
+    validate: path => readFileSync(path, "utf8").trim() === generationId,
   });
 
-  const selected = join(generations, generation);
-  validateGeneration(selected, hostname, windows);
-  windows.trustCurrentUserCertificate(join(selected, "pidex-ca.pem"));
+  const selectedGeneration = join(generationsDirectory, generationId);
+  validateGeneration(selectedGeneration, hostname, windows);
+  windows.trustCurrentUserCertificate(
+    join(selectedGeneration, "pidex-ca.pem"),
+  );
   return {
-    key: windows.unprotectForCurrentUser(readFileSync(join(selected, "host-key.dpapi"))),
-    cert: readFileSync(join(selected, "host.pem")),
-    ca: readFileSync(join(selected, "pidex-ca.pem")),
+    key: windows.unprotectForCurrentUser(
+      readFileSync(join(selectedGeneration, "host-key.dpapi")),
+    ),
+    cert: readFileSync(join(selectedGeneration, "host.pem")),
+    ca: readFileSync(join(selectedGeneration, "pidex-ca.pem")),
   };
 }
 
-function selectGeneration(root: string, hostname: string, windows: WindowsPlatformAdapter): string | undefined {
-  const retained = readdirSync(root, { withFileTypes: true })
+function selectGeneration(
+  generationsDirectory: string,
+  hostname: string,
+  windows: WindowsPlatformAdapter,
+): string | undefined {
+  const retainedGenerationIds = readdirSync(generationsDirectory, {
+    withFileTypes: true,
+  })
     .filter(entry => entry.isDirectory())
     .map(entry => entry.name);
-  const valid = retained.filter(name => {
-      try { validateGeneration(join(root, name), hostname, windows); return true; }
-      catch { return false; }
-    });
-  if (retained.length > 0 && valid.length === 0) throw new Error("TLS generation validation failed");
-  if (valid.length > 1) throw new Error("TLS generations are ambiguous");
-  return valid[0];
+  const validGenerationIds = retainedGenerationIds.filter(generationId =>
+    isValidGeneration(
+      join(generationsDirectory, generationId),
+      hostname,
+      windows,
+    ),
+  );
+
+  if (retainedGenerationIds.length > 0 && validGenerationIds.length === 0) {
+    throw new Error("TLS generation validation failed");
+  }
+  if (validGenerationIds.length > 1) {
+    throw new Error("TLS generations are ambiguous");
+  }
+  return validGenerationIds[0];
 }
 
-function publishGeneration(tlsRoot: string, generations: string, hostname: string, windows: WindowsPlatformAdapter): string {
+function isValidGeneration(
+  generationDirectory: string,
+  hostname: string,
+  windows: WindowsPlatformAdapter,
+): boolean {
+  try {
+    validateGeneration(generationDirectory, hostname, windows);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function publishGeneration(
+  tlsRoot: string,
+  generationsDirectory: string,
+  hostname: string,
+  windows: WindowsPlatformAdapter,
+): string {
   const generationId = randomUUID();
   // OpenSSL scratch is deliberately outside the validated publication stage.
   const scratchRoot = join(tlsRoot, ".scratch");
   mkdirSync(scratchRoot, { recursive: true });
-  const scratch = mkdtempSync(join(scratchRoot, "openssl-"));
+  const scratchDirectory = mkdtempSync(join(scratchRoot, "openssl-"));
   try {
-    generateMaterial(scratch, hostname);
-    const protectedMaterial = new Map<MaterialName, Buffer>([
-      ["pidex-ca.pem", readFileSync(join(scratch, "pidex-ca.pem"))],
-      ["pidex-ca-key.dpapi", windows.protectForCurrentUser(readFileSync(join(scratch, "ca-key.pem")))],
-      ["host.pem", readFileSync(join(scratch, "host.pem"))],
-      ["host-key.dpapi", windows.protectForCurrentUser(readFileSync(join(scratch, "host-key.pem")))],
-    ]);
+    generateMaterial(scratchDirectory, hostname);
+    const protectedMaterial = readProtectedMaterial(
+      scratchDirectory,
+      windows,
+    );
     const identity: TlsIdentity = {
-      schemaVersion: 1, generationId, hostname,
-      digests: Object.fromEntries(MATERIALS.map(name => [name, digest(protectedMaterial.get(name)!)])) as Record<MaterialName, string>,
+      schemaVersion: 1,
+      generationId,
+      hostname,
+      digests: materialDigests(protectedMaterial),
     };
+
     publishValidatedTree({
-      target: join(generations, generationId),
+      target: join(generationsDirectory, generationId),
       materialize(stage) {
-        for (const [name, bytes] of protectedMaterial) writeFileSync(join(stage, name), bytes, { flag: "wx" });
-        writeFileSync(join(stage, "identity.json"), JSON.stringify(identity, null, 2), { flag: "wx" });
+        for (const name of TLS_MATERIAL_NAMES) {
+          writeFileSync(join(stage, name), protectedMaterial[name], {
+            flag: "wx",
+          });
+        }
+        writeFileSync(
+          join(stage, "identity.json"),
+          JSON.stringify(identity, null, 2),
+          { flag: "wx" },
+        );
       },
-      validate: path => { validateGeneration(path, hostname, windows); },
+      validate: path => {
+        validateGeneration(path, hostname, windows);
+      },
     });
     return generationId;
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
-    try { if (readdirSync(scratchRoot).length === 0) rmSync(scratchRoot, { recursive: true }); } catch {}
+    rmSync(scratchDirectory, { recursive: true, force: true });
+    removeEmptyDirectory(scratchRoot);
   }
 }
 
-function validateGeneration(directory: string, hostname: string, windows: WindowsPlatformAdapter): void {
-  const names = readdirSync(directory).sort();
-  const expected = [...MATERIALS, "identity.json"].sort();
-  if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error("TLS generation is incomplete");
-  const identity = JSON.parse(readFileSync(join(directory, "identity.json"), "utf8")) as Partial<TlsIdentity>;
-  const directoryName = basename(directory);
-  const identityMatchesDirectory = typeof identity.generationId === "string" &&
-    (directoryName === identity.generationId || directoryName.startsWith(`.${identity.generationId}.`));
-  if (identity.schemaVersion !== 1 || identity.hostname !== hostname || !identityMatchesDirectory || !identity.digests) {
+function readProtectedMaterial(
+  scratchDirectory: string,
+  windows: WindowsPlatformAdapter,
+): TlsMaterial<Buffer> {
+  return {
+    "pidex-ca.pem": readFileSync(join(scratchDirectory, "pidex-ca.pem")),
+    "pidex-ca-key.dpapi": windows.protectForCurrentUser(
+      readFileSync(join(scratchDirectory, "ca-key.pem")),
+    ),
+    "host.pem": readFileSync(join(scratchDirectory, "host.pem")),
+    "host-key.dpapi": windows.protectForCurrentUser(
+      readFileSync(join(scratchDirectory, "host-key.pem")),
+    ),
+  };
+}
+
+function materialDigests(material: TlsMaterial<Buffer>): TlsMaterial<string> {
+  return {
+    "pidex-ca.pem": digest(material["pidex-ca.pem"]),
+    "pidex-ca-key.dpapi": digest(material["pidex-ca-key.dpapi"]),
+    "host.pem": digest(material["host.pem"]),
+    "host-key.dpapi": digest(material["host-key.dpapi"]),
+  };
+}
+
+function removeEmptyDirectory(directory: string): void {
+  try {
+    if (readdirSync(directory).length === 0) {
+      rmSync(directory, { recursive: true });
+    }
+  } catch {
+    // Scratch cleanup is best-effort after its contents have been removed.
+  }
+}
+
+function validateGeneration(
+  directory: string,
+  hostname: string,
+  windows: WindowsPlatformAdapter,
+): void {
+  const actualNames = readdirSync(directory).sort();
+  const expectedNames = [...TLS_MATERIAL_NAMES, "identity.json"].sort();
+  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    throw new Error("TLS generation is incomplete");
+  }
+
+  const identity = JSON.parse(
+    readFileSync(join(directory, "identity.json"), "utf8"),
+  ) as Partial<TlsIdentity>;
+  const generationDirectoryName = basename(directory);
+  const identityMatchesDirectory =
+    typeof identity.generationId === "string" &&
+    (generationDirectoryName === identity.generationId ||
+      generationDirectoryName.startsWith(`.${identity.generationId}.`));
+  if (
+    identity.schemaVersion !== 1 ||
+    identity.hostname !== hostname ||
+    !identityMatchesDirectory ||
+    !identity.digests
+  ) {
     throw new Error("TLS identity metadata is invalid");
   }
-  for (const name of MATERIALS) {
-    if (identity.digests[name] !== digest(readFileSync(join(directory, name)))) throw new Error("TLS generation material is mixed");
+
+  for (const name of TLS_MATERIAL_NAMES) {
+    const publishedDigest = digest(readFileSync(join(directory, name)));
+    if (identity.digests[name] !== publishedDigest) {
+      throw new Error("TLS generation material is mixed");
+    }
   }
-  const ca = new X509Certificate(readFileSync(join(directory, "pidex-ca.pem")));
-  const leaf = new X509Certificate(readFileSync(join(directory, "host.pem")));
-  const caKey = createPrivateKey(windows.unprotectForCurrentUser(readFileSync(join(directory, "pidex-ca-key.dpapi"))));
-  const leafKey = createPrivateKey(windows.unprotectForCurrentUser(readFileSync(join(directory, "host-key.dpapi"))));
-  if (!ca.checkPrivateKey(caKey) || !leaf.checkPrivateKey(leafKey) || !leaf.checkIssued(ca) || leaf.checkHost(hostname) !== hostname) {
+
+  const certificateAuthority = new X509Certificate(
+    readFileSync(join(directory, "pidex-ca.pem")),
+  );
+  const hostCertificate = new X509Certificate(
+    readFileSync(join(directory, "host.pem")),
+  );
+  const certificateAuthorityKey = createPrivateKey(
+    windows.unprotectForCurrentUser(
+      readFileSync(join(directory, "pidex-ca-key.dpapi")),
+    ),
+  );
+  const hostKey = createPrivateKey(
+    windows.unprotectForCurrentUser(
+      readFileSync(join(directory, "host-key.dpapi")),
+    ),
+  );
+  const isCryptographicallyCoherent =
+    certificateAuthority.checkPrivateKey(certificateAuthorityKey) &&
+    hostCertificate.checkPrivateKey(hostKey) &&
+    hostCertificate.checkIssued(certificateAuthority) &&
+    hostCertificate.checkHost(hostname) === hostname;
+  if (!isCryptographicallyCoherent) {
     throw new Error("TLS generation is not cryptographically coherent");
   }
 }
 
-function digest(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
+function digest(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 function generateMaterial(directory: string, hostname: string): void {
-  const caKey = join(directory, "ca-key.pem");
-  const leafKey = join(directory, "host-key.pem");
-  const csr = join(directory, "leaf.csr");
-  const ext = join(directory, "leaf.ext");
-  runOpenSsl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", caKey, "-out", join(directory, "pidex-ca.pem"), "-days", "3650", "-subj", "/CN=Pidex Private CA"]);
-  runOpenSsl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", leafKey, "-out", csr, "-subj", `/CN=${hostname}`]);
-  writeFileSync(ext, `subjectAltName=DNS:${hostname},DNS:localhost,IP:127.0.0.1\n`);
-  runOpenSsl(["x509", "-req", "-in", csr, "-CA", join(directory, "pidex-ca.pem"), "-CAkey", caKey, "-CAcreateserial", "-out", join(directory, "host.pem"), "-days", "825", "-extfile", ext]);
+  const certificateAuthorityKey = join(directory, "ca-key.pem");
+  const hostKey = join(directory, "host-key.pem");
+  const certificateRequest = join(directory, "leaf.csr");
+  const extensions = join(directory, "leaf.ext");
+
+  runOpenSsl([
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    certificateAuthorityKey,
+    "-out",
+    join(directory, "pidex-ca.pem"),
+    "-days",
+    "3650",
+    "-subj",
+    "/CN=Pidex Private CA",
+  ]);
+  runOpenSsl([
+    "req",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    hostKey,
+    "-out",
+    certificateRequest,
+    "-subj",
+    `/CN=${hostname}`,
+  ]);
+  writeFileSync(
+    extensions,
+    `subjectAltName=DNS:${hostname},DNS:localhost,IP:127.0.0.1\n`,
+  );
+  runOpenSsl([
+    "x509",
+    "-req",
+    "-in",
+    certificateRequest,
+    "-CA",
+    join(directory, "pidex-ca.pem"),
+    "-CAkey",
+    certificateAuthorityKey,
+    "-CAcreateserial",
+    "-out",
+    join(directory, "host.pem"),
+    "-days",
+    "825",
+    "-extfile",
+    extensions,
+  ]);
 }
-function runOpenSsl(args: string[]): void { execFileSync("openssl", args, { stdio: "ignore" }); }
+
+function runOpenSsl(opensslArguments: string[]): void {
+  execFileSync("openssl", opensslArguments, { stdio: "ignore" });
+}
