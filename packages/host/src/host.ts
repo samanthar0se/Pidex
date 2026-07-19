@@ -45,6 +45,7 @@ import {
   WorkerLossError,
   WORKER_PROTOCOL_GENERATION,
 } from "./pi-worker.js";
+import { AuthorityGenerationStore } from "./authority-generation.js";
 import {
   AuthorityStore,
   type InitialCatalog,
@@ -301,11 +302,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       constraints: capability.constraints,
     }));
   const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
-  const store = new AuthorityStore(
-    join(options.dataDir, "authority.sqlite"),
+  const store = new AuthorityGenerationStore(
+    options.dataDir,
+    RELEASE_ID.replace("pidex@", ""),
     adapters,
-    options.initialCatalog,
-  );
+  ).open(options.initialCatalog);
   const availableStorageBytes = options.availableStorageBytes ?? (() => {
     const volume = statfsSync(options.dataDir);
     return Number(volume.bavail) * Number(volume.bsize);

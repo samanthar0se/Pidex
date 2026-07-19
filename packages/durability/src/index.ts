@@ -55,12 +55,13 @@ export class PublicationCollisionError extends Error {
 interface DurabilityPlatformAdapter {
   step(step: PublicationStep, path: string): void;
   flushFile(path: string): void;
-  flushDirectory(path: string): "flushed" | "unsupported";
+  flushDirectory(path: string): DirectoryFlushResult;
 }
 
 type PublicationKind = "file" | "tree";
 type PublicationMode = "immutable" | "replace";
 type PublicationPlatform = "windows" | "portable";
+type DirectoryFlushResult = "flushed" | "unsupported";
 
 export interface DeterministicPublicationOptions {
   onStep?(step: PublicationStep, path: string): void;
@@ -149,12 +150,7 @@ function publish(
     validate(request, request.target);
     adapter.step("validated-after-publication", request.target);
 
-    const flushResult = adapter.flushDirectory(parent);
-    if (flushResult === "flushed") {
-      adapter.step("parent-directory-flushed", parent);
-    } else {
-      adapter.step("parent-directory-flush-unsupported", parent);
-    }
+    flushParentDirectory(parent, adapter);
 
     return { target: request.target, outcome: "published" };
   } finally {
@@ -163,6 +159,19 @@ function publish(
       adapter.step("stage-cleaned", stage);
     }
   }
+}
+
+function flushParentDirectory(
+  parent: string,
+  adapter: DurabilityPlatformAdapter,
+): void {
+  const result = adapter.flushDirectory(parent);
+  if (result === "flushed") {
+    adapter.step("parent-directory-flushed", parent);
+    return;
+  }
+
+  adapter.step("parent-directory-flush-unsupported", parent);
 }
 
 function validate(request: PublicationRequest, path: string): void {
@@ -266,34 +275,42 @@ function equivalent(
 ): boolean {
   try {
     if (kind === "file") {
-      return (
-        statSync(right).isFile() &&
-        readFileSync(left).equals(readFileSync(right))
-      );
+      return equivalentFiles(left, right);
     }
-    if (!statSync(right).isDirectory()) {
-      return false;
-    }
-
-    const leftEntries = readdirSync(left).sort();
-    const rightEntries = readdirSync(right).sort();
-    if (leftEntries.length !== rightEntries.length) {
-      return false;
-    }
-
-    return leftEntries.every((name, index) => {
-      if (name !== rightEntries[index]) {
-        return false;
-      }
-
-      const leftPath = join(left, name);
-      const rightPath = join(right, name);
-      const entryKind = lstatSync(leftPath).isDirectory() ? "tree" : "file";
-      return equivalent(leftPath, rightPath, entryKind);
-    });
+    return equivalentTrees(left, right);
   } catch {
     return false;
   }
+}
+
+function equivalentFiles(left: string, right: string): boolean {
+  return (
+    statSync(right).isFile() &&
+    readFileSync(left).equals(readFileSync(right))
+  );
+}
+
+function equivalentTrees(left: string, right: string): boolean {
+  if (!statSync(right).isDirectory()) {
+    return false;
+  }
+
+  const leftEntries = readdirSync(left).sort();
+  const rightEntries = readdirSync(right).sort();
+  if (leftEntries.length !== rightEntries.length) {
+    return false;
+  }
+
+  return leftEntries.every((name, index) => {
+    if (name !== rightEntries[index]) {
+      return false;
+    }
+
+    const leftPath = join(left, name);
+    const rightPath = join(right, name);
+    const entryKind = lstatSync(leftPath).isDirectory() ? "tree" : "file";
+    return equivalent(leftPath, rightPath, entryKind);
+  });
 }
 
 function createAdapter(
@@ -309,27 +326,26 @@ function createAdapter(
     },
     flushFile(path) {
       // r+ is deliberate: Windows FlushFileBuffers requires a write-capable handle.
-      const descriptor = openSync(path, "r+");
-      try {
-        fsyncSync(descriptor);
-      } finally {
-        closeSync(descriptor);
-      }
+      flushPath(path, "r+");
     },
     flushDirectory(path) {
       if (platform === "windows") {
         return "unsupported";
       }
 
-      const descriptor = openSync(path, "r");
-      try {
-        fsyncSync(descriptor);
-      } finally {
-        closeSync(descriptor);
-      }
+      flushPath(path, "r");
       return "flushed";
     },
   };
+}
+
+function flushPath(path: string, mode: "r" | "r+"): void {
+  const descriptor = openSync(path, mode);
+  try {
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function currentPlatform(): PublicationPlatform {
