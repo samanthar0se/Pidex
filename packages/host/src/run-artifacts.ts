@@ -1,10 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  unlinkSync,
-} from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import {
@@ -38,9 +33,6 @@ export class RunArtifactStore {
     text: string,
     checkpoint: string,
   ): void {
-    const directory = this.settlementDirectory();
-    mkdirSync(directory, { recursive: true });
-
     const body = JSON.stringify({ runId, text, checkpoint });
     const evidence = JSON.stringify({ body, digest: sha256(body) });
     publishImmutableFile({
@@ -71,9 +63,7 @@ export class RunArtifactStore {
   /** Publishes verified bytes before returning their content-addressed ID. */
   publishBlob(bytes: Buffer): string {
     const digest = sha256(bytes);
-    const directory = join(this.#dataDir, "blobs");
-    const destination = join(directory, digest);
-    mkdirSync(directory, { recursive: true });
+    const destination = join(this.#dataDir, "blobs", digest);
 
     publishImmutableFile({
       target: destination,
@@ -92,9 +82,15 @@ export class RunArtifactStore {
     const evidence = completionEvidenceSchema.parse(
       JSON.parse(readFileSync(path, "utf8")),
     );
-    if (sha256(evidence.body) !== evidence.digest) throw new Error("bad-evidence");
+    if (sha256(evidence.body) !== evidence.digest) {
+      throw new Error("bad-evidence");
+    }
+
     const body = completionEvidenceBodySchema.parse(JSON.parse(evidence.body));
-    if (body.runId !== runId) throw new Error("bad-evidence");
+    if (body.runId !== runId) {
+      throw new Error("bad-evidence");
+    }
+
     return body;
   }
 
