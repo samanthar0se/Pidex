@@ -7,7 +7,7 @@ The prototype deliberately separates two kinds of evidence:
 - an exhaustive persistence-state oracle that enumerates every allowed post-cut disk image at each named protocol step; and
 - a Windows Hyper-V campaign whose out-of-band controller hard-powers the guest off only after the guest reaches the named step, then boots a read-only recovery witness.
 
-The model is the proof of protocol-state coverage. Hyper-V proves that the real Windows/NTFS path, abrupt reboot path, and evidence collection are wired; it does not certify physical storage. PDU-based physical testing remains characterization unless Pidex later names qualified hardware in its support boundary.
+The model is the proof of protocol-state coverage. Hyper-V proves that the real Windows/NTFS path, abrupt reboot path, and evidence collection are wired; it does not certify physical storage. Both results are advisory release evidence: a failed or missing campaign is prominent and actionable but does not block promotion. PDU-based physical testing remains characterization unless Pidex later names qualified hardware in its support boundary.
 
 Run it from the repository root:
 
@@ -15,4 +15,4 @@ Run it from the repository root:
 npm run prototype:power-loss-evidence
 ```
 
-Use the keyboard to move among publication protocols, cut points, and possible post-cut disk images. The interesting question is whether every displayed image has the right recovery verdict and whether the proposed evidence split is strong enough to block a release.
+Use the keyboard to move among publication protocols, cut points, and possible post-cut disk images. The interesting question is whether every displayed image has the right recovery verdict and whether the advisory evidence makes failures impossible to mistake for proof.

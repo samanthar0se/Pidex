@@ -133,7 +133,7 @@ export const PUBLICATION_PROTOCOLS: readonly PublicationProtocol[] = [
           violation(
             "reference survives, object missing",
             "SQLite references a digest target absent after reboot.",
-            "Fail closed: this release or storage stack violated durable acknowledgment.",
+            "Startup fails closed and advisory evidence records a durable-acknowledgment violation.",
             "complete reference closure",
           ),
         ],
@@ -201,7 +201,7 @@ export const PUBLICATION_PROTOCOLS: readonly PublicationProtocol[] = [
           violation(
             "no valid generation",
             "Neither the candidate nor a retained predecessor validates.",
-            "Fail closed: retention or storage violated the recovery promise.",
+            "Startup fails closed and advisory evidence records a retention or storage violation.",
             "one selected authority",
           ),
         ],
@@ -253,7 +253,7 @@ export const PUBLICATION_PROTOCOLS: readonly PublicationProtocol[] = [
           violation(
             "selector was sole authority",
             "No independently enumerable generation can establish the winner.",
-            "Fail closed: the caller treated rebuildable state as authority.",
+            "Startup fails closed and advisory evidence records that rebuildable state became authority.",
             "one selected authority",
           ),
         ],
@@ -305,7 +305,7 @@ export const PUBLICATION_PROTOCOLS: readonly PublicationProtocol[] = [
           violation(
             "acknowledged transaction lost",
             "WAL recovery exposes only the pre-commit state.",
-            "Fail the covered-storage campaign: a successful flush was not honored.",
+            "Record a failed covered-storage observation: a successful flush was not honored.",
             "acknowledged outcome retained",
           ),
         ],
@@ -386,7 +386,7 @@ export const matrixSummary = () => {
     cutPoints: cuts.length,
     persistenceImages: images.length,
     allowedImages: images.filter(image => image.allowed).length,
-    releaseBlockingViolations: images.filter(image => !image.allowed).length,
+    violations: images.filter(image => !image.allowed).length,
   };
 };
 

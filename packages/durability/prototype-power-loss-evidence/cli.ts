@@ -21,7 +21,7 @@ const render = (): void => {
   console.clear();
   console.log(`${bold}PROTOTYPE — sudden-power-loss evidence${reset}`);
   console.log(
-    `${dim}${summary.protocols} protocols · ${summary.cutPoints} cut points · ${summary.persistenceImages} persistence images · ${summary.releaseBlockingViolations} expected blockers${reset}\n`,
+    `${dim}${summary.protocols} protocols · ${summary.cutPoints} cut points · ${summary.persistenceImages} persistence images · ${summary.violations} expected violations${reset}\n`,
   );
   console.log(`${bold}Protocol${reset}       ${protocol.name}`);
   console.log(`${bold}Promise${reset}        ${protocol.promise}`);
@@ -32,7 +32,7 @@ const render = (): void => {
   console.log(`${bold}On disk${reset}        ${image.disk}`);
   console.log(`${bold}After reboot${reset}   ${image.recovery}\n`);
   console.log(
-    `${bold}Verdict${reset}        ${image.allowed ? `${green}ALLOWED${reset}` : `${red}RELEASE BLOCKER${reset}`}`,
+    `${bold}Verdict${reset}        ${image.allowed ? `${green}ALLOWED${reset}` : `${red}RECOVERY VIOLATION${reset}`}`,
   );
   for (const invariant of image.invariants) {
     const status = invariant.passed
@@ -40,7 +40,7 @@ const render = (): void => {
       : `${red}FAIL${reset}`;
     console.log(`  ${status}  ${invariant.name}`);
   }
-  console.log(`\n${bold}Required evidence${reset}`);
+  console.log(`\n${bold}Advisory release evidence${reset}`);
   console.log(
     `  1. Exhaustive model-oracle result for every protocol × cut point × persistence image.`,
   );
@@ -51,7 +51,7 @@ const render = (): void => {
     `  3. Publisher manifest mapping every authoritative path to one protocol and its domain validator.`,
   );
   console.log(
-    `  4. First attempt remains authoritative; retries may diagnose but never replace a failure.`,
+    `  4. First attempt remains authoritative; failures are prominent but do not block promotion.`,
   );
   console.log(
     `  ${dim}Physical PDU runs characterize named hardware; they do not widen Pidex's support boundary.${reset}`,
