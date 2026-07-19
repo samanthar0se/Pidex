@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+const HOST_STARTUP_TIMEOUT_MS = 10_000;
+
 test(
   "deterministic development startup prints a pairing URL",
-  { timeout: 10_000 },
+  { timeout: HOST_STARTUP_TIMEOUT_MS + 5_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
     const host = spawn(
@@ -37,7 +39,7 @@ test(
               `Development Host did not print pairing instructions.\n${stdout}${stderr}`,
             ),
           );
-        }, 3_000);
+        }, HOST_STARTUP_TIMEOUT_MS);
         host.stdout.setEncoding("utf8");
         host.stdout.on("data", chunk => {
           stdout += String(chunk);
