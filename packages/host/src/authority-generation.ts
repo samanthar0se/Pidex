@@ -17,6 +17,7 @@ import {
   publishValidatedTree,
   replaceRebuildableFile,
 } from "../../durability/src/index.js";
+import { validateRetainedCertificateIdentity } from "./certificate.js";
 import { AuthorityStore, type InitialCatalog } from "./store.js";
 
 const GENERATION_FORMAT_VERSION = 1;
@@ -200,6 +201,15 @@ export class AuthorityGenerationStore {
 
     const tlsDirectory = join(this.#dataDir, "tls");
     if (existsSync(tlsDirectory)) {
+      const tlsGenerationsDirectory = join(tlsDirectory, "generations");
+      if (existsSync(tlsGenerationsDirectory)) {
+        validateRetainedCertificateIdentity(
+          this.#dataDir,
+          this.adapters.windows,
+        );
+        return;
+      }
+
       for (const name of LEGACY_TLS_FILES) {
         const path = join(tlsDirectory, name);
         if (!existsSync(path)) {

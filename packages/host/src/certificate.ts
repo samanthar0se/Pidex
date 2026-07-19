@@ -91,6 +91,36 @@ export function ensureCertificate(
   };
 }
 
+/** Validates retained TLS generations without creating or selecting one. */
+export function validateRetainedCertificateIdentity(
+  dataDir: string,
+  windows: WindowsPlatformAdapter,
+): void {
+  const generationsDirectory = join(dataDir, "tls", "generations");
+  const generation = readdirSync(generationsDirectory, {
+    withFileTypes: true,
+  }).find(entry => entry.isDirectory());
+  if (!generation) {
+    throw new Error("TLS identity is incomplete");
+  }
+
+  const identity = JSON.parse(
+    readFileSync(
+      join(generationsDirectory, generation.name, "identity.json"),
+      "utf8",
+    ),
+  ) as Partial<TlsIdentity>;
+  if (typeof identity.hostname !== "string") {
+    throw new Error("TLS identity hostname is missing");
+  }
+
+  // Discovery validates every retained generation and rejects ambiguous
+  // installation identities. The selector remains only a rebuildable hint.
+  if (!selectGeneration(generationsDirectory, identity.hostname, windows)) {
+    throw new Error("TLS identity is incomplete");
+  }
+}
+
 function selectGeneration(
   generationsDirectory: string,
   hostname: string,
