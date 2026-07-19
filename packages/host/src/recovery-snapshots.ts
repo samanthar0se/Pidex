@@ -12,6 +12,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
+export {
+  OnlineSnapshotStore,
+  type OnlineSnapshotInput,
+  type SelectableSnapshot,
+  type SnapshotManifest,
+  type SnapshotManifestBody,
+} from "./immutable-recovery-snapshots.js";
 
 const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1_000;
 const SCHEDULED_SNAPSHOT_RETENTION = 7;
