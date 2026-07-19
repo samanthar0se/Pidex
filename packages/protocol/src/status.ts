@@ -78,27 +78,27 @@ export const durabilityRoles = [
   "pi-checkpoint",
 ] as const;
 
-const durabilityStateSchema = z.enum([
+export const coverageStates = [
   "covered",
   "outside-boundary",
   "indeterminate",
-]);
-const durabilityCoverageSchema = z.object({
+] as const;
+const durabilityRoleSchema = z.enum(durabilityRoles);
+const durabilityStateSchema = z.enum(coverageStates);
+export const roleCoverageSchema = z.object({
+  role: durabilityRoleSchema,
+  state: durabilityStateSchema,
+  reason: z.string(),
+});
+export const durabilityCoverageSchema = z.object({
   aggregate: durabilityStateSchema,
   assessment: z.enum(["assessment-pending", "complete"]),
-  roles: z.array(
-    z.object({
-      role: z.enum(durabilityRoles),
-      state: durabilityStateSchema,
-      reason: z.enum([
-        "fixed-ntfs",
-        "outside-fixed-ntfs",
-        "assessment-pending",
-        "classification-unavailable",
-      ]),
-    }),
-  ),
+  assessedAt: z.number().optional(),
+  roles: z.array(roleCoverageSchema),
 });
+export type DurabilityRole = z.infer<typeof durabilityRoleSchema>;
+export type CoverageState = z.infer<typeof durabilityStateSchema>;
+export type RoleCoverage = z.infer<typeof roleCoverageSchema>;
 export type DurabilityCoverage = z.infer<typeof durabilityCoverageSchema>;
 
 export const hostStatusSchema = z.object({

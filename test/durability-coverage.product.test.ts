@@ -4,7 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
-import { adaptersFor, type StorageVolumeFacts } from "../packages/adapters/src/index.js";
+import {
+  adaptersFor,
+  type StorageClassification,
+} from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { clientHello } from "../packages/protocol/src/status.js";
 import { nextControlMessage } from "./control-client.js";
@@ -14,13 +17,19 @@ test("Durability coverage is asynchronous, role-specific, conservative, and priv
   const installationDir = join(dataDir, "private-installation");
   const checkpointDir = join(dataDir, "private-checkpoints");
   const adapters = adaptersFor("deterministic");
-  const resolvers = new Map<string, (facts: StorageVolumeFacts) => void>();
-  adapters.windows.classifyStorage = path =>
-    new Promise(resolve => resolvers.set(path, resolve));
-  const resolveStorage = (path: string, facts: StorageVolumeFacts): void => {
-    const resolve = resolvers.get(path);
-    assert.ok(resolve, "expected a pending storage classification");
-    resolve(facts);
+  const resolvers = new Map<
+    string,
+    {
+      resolve: (facts: StorageClassification) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+  adapters.windows.classifyStorageRoot = path =>
+    new Promise((resolve, reject) => resolvers.set(path, { resolve, reject }));
+  const resolveStorage = (path: string, facts: StorageClassification): void => {
+    const resolver = resolvers.get(path);
+    assert.ok(resolver, "expected a pending storage classification");
+    resolver.resolve(facts);
   };
   const host = await startHost({
     dataDir,
@@ -57,7 +66,9 @@ test("Durability coverage is asynchronous, role-specific, conservative, and priv
       fileSystem: "ReFS",
       driveType: "fixed",
     });
-    resolveStorage(checkpointDir, { fileSystem: "NTFS" });
+    resolvers
+      .get(checkpointDir)
+      ?.reject(new Error("classification unavailable"));
     const change = await nextControlMessage(socket);
     assert.equal(change.type, "durability.coverage-changed");
     if (change.type !== "durability.coverage-changed") {

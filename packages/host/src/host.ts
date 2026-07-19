@@ -31,10 +31,10 @@ import {
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
 import {
-  assessDurabilityCoverage,
-  durabilityWarningsFor,
-  pendingDurabilityCoverage,
-} from "./durability.js";
+  type CoverageDiagnostic,
+  DurabilityCoverageMonitor,
+  type DurabilityRole,
+} from "./durability-coverage.js";
 import {
   PairingAuthority,
   PairingError,
@@ -274,6 +274,10 @@ export interface HostOptions {
   piCheckpointDir?: string;
   /** Time allowed to classify each durability storage role. */
   durabilityAssessmentTimeoutMs?: number;
+  /** Time allowed for each operational coverage refresh. */
+  coverageRefreshTimeoutMs?: number;
+  /** Receives privacy-safe state transition diagnostics. */
+  onDiagnostic?: (event: CoverageDiagnostic) => void;
 }
 
 export interface StartedHost {
@@ -286,6 +290,13 @@ export interface StartedHost {
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
   storageProtection(): StorageProtectionStatus;
+  doctor(): Promise<{
+    check: "storage";
+    outcome: "healthy" | "degraded";
+    coverage: DurabilityCoverage;
+  }>;
+  exportSupport(): Promise<{ durability: DurabilityCoverage }>;
+  updateStorageRoots(roots: Partial<Record<DurabilityRole, string>>): void;
   close(): Promise<void>;
 }
 
@@ -335,15 +346,53 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     adapters.windows,
   );
   const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
-  let durabilityCoverage: DurabilityCoverage = pendingDurabilityCoverage();
-  let durabilityWarnings = durabilityWarningsFor(durabilityCoverage);
-  const currentWarnings = (): HostStatus["warnings"] => [
-    ...firewallWarnings,
-    ...durabilityWarnings,
-  ];
-  const currentStatus = (): HostStatus =>
-    store.status(RELEASE_ID, currentWarnings(), durabilityCoverage);
+  const coverage = new DurabilityCoverageMonitor(
+    adapters.windows,
+    {
+      "host-data": options.dataDir,
+      "installation-release": options.installationDir ?? options.dataDir,
+      "pi-checkpoint": options.piCheckpointDir ?? options.dataDir,
+    },
+    () => adapters.clock.now(),
+    options.coverageRefreshTimeoutMs ??
+      options.durabilityAssessmentTimeoutMs ??
+      DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS,
+    options.onDiagnostic ?? (() => {}),
+  );
+  const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => {
+    void refreshCoverage();
+  });
   const pairing = new PairingAuthority(adapters.clock, store);
+
+  function status(): HostStatus {
+    const durability = coverage.current();
+    return {
+      ...store.status(RELEASE_ID, firewallWarnings),
+      warnings: [
+        ...firewallWarnings,
+        ...createDurabilityWarnings(durability),
+      ],
+      durability,
+    };
+  }
+
+  async function refreshCoverage(): Promise<DurabilityCoverage> {
+    const refreshed = await coverage.refresh();
+    for (const client of admittedClients) {
+      if (
+        admittedCapabilityBasisByClient
+          .get(client)
+          ?.has(DURABILITY_COVERAGE_CAPABILITY)
+      ) {
+        sendServerMessage(client, {
+          type: "durability.coverage-changed",
+          coverage: refreshed,
+          warnings: status().warnings,
+        });
+      }
+    }
+    return refreshed;
+  }
 
   const server = createServer(
     {
@@ -440,7 +489,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         JSON.stringify({
           type: "delivery.resynchronize",
           reason: "outbound-queue-overflow",
-          lastCursor: currentStatus().synchronization.cursor,
+          lastCursor: status().synchronization.cursor,
         } satisfies ServerMessage),
       );
       client.close(4009, "resynchronize:outbound-queue-overflow");
@@ -563,16 +612,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     sendServerMessage(webSocket, {
       type: "host.hello",
-      hostId: currentStatus().hostId,
+      hostId: status().hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
   });
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
-    const status = currentStatus();
-    if (hello.expectedHostId !== status.hostId) {
-      sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
+    const currentStatus = status();
+    if (hello.expectedHostId !== currentStatus.hostId) {
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "host-mismatch");
       return;
     }
 
@@ -580,7 +629,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       .filter(protocol => protocol.major === protocolMajor)
       .sort((a, b) => b.minor - a.minor)[0];
     if (!offered) {
-      sendProtocolUpdateRequired(client, status.hostId, "no-common-major");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "no-common-major");
       return;
     }
 
@@ -597,7 +646,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         !admittedCapabilities.some(capability => capability.id === requiredId),
     );
     if (missingRequiredCapability) {
-      sendProtocolUpdateRequired(client, status.hostId, "missing-capability");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "missing-capability");
       return;
     }
 
@@ -608,7 +657,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     );
     sendServerMessage(client, {
       type: "protocol.admitted",
-      hostId: status.hostId,
+      hostId: currentStatus.hostId,
       protocol: {
         major: protocolMajor,
         minor: Math.min(protocolMinor, offered.minor),
@@ -618,7 +667,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sendServerMessage(client, {
       type: "host.snapshot",
       protocolVersion,
-      status,
+      status: currentStatus,
       ...store.projection(),
     });
   }
@@ -638,7 +687,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
-    const status = currentStatus();
+    const currentStatus = status();
     const allSessions = [
       ...projection.sessions,
       ...projection.archivedSessions,
@@ -670,7 +719,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       sendServerMessage(client, {
         type: "scope.current",
         scope: { kind: "host" },
-        cursor: status.synchronization.cursor,
+        cursor: currentStatus.synchronization.cursor,
       });
     } else {
       let reason: ScopeResetReason;
@@ -689,7 +738,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         reason,
         barrier: {
           scope: { kind: "host" },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
             allSessions.map(session => [
               session.sessionId,
@@ -721,7 +770,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(client, {
           type: "scope.current",
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
         });
         continue;
       }
@@ -733,7 +782,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             : "revision-mismatch",
         barrier: {
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: {
             metadata: session.metadataRevision,
             timeline: session.timelineRevision,
@@ -767,33 +816,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       : (options.port ?? DEFAULT_PORT);
 
   const canonicalOrigin = `https://${hostname}:${port}`;
-  void assessDurabilityCoverage(
-    adapters.windows,
-    {
-      "host-data": options.dataDir,
-      "installation-release": options.installationDir ?? resolve("."),
-      "pi-checkpoint":
-        options.piCheckpointDir ?? join(options.dataDir, "pi-checkpoints"),
-    },
-    options.durabilityAssessmentTimeoutMs ??
-      DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS,
-  ).then(coverage => {
-    durabilityCoverage = coverage;
-    durabilityWarnings = durabilityWarningsFor(coverage);
-    for (const client of admittedClients) {
-      if (
-        admittedCapabilityBasisByClient
-          .get(client)
-          ?.has(DURABILITY_COVERAGE_CAPABILITY)
-      ) {
-        sendServerMessage(client, {
-          type: "durability.coverage-changed",
-          coverage,
-          warnings: currentWarnings(),
-        });
-      }
-    }
-  });
+  void refreshCoverage();
   const fingerprint = createHash("sha256")
     .update(certificate.ca)
     .digest("hex");
@@ -1944,12 +1967,23 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       admitDiscretionaryWrite();
       return pairing.create(canonicalOrigin);
     },
-    status: currentStatus,
+    status,
     storageProtection: () => storageProtection.status(),
+    doctor: async () => {
+      const refreshed = await refreshCoverage();
+      return {
+        check: "storage",
+        outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
+        coverage: refreshed,
+      };
+    },
+    exportSupport: async () => ({ durability: await refreshCoverage() }),
+    updateStorageRoots: roots => coverage.setRoots(roots),
     revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
+      stopVolumeObservation();
       stopAdvertisement();
       for (const timer of interactionDeadlineTimers.values()) {
         clearTimeout(timer);
@@ -2534,6 +2568,26 @@ function configureFirewall(
   console.error(JSON.stringify(warning));
 
   return [warning];
+}
+
+function createDurabilityWarnings(
+  coverage: DurabilityCoverage,
+): HostStatus["warnings"] {
+  const warnings: HostStatus["warnings"] = [];
+  for (const role of coverage.roles) {
+    if (role.state === "covered") {
+      continue;
+    }
+    warnings.push({
+      severity: "medium",
+      code: "durability-coverage-degraded",
+      role: role.role,
+      state: role.state,
+      reason: role.reason,
+      detail: `Durability coverage for ${role.role} is ${role.state}.`,
+    });
+  }
+  return warnings;
 }
 
 function hasValidAuthorization(

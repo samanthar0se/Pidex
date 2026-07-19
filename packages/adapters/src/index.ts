@@ -154,6 +154,10 @@ export interface WindowsPlatformAdapter {
   createContainedSessionWorker(sessionId: string): SessionJob;
   /** Returns only coarse volume facts; callers must not publish the resolved path or device. */
   classifyStorage(path: string): Promise<StorageVolumeFacts>;
+  /** Classifies a root for refreshed recovery-oriented coverage reporting. */
+  classifyStorageRoot(path: string): Promise<StorageClassification>;
+  /** Reports volume topology changes; the returned function removes the observer. */
+  observeVolumeChanges(listener: () => void): () => void;
 }
 
 export interface StorageVolumeFacts {
@@ -165,6 +169,11 @@ export interface StorageVolumeFacts {
     | "optical"
     | "ramdisk"
     | "unknown";
+}
+
+export interface StorageClassification {
+  fileSystem: string;
+  driveType: "fixed" | "remote" | "removable" | "unknown";
 }
 
 export interface SessionJob {
@@ -360,6 +369,11 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       close() {},
     }),
     classifyStorage: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    classifyStorageRoot: async () => ({
+      fileSystem: "NTFS",
+      driveType: "fixed",
+    }),
+    observeVolumeChanges: () => () => {},
   };
 }
 
@@ -419,6 +433,14 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
     },
     async classifyStorage() {
       throw new Error("Pidex Windows volume classification bridge is not bundled");
+    },
+    async classifyStorageRoot() {
+      throw new Error(
+        "Pidex Windows storage classification bridge is not bundled",
+      );
+    },
+    observeVolumeChanges() {
+      return () => {};
     },
   };
 }
