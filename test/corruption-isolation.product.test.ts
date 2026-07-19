@@ -56,6 +56,39 @@ test("scrubbing repairs only an exact proven copy and isolates unprovable damage
   }
 });
 
+test("scrubbing rejects an exact copy without independent provenance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-scrub-"));
+  try {
+    await mkdir(join(root, "live"));
+    await mkdir(join(root, "backup"));
+    await writeFile(join(root, "live", "one"), "broken");
+    await writeFile(join(root, "backup", "one"), "exact");
+    const scrubber = new CorruptionScrubber(root, [
+      {
+        id: "blob-one",
+        kind: "blob",
+        path: "live/one",
+        digest: hash("exact"),
+        scope: { kind: "session", id: "session-one" },
+        copies: [
+          {
+            path: "backup/one",
+            provenance: "  ",
+            digest: hash("exact"),
+          },
+        ],
+      },
+    ]);
+
+    const result = scrubber.scrub({ now: 100, byteBudget: Infinity });
+    assert.deepEqual(result.repaired, []);
+    assert.deepEqual(result.isolated, ["session:session-one"]);
+    assert.equal(await readFile(join(root, "live", "one"), "utf8"), "broken");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("global authority corruption enters capability-gated local recovery", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-scrub-"));
   try {

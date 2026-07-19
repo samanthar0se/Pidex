@@ -9,7 +9,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { publishValidatedTree, replaceRebuildableFile } from "../../durability/src/index.js";
+import {
+  publishValidatedTree,
+  replaceRebuildableFile,
+} from "../../durability/src/index.js";
 
 export interface AuthorityGenerationEnvelope {
   formatVersion: 1;
@@ -38,8 +41,8 @@ export interface AuthorityTransition {
   sourceGeneration: string;
   objects?: string[];
   rotateContinuity?: boolean;
-  materialize(stage: string, source: string): void;
-  validate?(stage: string): void;
+  materialize(stagingDirectory: string, sourceDirectory: string): void;
+  validate?(stagingDirectory: string): void;
 }
 
 interface GenerationCandidates {
@@ -64,42 +67,56 @@ export class AuthorityGenerationStore {
   }
 
   /**
-   * The single activation path for migration, restore, rollback, Reidentify,
-   * and whole-Authority repair. Publication is acknowledged only after the
-   * production resolver can select the new sealed generation.
+   * Publishes a sealed generation for migration, restore, rollback,
+   * Reidentify, or whole-Authority repair. Activation succeeds only when the
+   * production resolver selects the published generation.
    */
   activate(transition: AuthorityTransition): GenerationResolution {
-    const before = this.resolve().selected;
-    if (before.generationId !== transition.sourceGeneration) {
+    const sourceEnvelope = this.resolve().selected;
+    if (sourceEnvelope.generationId !== transition.sourceGeneration) {
       throw new Error("Authority transition source is not selected");
     }
+
     const generationId = randomUUID();
-    const source = join(this.#generations, before.generationId);
+    const sourceDirectory = join(
+      this.#generations,
+      sourceEnvelope.generationId,
+    );
     const envelope: AuthorityGenerationEnvelope = {
       formatVersion: 1,
       generationId,
-      activationIndex: before.activationIndex + 1,
-      predecessor: before.generationId,
+      activationIndex: sourceEnvelope.activationIndex + 1,
+      predecessor: sourceEnvelope.generationId,
       continuity: transition.rotateContinuity
         ? randomUUID()
-        : before.continuity,
-      objects: transition.objects ?? before.objects,
+        : sourceEnvelope.continuity,
+      objects: transition.objects ?? sourceEnvelope.objects,
       sealed: true,
     };
+
     publishValidatedTree({
       target: join(this.#generations, generationId),
-      materialize: stage => {
-        transition.materialize(stage, source);
-        writeFileSync(join(stage, "envelope.json"), JSON.stringify(envelope, null, 2));
+      materialize: stagingDirectory => {
+        transition.materialize(stagingDirectory, sourceDirectory);
+        writeFileSync(
+          join(stagingDirectory, "envelope.json"),
+          JSON.stringify(envelope, null, 2),
+        );
       },
-      validate: stage => {
-        const candidate = this.#readJson(join(stage, "envelope.json"));
-        if (!isEnvelope(candidate) || candidate.generationId !== generationId) {
+      validate: stagingDirectory => {
+        const stagedEnvelope = this.#readJson(
+          join(stagingDirectory, "envelope.json"),
+        );
+        if (
+          !isEnvelope(stagedEnvelope) ||
+          stagedEnvelope.generationId !== generationId
+        ) {
           throw new Error("Invalid Authority transition envelope");
         }
-        transition.validate?.(stage);
+        transition.validate?.(stagingDirectory);
       },
     });
+
     const resolution = this.resolve();
     if (resolution.selected.generationId !== generationId) {
       throw new Error("Authority transition was not selected");
@@ -388,7 +405,8 @@ export class AuthorityGenerationStore {
     replaceRebuildableFile({
       target: join(this.#root, name),
       materialize: stage => writeFileSync(stage, JSON.stringify(value)),
-      validate: stage => JSON.stringify(this.#readJson(stage)) === JSON.stringify(value),
+      validate: stage =>
+        JSON.stringify(this.#readJson(stage)) === JSON.stringify(value),
     });
   }
 

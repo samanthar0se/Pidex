@@ -164,12 +164,8 @@ export class CorruptionScrubber {
     result: ScrubResult,
   ): void {
     // Catalog order and recency carry no authority: every candidate proves exact bytes.
-    const copy = object.copies.find(
-      candidate =>
-        candidate.provenance.trim().length > 0 &&
-        candidate.path !== object.path &&
-        candidate.digest === object.digest &&
-        this.isValid(candidate.path, object.digest, object.kind),
+    const copy = object.copies.find(candidate =>
+      this.isProvenCopy(object, candidate),
     );
     if (copy) {
       this.repairFromCopy(object, copy, now, result);
@@ -228,6 +224,15 @@ export class CorruptionScrubber {
       digest: object.digest,
       quarantine,
     });
+  }
+
+  private isProvenCopy(object: ScrubObject, copy: ScrubCopy): boolean {
+    return (
+      copy.provenance.trim().length > 0 &&
+      copy.path !== object.path &&
+      copy.digest === object.digest &&
+      this.isValid(copy.path, object.digest, object.kind)
+    );
   }
 
   private isValid(
