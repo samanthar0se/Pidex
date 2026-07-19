@@ -15,12 +15,11 @@ test(
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
     const host = spawn(
       process.execPath,
-      ["--import", "tsx", "packages/host/src/main.ts"],
+      ["--import", "tsx", "packages/host/src/dev.ts"],
       {
         cwd: process.cwd(),
         env: {
           ...process.env,
-          PIDEX_ADAPTERS: "deterministic",
           PIDEX_DATA_DIR: dataDir,
           PIDEX_HOSTNAME: "192.0.2.10",
           PIDEX_PORT: "0",
