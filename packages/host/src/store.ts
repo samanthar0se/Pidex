@@ -334,6 +334,7 @@ export class AuthorityStore {
     }
   }
 
+  /** Writes generation metadata for a new or copied Authority database. */
   initializeGeneration(metadata: AuthorityGenerationMetadata): void {
     this.#db
       .prepare(

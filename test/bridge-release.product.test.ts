@@ -192,9 +192,14 @@ test("cleanup release C deletes legacy only with later complete unheld proof", a
     await legacy.close();
     const bridgeDirectory = join(dataDir, "releases", "bridge-0.1.0");
     await mkdir(bridgeDirectory, { recursive: true });
-    await writeFile(join(bridgeDirectory, "release.json"), JSON.stringify({
-      role: "bridge", release: "0.1.0", authorityFormat: 1,
-    }));
+    await writeFile(
+      join(bridgeDirectory, "release.json"),
+      JSON.stringify({
+        role: "bridge",
+        release: "0.1.0",
+        authorityFormat: 1,
+      }),
+    );
 
     const cleanup = new AuthorityGenerationStore(dataDir, "0.1.0", adapters);
     await cleanup.migrateLegacy({ bridgeDirectory });
@@ -204,7 +209,12 @@ test("cleanup release C deletes legacy only with later complete unheld proof", a
       "0.1.0\n",
     );
     assert.throws(
-      () => cleanup.deleteLegacy({ nonce: "elapsed-time", generationIds: [], tlsDigests: {} }),
+      () =>
+        cleanup.deleteLegacy({
+          nonce: "elapsed-time",
+          generationIds: [],
+          tlsDigests: {},
+        }),
       /cleanup-proof-missing/,
     );
 
