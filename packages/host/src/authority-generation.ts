@@ -21,6 +21,14 @@ import { AuthorityStore, type InitialCatalog } from "./store.js";
 
 const GENERATION_FORMAT_VERSION = 1;
 const AUTHORITY_SCHEMA_VERSION = 1;
+const OBJECT_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+const MIGRATION_FREEZE_CONTENT = "release-m\n";
+const LEGACY_TLS_FILES = [
+  "pidex-ca.pem",
+  "pidex-ca-key.dpapi",
+  "host.pem",
+  "host-key.dpapi",
+];
 const generationIdSchema = z.string().regex(/^generation_[0-9a-f-]{36}$/);
 const envelopeSchema = z.object({
   generationId: generationIdSchema,
@@ -30,7 +38,7 @@ const envelopeSchema = z.object({
   formatVersion: z.literal(GENERATION_FORMAT_VERSION),
   releaseMin: z.string().regex(/^\d+\.\d+\.\d+$/),
   releaseMax: z.string().regex(/^\d+\.\d+\.\d+$/),
-  objects: z.array(z.string().regex(/^[0-9a-f]{64}$/)),
+  objects: z.array(z.string().regex(OBJECT_DIGEST_PATTERN)),
 });
 export type AuthorityGenerationEnvelope = z.infer<typeof envelopeSchema>;
 
@@ -94,7 +102,7 @@ export class AuthorityGenerationStore {
   /** Uses legacy authority until canonical state has already been published. */
   openBridge(catalog: InitialCatalog = {}): AuthorityStore {
     if (this.#sealedDirectories().length === 0) {
-      if (existsSync(join(this.#authorityDirectory, "MIGRATION-FROZEN"))) {
+      if (existsSync(this.#migrationFreezePath())) {
         throw new Error("legacy authority is frozen for migration");
       }
       return new AuthorityStore(
@@ -119,53 +127,41 @@ export class AuthorityGenerationStore {
 
     const legacyPath = join(this.#dataDir, "authority.sqlite");
     if (!existsSync(legacyPath)) {
-      throw new AuthorityGenerationError("invalid-generation", "legacy authority is missing");
+      throw new AuthorityGenerationError(
+        "invalid-generation",
+        "legacy authority is missing",
+      );
     }
     const source = new DatabaseSync(legacyPath);
-    const backupPath = join(this.#authorityDirectory, `.legacy-backup-${randomUUID()}.sqlite`);
+    const backupPath = join(
+      this.#authorityDirectory,
+      `.legacy-backup-${randomUUID()}.sqlite`,
+    );
     try {
-      const integrity = source.prepare("PRAGMA integrity_check").get() as
-        | { integrity_check?: unknown }
-        | undefined;
+      const integrity = source.prepare("PRAGMA integrity_check").get();
       if (integrity?.integrity_check !== "ok") {
-        throw new AuthorityGenerationError("invalid-generation", "legacy database integrity failed");
+        throw new AuthorityGenerationError(
+          "invalid-generation",
+          "legacy database integrity failed",
+        );
       }
       // Published before backup: startup cannot reopen legacy after this
       // durable freeze. Release M is invoked only after release B has quiesced.
       replaceRebuildableFile({
-        target: join(this.#authorityDirectory, "MIGRATION-FROZEN"),
-        materialize: stage => writeFileSync(stage, "release-m\n"),
-        validate: candidate => readFileSync(candidate, "utf8") === "release-m\n",
+        target: this.#migrationFreezePath(),
+        materialize: stage => writeFileSync(stage, MIGRATION_FREEZE_CONTENT),
+        validate: candidate =>
+          readFileSync(candidate, "utf8") === MIGRATION_FREEZE_CONTENT,
       });
       await backup(source, backupPath);
-    } catch (error) {
-      throw error;
     } finally {
       source.close();
     }
 
     try {
       const objects = this.#publishLegacyObjects();
-      const generationId = `generation_${randomUUID()}`;
-      const envelope: AuthorityGenerationEnvelope = {
-        generationId, predecessorId: null, activationIndex: 1,
-        schemaVersion: AUTHORITY_SCHEMA_VERSION,
-        formatVersion: GENERATION_FORMAT_VERSION,
-        releaseMin: this.release, releaseMax: this.release, objects,
-      };
-      publishValidatedTree({
-        target: join(this.#generationsDirectory, generationId),
-        materialize: stage => {
-          copyFileSync(backupPath, join(stage, "authority.sqlite"));
-          const migrated = new AuthorityStore(join(stage, "authority.sqlite"), this.adapters);
-          migrated.initializeGeneration(envelope);
-          migrated.close();
-          writeFileSync(join(stage, "envelope.json"), JSON.stringify(envelope));
-          // Written last: discovery of this file is the irreversible cutover.
-          writeFileSync(join(stage, "SEALED"), "sealed\n");
-        },
-        validate: stage => { this.#validateDirectory(stage); },
-      });
+      const envelope = this.#createGenesisEnvelope(objects);
+      this.#publishMigratedGeneration(backupPath, envelope);
       // Work remains closed until the startup-equivalent resolver selects it.
       this.#openCanonical({}).close();
     } finally {
@@ -175,9 +171,16 @@ export class AuthorityGenerationStore {
 
   #validateBridge(directory: string): void {
     const manifestPath = join(directory, "release.json");
-    if (!existsSync(manifestPath)) throw new Error("compatible bridge release is not retained");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
-    if (manifest.role !== "bridge" || manifest.authorityFormat !== GENERATION_FORMAT_VERSION) {
+    if (!existsSync(manifestPath)) {
+      throw new Error("compatible bridge release is not retained");
+    }
+
+    const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (
+      !isRecord(manifest) ||
+      manifest.role !== "bridge" ||
+      manifest.authorityFormat !== GENERATION_FORMAT_VERSION
+    ) {
       throw new Error("retained bridge release is incompatible");
     }
   }
@@ -185,16 +188,26 @@ export class AuthorityGenerationStore {
   #validateLegacyIdentityAndTls(): void {
     const identityPath = join(this.#dataDir, "identity.json");
     if (existsSync(identityPath)) {
-      const identity = JSON.parse(readFileSync(identityPath, "utf8")) as Record<string, unknown>;
-      if (identity.schemaVersion !== 1 || typeof identity.hostname !== "string") {
+      const identity: unknown = JSON.parse(readFileSync(identityPath, "utf8"));
+      if (
+        !isRecord(identity) ||
+        identity.schemaVersion !== 1 ||
+        typeof identity.hostname !== "string"
+      ) {
         throw new Error("installation identity is invalid");
       }
     }
-    const tls = join(this.#dataDir, "tls");
-    if (existsSync(tls)) {
-      for (const name of ["pidex-ca.pem", "pidex-ca-key.dpapi", "host.pem", "host-key.dpapi"]) {
-        const path = join(tls, name);
-        if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size === 0) {
+
+    const tlsDirectory = join(this.#dataDir, "tls");
+    if (existsSync(tlsDirectory)) {
+      for (const name of LEGACY_TLS_FILES) {
+        const path = join(tlsDirectory, name);
+        if (!existsSync(path)) {
+          throw new Error("TLS identity is incomplete");
+        }
+
+        const statistics = statSync(path);
+        if (!statistics.isFile() || statistics.size === 0) {
           throw new Error("TLS identity is incomplete");
         }
       }
@@ -203,21 +216,64 @@ export class AuthorityGenerationStore {
 
   #publishLegacyObjects(): string[] {
     const legacyObjects = join(this.#dataDir, "blobs");
-    if (!existsSync(legacyObjects)) return [];
+    if (!existsSync(legacyObjects)) {
+      return [];
+    }
+
     const objects: string[] = [];
     for (const entry of readdirSync(legacyObjects, { withFileTypes: true })) {
-      if (!entry.isFile() || !/^[0-9a-f]{64}$/.test(entry.name)) {
+      if (!entry.isFile() || !OBJECT_DIGEST_PATTERN.test(entry.name)) {
         throw new AuthorityGenerationError("absent-closure", entry.name);
       }
-      const bytes = readFileSync(join(legacyObjects, entry.name));
+
+      const source = join(legacyObjects, entry.name);
+      const bytes = readFileSync(source);
       if (createHash("sha256").update(bytes).digest("hex") !== entry.name) {
         throw new AuthorityGenerationError("absent-closure", entry.name);
       }
+
       const target = join(this.#objectsDirectory, entry.name);
-      if (!existsSync(target)) copyFileSync(join(legacyObjects, entry.name), target);
+      if (!existsSync(target)) {
+        copyFileSync(source, target);
+      }
       objects.push(entry.name);
     }
     return objects.sort();
+  }
+
+  #migrationFreezePath(): string {
+    return join(this.#authorityDirectory, "MIGRATION-FROZEN");
+  }
+
+  #createGenesisEnvelope(objects: string[]): AuthorityGenerationEnvelope {
+    return {
+      generationId: `generation_${randomUUID()}`,
+      predecessorId: null,
+      activationIndex: 1,
+      schemaVersion: AUTHORITY_SCHEMA_VERSION,
+      formatVersion: GENERATION_FORMAT_VERSION,
+      releaseMin: this.release,
+      releaseMax: this.release,
+      objects,
+    };
+  }
+
+  #publishMigratedGeneration(
+    backupPath: string,
+    envelope: AuthorityGenerationEnvelope,
+  ): void {
+    publishValidatedTree({
+      target: join(this.#generationsDirectory, envelope.generationId),
+      materialize: stage => {
+        const databasePath = join(stage, "authority.sqlite");
+        copyFileSync(backupPath, databasePath);
+        this.#initializeGeneration(databasePath, envelope);
+        this.#writeGenerationMetadata(stage, envelope);
+      },
+      validate: stage => {
+        this.#validateDirectory(stage);
+      },
+    });
   }
 
   #openCanonical(catalog: InitialCatalog): AuthorityStore {
@@ -243,34 +299,46 @@ export class AuthorityGenerationStore {
   }
 
   #createGenesis(catalog: InitialCatalog): void {
-    const generationId = `generation_${randomUUID()}`;
-    const envelope: AuthorityGenerationEnvelope = {
-      generationId,
-      predecessorId: null,
-      activationIndex: 1,
-      schemaVersion: AUTHORITY_SCHEMA_VERSION,
-      formatVersion: GENERATION_FORMAT_VERSION,
-      releaseMin: this.release,
-      releaseMax: this.release,
-      objects: [],
-    };
+    const envelope = this.#createGenesisEnvelope([]);
     publishValidatedTree({
-      target: join(this.#generationsDirectory, generationId),
+      target: join(this.#generationsDirectory, envelope.generationId),
       materialize: stage => {
-        const store = new AuthorityStore(
+        this.#initializeGeneration(
           join(stage, "authority.sqlite"),
-          this.adapters,
+          envelope,
           catalog,
         );
-        store.initializeGeneration(envelope);
-        store.close();
-        writeFileSync(join(stage, "envelope.json"), JSON.stringify(envelope));
-        writeFileSync(join(stage, "SEALED"), "sealed\n");
+        this.#writeGenerationMetadata(stage, envelope);
       },
       validate: stage => {
         this.#validateDirectory(stage);
       },
     });
+  }
+
+  #initializeGeneration(
+    databasePath: string,
+    envelope: AuthorityGenerationEnvelope,
+    catalog: InitialCatalog = {},
+  ): void {
+    const store = new AuthorityStore(databasePath, this.adapters, catalog);
+    try {
+      store.initializeGeneration(envelope);
+    } finally {
+      store.close();
+    }
+  }
+
+  #writeGenerationMetadata(
+    directory: string,
+    envelope: AuthorityGenerationEnvelope,
+  ): void {
+    writeFileSync(
+      join(directory, "envelope.json"),
+      JSON.stringify(envelope),
+    );
+    // Written last: discovery of this file is the irreversible cutover.
+    writeFileSync(join(directory, "SEALED"), "sealed\n");
   }
 
   #select(): AuthorityGenerationCandidate {
@@ -483,4 +551,8 @@ function compareReleases(left: number[], right: number[]): number {
     }
   }
   return 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
