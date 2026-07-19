@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -31,10 +38,22 @@ test("startup falls back by copying authority, rotating continuity, and retainin
       predecessor: first.generationId,
       objects: ["missing-object"],
     };
-    await writeFile(join(root, "generations", "generation-1", "envelope.json"), JSON.stringify(first));
-    await writeFile(join(root, "generations", "generation-1", "authority.sqlite"), "valid database");
-    await writeFile(join(root, "generations", "generation-2", "envelope.json"), JSON.stringify(damaged));
-    await writeFile(join(root, "generations", "generation-2", "authority.sqlite"), "damaged evidence");
+    await writeFile(
+      join(root, "generations", "generation-1", "envelope.json"),
+      JSON.stringify(first),
+    );
+    await writeFile(
+      join(root, "generations", "generation-1", "authority.sqlite"),
+      "valid database",
+    );
+    await writeFile(
+      join(root, "generations", "generation-2", "envelope.json"),
+      JSON.stringify(damaged),
+    );
+    await writeFile(
+      join(root, "generations", "generation-2", "authority.sqlite"),
+      "damaged evidence",
+    );
 
     const store = new AuthorityGenerationStore(root);
     const recovery = store.resolve();
@@ -45,7 +64,13 @@ test("startup falls back by copying authority, rotating continuity, and retainin
     const generationNames = await readdir(join(root, "generations"));
     assert.ok(generationNames.includes("generation-1"));
     assert.ok(generationNames.includes("generation-2"));
-    assert.equal(await readFile(join(root, "generations", "generation-2", "authority.sqlite"), "utf8"), "damaged evidence");
+    assert.equal(
+      await readFile(
+        join(root, "generations", "generation-2", "authority.sqlite"),
+        "utf8",
+      ),
+      "damaged evidence",
+    );
 
     const restarted = new AuthorityGenerationStore(root);
     assert.equal(restarted.warnings()[0]?.failedGeneration, damaged.generationId);
@@ -59,7 +84,9 @@ test("cleanup requires later scans and retains selected, predecessor, holds, war
   const root = await mkdtemp(join(tmpdir(), "pidex-retention-"));
   try {
     await mkdir(join(root, "objects"), { recursive: true });
-    for (const object of ["old", "predecessor", "selected", "held"]) await writeFile(join(root, "objects", object), object);
+    for (const object of ["old", "predecessor", "selected", "held"]) {
+      await writeFile(join(root, "objects", object), object);
+    }
     const generations = [
       ["g1", 1, null, "old"],
       ["g2", 2, "g1", "predecessor"],
@@ -68,13 +95,21 @@ test("cleanup requires later scans and retains selected, predecessor, holds, war
     ] as const;
     for (const [id, activationIndex, predecessor, object] of generations) {
       await mkdir(join(root, "generations", id), { recursive: true });
-      await writeFile(join(root, "generations", id, "envelope.json"), JSON.stringify({
-        formatVersion: 1, generationId: id, activationIndex, predecessor,
-        continuity: "continuity", objects: [object], sealed: true,
-      }));
+      await writeFile(
+        join(root, "generations", id, "envelope.json"),
+        JSON.stringify({
+          formatVersion: 1,
+          generationId: id,
+          activationIndex,
+          predecessor,
+          continuity: "continuity",
+          objects: [object],
+          sealed: true,
+        }),
+      );
     }
     const store = new AuthorityGenerationStore(root);
-    // Select g4, then hold the old g1 and publish a later g5 manually.
+    // Select g4, then hold the old g1 until a second scan confirms the orphans.
     store.resolve();
     store.setHold("g1", true);
     assert.deepEqual(store.cleanup().generations, []);
