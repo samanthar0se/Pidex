@@ -337,7 +337,7 @@ export class AuthorityStore {
   initializeGeneration(metadata: AuthorityGenerationMetadata): void {
     this.#db
       .prepare(
-        `INSERT INTO authority_generation (
+        `INSERT OR REPLACE INTO authority_generation (
            singleton, generation_id, predecessor_id, activation_index,
            schema_version, format_version, release_min, release_max
          ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,

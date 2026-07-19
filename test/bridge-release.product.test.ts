@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  access,
   mkdir,
   mkdtemp,
   readFile,
@@ -178,6 +179,45 @@ test("bridge release refuses frozen legacy authority before canonical publicatio
       () => bridge.openBridge(),
       /legacy authority is frozen for migration/,
     );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("cleanup release C deletes legacy only with later complete unheld proof", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-cleanup-"));
+  const adapters = adaptersFor("deterministic");
+  try {
+    const legacy = await startHost({ dataDir, port: 0, adapters });
+    await legacy.close();
+    const bridgeDirectory = join(dataDir, "releases", "bridge-0.1.0");
+    await mkdir(bridgeDirectory, { recursive: true });
+    await writeFile(join(bridgeDirectory, "release.json"), JSON.stringify({
+      role: "bridge", release: "0.1.0", authorityFormat: 1,
+    }));
+
+    const cleanup = new AuthorityGenerationStore(dataDir, "0.1.0", adapters);
+    await cleanup.migrateLegacy({ bridgeDirectory });
+    const generation2 = cleanup.createCleanupGeneration();
+    assert.equal(
+      await readFile(join(dataDir, "authority", "SupportedReleaseFloor"), "utf8"),
+      "0.1.0\n",
+    );
+    assert.throws(
+      () => cleanup.deleteLegacy({ nonce: "elapsed-time", generationIds: [], tlsDigests: {} }),
+      /cleanup-proof-missing/,
+    );
+
+    const hold = join(dataDir, "authority", "generations", generation2, "HOLD");
+    await writeFile(hold, "backup");
+    assert.throws(() => cleanup.validateLegacyDeletion(), /generation-held/);
+    await unlink(hold);
+
+    const proof = cleanup.validateLegacyDeletion();
+    cleanup.deleteLegacy(proof);
+    await assert.rejects(access(join(dataDir, "authority.sqlite")));
+    await assert.rejects(access(join(dataDir, "blobs")));
+    assert.equal(proof.generationIds.length, 2);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

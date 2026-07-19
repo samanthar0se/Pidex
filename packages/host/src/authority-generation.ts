@@ -51,6 +51,27 @@ export type AuthorityGenerationFailure =
   | "broken-lineage"
   | "absent-closure";
 
+export type LegacyCleanupRefusal =
+  | "cleanup-generation-missing"
+  | "cleanup-proof-missing"
+  | "cleanup-proof-stale"
+  | "generation-held"
+  | "failed-evidence-protected"
+  | "tls-continuity-lost";
+
+export class LegacyCleanupRefusalError extends Error {
+  constructor(readonly code: LegacyCleanupRefusal, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+    this.name = "LegacyCleanupRefusalError";
+  }
+}
+
+export interface LegacyCleanupProof {
+  readonly nonce: string;
+  readonly generationIds: readonly string[];
+  readonly tlsDigests: Readonly<Record<string, string>>;
+}
+
 export class AuthorityGenerationError extends Error {
   constructor(readonly code: AuthorityGenerationFailure, detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
@@ -167,6 +188,125 @@ export class AuthorityGenerationStore {
     } finally {
       rmSync(backupPath, { force: true });
     }
+  }
+
+  /** Release C advances Authority before any legacy path is considered. */
+  createCleanupGeneration(): string {
+    const selected = this.#select();
+    if (selected.envelope.activationIndex >= 2) {
+      return selected.envelope.generationId;
+    }
+
+    const envelope: AuthorityGenerationEnvelope = {
+      ...selected.envelope,
+      generationId: `generation_${randomUUID()}`,
+      predecessorId: selected.envelope.generationId,
+      activationIndex: 2,
+      releaseMin: this.release,
+      releaseMax: this.release,
+    };
+    this.#publishMigratedGeneration(
+      join(selected.directory, "authority.sqlite"),
+      envelope,
+    );
+    replaceRebuildableFile({
+      target: join(this.#authorityDirectory, "SupportedReleaseFloor"),
+      materialize: stage => writeFileSync(stage, `${this.release}\n`),
+      validate: candidate => readFileSync(candidate, "utf8") === `${this.release}\n`,
+    });
+    this.#openCanonical({}).close();
+    return envelope.generationId;
+  }
+
+  /**
+   * A distinct startup-equivalent pass creates deletion evidence. Publication
+   * itself deliberately cannot return this proof.
+   */
+  validateLegacyDeletion(): LegacyCleanupProof {
+    const selected = this.#select();
+    const candidates = this.#sealedDirectories().map(directory =>
+      this.#validateDirectory(directory),
+    );
+    if (
+      candidates.length !== 2 ||
+      selected.envelope.activationIndex !== 2 ||
+      !candidates.some(candidate => candidate.envelope.activationIndex === 1)
+    ) {
+      throw new LegacyCleanupRefusalError("cleanup-generation-missing");
+    }
+    for (const candidate of candidates) {
+      if (existsSync(join(candidate.directory, "HOLD"))) {
+        throw new LegacyCleanupRefusalError(
+          "generation-held",
+          candidate.envelope.generationId,
+        );
+      }
+      if (
+        existsSync(join(candidate.directory, "FAILED")) ||
+        existsSync(join(candidate.directory, "RECOVERY-WARNING"))
+      ) {
+        throw new LegacyCleanupRefusalError(
+          "failed-evidence-protected",
+          candidate.envelope.generationId,
+        );
+      }
+    }
+
+    const proof: LegacyCleanupProof = {
+      nonce: randomUUID(),
+      generationIds: candidates
+        .map(candidate => candidate.envelope.generationId)
+        .sort(),
+      tlsDigests: this.#tlsDigests(),
+    };
+    replaceRebuildableFile({
+      target: join(this.#authorityDirectory, "LegacyDeletionProof"),
+      materialize: stage => writeFileSync(stage, JSON.stringify(proof)),
+      validate: candidate => readFileSync(candidate, "utf8") === JSON.stringify(proof),
+    });
+    return proof;
+  }
+
+  deleteLegacy(proof: LegacyCleanupProof): void {
+    const proofPath = join(this.#authorityDirectory, "LegacyDeletionProof");
+    if (!existsSync(proofPath)) {
+      throw new LegacyCleanupRefusalError("cleanup-proof-missing");
+    }
+    const durableProof: unknown = JSON.parse(readFileSync(proofPath, "utf8"));
+    if (JSON.stringify(durableProof) !== JSON.stringify(proof)) {
+      throw new LegacyCleanupRefusalError("cleanup-proof-stale");
+    }
+
+    // Re-run all authority, closure, hold and failed-evidence checks at the
+    // deletion boundary; a proof is never a lease and age has no meaning.
+    const current = this.validateLegacyDeletion();
+    if (
+      JSON.stringify(current.generationIds) !== JSON.stringify(proof.generationIds)
+    ) {
+      throw new LegacyCleanupRefusalError("cleanup-proof-stale");
+    }
+    if (JSON.stringify(current.tlsDigests) !== JSON.stringify(proof.tlsDigests)) {
+      throw new LegacyCleanupRefusalError("tls-continuity-lost");
+    }
+
+    rmSync(join(this.#dataDir, "authority.sqlite"), { force: true });
+    rmSync(join(this.#dataDir, "authority.sqlite-wal"), { force: true });
+    rmSync(join(this.#dataDir, "authority.sqlite-shm"), { force: true });
+    rmSync(join(this.#dataDir, "blobs"), { recursive: true, force: true });
+  }
+
+  #tlsDigests(): Record<string, string> {
+    const tlsDirectory = join(this.#dataDir, "tls");
+    const digests: Record<string, string> = {};
+    if (!existsSync(tlsDirectory)) return digests;
+    for (const name of LEGACY_TLS_FILES) {
+      const path = join(tlsDirectory, name);
+      if (!existsSync(path)) {
+        throw new LegacyCleanupRefusalError("tls-continuity-lost", name);
+      }
+      digests[name] = createHash("sha256").update(readFileSync(path)).digest("hex");
+    }
+    return digests;
   }
 
   #validateBridge(directory: string): void {
