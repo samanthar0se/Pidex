@@ -1,12 +1,61 @@
 {
   "schemaVersion": 1,
   "publishers": [
-    { "publisher": "run-completion-evidence", "protocol": "publishImmutableFile", "validator": "signed body digest and Run identity", "boundary": "before terminal SQLite settlement", "recovery": "AuthorityStore.reconcileAcceptedRuns", "acknowledgment": "terminal SQLite commit" },
-    { "publisher": "shared-run-blob", "protocol": "publishImmutableFile", "validator": "SHA-256 address", "boundary": "before SQLite reference", "recovery": "AuthorityStore", "acknowledgment": "terminal SQLite commit" },
-    { "publisher": "installation-identity", "protocol": "publishImmutableFile", "validator": "installation identity schema", "boundary": "before trust and scheduler activation", "recovery": "installForCurrentUser", "acknowledgment": "installer return" },
-    { "publisher": "runnable-release", "protocol": "publishValidatedTree", "validator": "signed release admission", "boundary": "before release selection", "recovery": "Launcher startup", "acknowledgment": "installer return" },
-    { "publisher": "release-selector", "protocol": "replaceRebuildableFile", "validator": "selected release identity", "boundary": "after release publication", "recovery": "Launcher startup", "acknowledgment": "installer return" }
-    ,{ "publisher": "authority-generation", "protocol": "publishValidatedTree", "validator": "sealed envelope, SQLite metadata, integrity and lineage", "boundary": "startup resolver selection", "recovery": "AuthorityGenerationStore.resolve", "acknowledgment": "resolver selection" }
-    ,{ "publisher": "authority-generation-selector", "protocol": "replaceRebuildableFile", "validator": "selected generation identity and Activation index", "boundary": "after generation selection", "recovery": "AuthorityGenerationStore.resolve", "acknowledgment": "resolver selection" }
+    {
+      "publisher": "run-completion-evidence",
+      "protocol": "publishImmutableFile",
+      "validator": "signed body digest and Run identity",
+      "boundary": "before terminal SQLite settlement",
+      "recovery": "AuthorityStore.reconcileAcceptedRuns",
+      "acknowledgment": "terminal SQLite commit"
+    },
+    {
+      "publisher": "shared-run-blob",
+      "protocol": "publishImmutableFile",
+      "validator": "SHA-256 address",
+      "boundary": "before SQLite reference",
+      "recovery": "AuthorityStore",
+      "acknowledgment": "terminal SQLite commit"
+    },
+    {
+      "publisher": "installation-identity",
+      "protocol": "publishImmutableFile",
+      "validator": "installation identity schema",
+      "boundary": "before trust and scheduler activation",
+      "recovery": "installForCurrentUser",
+      "acknowledgment": "installer return"
+    },
+    {
+      "publisher": "runnable-release",
+      "protocol": "publishValidatedTree",
+      "validator": "signed release admission",
+      "boundary": "before release selection",
+      "recovery": "Launcher startup",
+      "acknowledgment": "installer return"
+    },
+    {
+      "publisher": "release-selector",
+      "protocol": "replaceRebuildableFile",
+      "validator": "selected release identity",
+      "boundary": "after release publication",
+      "recovery": "Launcher startup",
+      "acknowledgment": "installer return"
+    },
+    {
+      "publisher": "authority-generation",
+      "protocol": "publishValidatedTree",
+      "validator": "sealed envelope, SQLite metadata, integrity and lineage",
+      "boundary": "startup resolver selection",
+      "recovery": "AuthorityGenerationStore.resolve",
+      "acknowledgment": "resolver selection"
+    },
+    {
+      "publisher": "authority-generation-selector",
+      "protocol": "replaceRebuildableFile",
+      "validator": "selected generation identity and Activation index",
+      "boundary": "after generation selection",
+      "recovery": "AuthorityGenerationStore.resolve",
+      "acknowledgment": "resolver selection"
+    }
   ]
 }

@@ -21,8 +21,8 @@ import {
   type ServerMessage,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import { ensureCertificate } from "./certificate.js";
 import { AuthorityGenerationStore } from "./authority-generations.js";
+import { ensureCertificate } from "./certificate.js";
 import {
   PairingAuthority,
   PairingError,

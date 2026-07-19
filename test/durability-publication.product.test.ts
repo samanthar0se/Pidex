@@ -1,9 +1,9 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import test from "node:test";
 import {
   createDurabilityPublisher,
   PublicationCollisionError,
@@ -24,7 +24,10 @@ test("the durability seam publishes, validates, retries, and preserves collision
     durability.publishImmutableFile(request("stable"));
     durability.publishImmutableFile(request("stable"));
     assert.equal(await readFile(target, "utf8"), "stable");
-    assert.throws(() => durability.publishImmutableFile(request("different")), PublicationCollisionError);
+    assert.throws(
+      () => durability.publishImmutableFile(request("different")),
+      PublicationCollisionError,
+    );
     assert.equal(await readFile(target, "utf8"), "stable");
     assert.ok((await readdir(root)).some(name => name.endsWith(".stage")));
     assert.ok(steps.includes("files-flushed"));
@@ -33,7 +36,7 @@ test("the durability seam publishes, validates, retries, and preserves collision
   }
 });
 
-test("validated trees reject unsafe links and rebuildable files replace", async () => {
+test("validated trees publish and rebuildable files replace", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-durability-"));
   const durability = createDurabilityPublisher();
   try {
