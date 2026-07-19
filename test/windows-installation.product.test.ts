@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adaptersFor } from "../packages/adapters/src/index.js";
@@ -36,15 +36,39 @@ test("per-user updates preserve installation identity and configure certificate 
     const second = installForCurrentUser({ ...options, releaseId: "1.0.1" });
     assert.deepEqual(second, first);
     assert.match(first.hostname, /^pidex-[a-f0-9]{20}\.local$/);
-    ensureCertificate(root, first.hostname, windows);
+    const certificate = ensureCertificate(root, first.hostname, windows);
     assert.ok(calls.some(call => call.startsWith("task:")));
     assert.ok(calls.some(call => call.startsWith("trust:")));
     assert.deepEqual((await readdir(join(root, "tls"))).sort(), [
-      "host-key.dpapi",
-      "host.pem",
-      "pidex-ca-key.dpapi",
-      "pidex-ca.pem",
+      "Generation", "generations",
     ]);
+    const generation = (await readFile(join(root, "tls", "Generation"), "utf8")).trim();
+    assert.deepEqual((await readdir(join(root, "tls", "generations", generation))).sort(), [
+      "host-key.dpapi", "host.pem", "identity.json", "pidex-ca-key.dpapi", "pidex-ca.pem",
+    ]);
+
+    // Selection is reconstructed from coherent retained generations, not trusted
+    // from the mutable hint.
+    await writeFile(join(root, "tls", "Generation"), "damaged-selector");
+    const repaired = ensureCertificate(root, first.hostname, windows);
+    assert.deepEqual(repaired, certificate);
+    assert.equal((await readFile(join(root, "tls", "Generation"), "utf8")).trim(), generation);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TLS selection refuses mixed retained generation material", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-tls-"));
+  const windows = adaptersFor("deterministic").windows;
+  try {
+    ensureCertificate(root, "pidex-test.local", windows);
+    const generation = (await readFile(join(root, "tls", "Generation"), "utf8")).trim();
+    await writeFile(join(root, "tls", "generations", generation, "host.pem"), "not the published leaf");
+    assert.throws(
+      () => ensureCertificate(root, "pidex-test.local", windows),
+      /TLS generations are ambiguous|TLS generation/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
