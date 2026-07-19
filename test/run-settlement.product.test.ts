@@ -109,7 +109,10 @@ test("Run settlement publishes dependencies before a FULL SQLite commit and retu
   try {
     const adapters = adaptersFor("deterministic");
     adapters.storage.beforeCommit = () => {
-      if (!inspectCommit) return;
+      if (!inspectCommit) {
+        return;
+      }
+
       const observer = new DatabaseSync(databasePath, { readOnly: true });
       try {
         const row = observer
@@ -135,7 +138,9 @@ test("Run settlement publishes dependencies before a FULL SQLite commit and retu
       2,
     );
     assert.equal(accepted.kind, "accepted");
-    if (accepted.kind !== "accepted") throw new Error("expected acceptance");
+    if (accepted.kind !== "accepted") {
+      throw new Error("expected acceptance");
+    }
     runId = accepted.run.runId;
     inspectCommit = true;
 
@@ -144,7 +149,10 @@ test("Run settlement publishes dependencies before a FULL SQLite commit and retu
     assert.equal(store.runs(session.sessionId)[0]?.state, "completed");
 
     const settings = new DatabaseSync(databasePath, { readOnly: true });
-    assert.equal(settings.prepare("PRAGMA journal_mode").get()?.journal_mode, "wal");
+    assert.equal(
+      settings.prepare("PRAGMA journal_mode").get()?.journal_mode,
+      "wal",
+    );
     assert.equal(settings.prepare("PRAGMA synchronous").get()?.synchronous, 2);
     settings.close();
     store.close();
