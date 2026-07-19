@@ -3,7 +3,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { HostAdapters, PiTimelineEvent } from "../../adapters/src/index.js";
+import type {
+  HostAdapters,
+  PiTimelineEvent,
+  StorageFaultAdapter,
+} from "../../adapters/src/index.js";
 import {
   acceptedRunSchema,
   completedRunSchema,
@@ -472,11 +476,13 @@ export interface MaintenanceResult {
 export class AuthorityStore {
   readonly #db: DatabaseSync;
   readonly #runArtifacts: RunArtifactStore;
+  readonly #storage: StorageFaultAdapter;
 
   constructor(path: string, adapters: HostAdapters, catalog: InitialCatalog = {}) {
     const dataDir = dirname(path);
     mkdirSync(dataDir, { recursive: true });
     this.#runArtifacts = new RunArtifactStore(dataDir);
+    this.#storage = adapters.storage;
     this.#db = new DatabaseSync(path);
     this.#db.exec(CREATE_AUTHORITY_SCHEMA);
     const sessionColumns = this.#db.prepare("PRAGMA table_info(sessions)").all();
@@ -1752,6 +1758,9 @@ export class AuthorityStore {
         run: terminalRun,
         timeline: this.timeline(acceptedRun.sessionId),
       };
+      // This is the final fault boundary: dependencies are already validated,
+      // while another connection still observes the accepted execution row.
+      this.#storage.beforeCommit();
       this.#db.exec("COMMIT");
       return settlement;
     } catch (error) {

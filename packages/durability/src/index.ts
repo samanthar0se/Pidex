@@ -52,16 +52,15 @@ export class PublicationCollisionError extends Error {
   }
 }
 
-interface DurabilityPlatformAdapter {
+export interface PublicationAdapter {
   step(step: PublicationStep, path: string): void;
   flushFile(path: string): void;
-  flushDirectory(path: string): DirectoryFlushResult;
+  flushDirectory(path: string): "flushed" | "unsupported";
 }
 
 type PublicationKind = "file" | "tree";
 type PublicationMode = "immutable" | "replace";
-type PublicationPlatform = "windows" | "portable";
-type DirectoryFlushResult = "flushed" | "unsupported";
+export type PublicationPlatform = "windows" | "portable";
 
 export interface DeterministicPublicationOptions {
   onStep?(step: PublicationStep, path: string): void;
@@ -72,29 +71,32 @@ export interface DeterministicPublicationOptions {
 /** Real filesystem adapter with stable observation and fault-injection points. */
 export function createDeterministicPublicationAdapter(
   options: DeterministicPublicationOptions = {},
-): DurabilityPlatformAdapter {
-  return createAdapter(options.platform ?? currentPlatform(), options);
+): PublicationAdapter {
+  return createFilesystemAdapter(
+    options.platform ?? currentPublicationPlatform(),
+    options,
+  );
 }
 
-const productionAdapter = createAdapter(currentPlatform());
+const productionAdapter = createFilesystemAdapter(currentPublicationPlatform());
 
 export function publishImmutableFile(
   request: PublicationRequest,
-  adapter: DurabilityPlatformAdapter = productionAdapter,
+  adapter: PublicationAdapter = productionAdapter,
 ): PublicationResult {
   return publish(request, "file", "immutable", adapter);
 }
 
 export function publishValidatedTree(
   request: PublicationRequest,
-  adapter: DurabilityPlatformAdapter = productionAdapter,
+  adapter: PublicationAdapter = productionAdapter,
 ): PublicationResult {
   return publish(request, "tree", "immutable", adapter);
 }
 
 export function replaceRebuildableFile(
   request: PublicationRequest,
-  adapter: DurabilityPlatformAdapter = productionAdapter,
+  adapter: PublicationAdapter = productionAdapter,
 ): PublicationResult {
   return publish(request, "file", "replace", adapter);
 }
@@ -103,75 +105,86 @@ function publish(
   request: PublicationRequest,
   kind: PublicationKind,
   mode: PublicationMode,
-  adapter: DurabilityPlatformAdapter,
+  adapter: PublicationAdapter,
 ): PublicationResult {
-  const parent = dirname(request.target);
-  mkdirSync(parent, { recursive: true });
+  const parentDirectory = dirname(request.target);
+  mkdirSync(parentDirectory, { recursive: true });
 
-  const stage = join(
-    parent,
+  const stagedPath = join(
+    parentDirectory,
     `.${basename(request.target)}.${randomUUID()}.stage`,
   );
-  let preserveEvidence = false;
+  let retainStagedCandidate = false;
 
   try {
-    if (kind === "tree") {
-      mkdirSync(stage);
-    }
-    adapter.step("stage-created", stage);
-
-    request.materialize(stage);
-    adapter.step("materialized", stage);
-
-    assertCandidate(stage, kind);
-    validate(request, stage);
-    adapter.step("validated-before-publication", stage);
-
-    flushRegularFiles(stage, kind, adapter);
-    adapter.step("regular-files-flushed", stage);
-
-    assertNoOpenWriters(stage);
-    adapter.step("writers-closed", stage);
+    prepareStagedCandidate(request, stagedPath, kind, adapter);
 
     if (mode === "immutable" && existsSync(request.target)) {
       const targetIsReusable =
-        equivalent(stage, request.target, kind) &&
-        isValid(request, request.target);
+        areEquivalent(stagedPath, request.target, kind) &&
+        passesValidation(request, request.target);
       if (targetIsReusable) {
         return { target: request.target, outcome: "already-published" };
       }
 
-      preserveEvidence = true;
-      throw new PublicationCollisionError(request.target, stage);
+      retainStagedCandidate = true;
+      throw new PublicationCollisionError(request.target, stagedPath);
     }
 
-    renameSync(stage, request.target);
-    adapter.step("published", request.target);
-    validate(request, request.target);
-    adapter.step("validated-after-publication", request.target);
-
-    flushParentDirectory(parent, adapter);
+    publishStagedCandidate(request, stagedPath, parentDirectory, adapter);
 
     return { target: request.target, outcome: "published" };
   } finally {
-    if (!preserveEvidence && existsSync(stage)) {
-      rmSync(stage, { recursive: true, force: true });
-      adapter.step("stage-cleaned", stage);
+    if (!retainStagedCandidate && existsSync(stagedPath)) {
+      rmSync(stagedPath, { recursive: true, force: true });
+      adapter.step("stage-cleaned", stagedPath);
     }
   }
 }
 
-function flushParentDirectory(
-  parent: string,
-  adapter: DurabilityPlatformAdapter,
+function prepareStagedCandidate(
+  request: PublicationRequest,
+  stagedPath: string,
+  kind: PublicationKind,
+  adapter: PublicationAdapter,
 ): void {
-  const result = adapter.flushDirectory(parent);
-  if (result === "flushed") {
-    adapter.step("parent-directory-flushed", parent);
-    return;
+  if (kind === "tree") {
+    mkdirSync(stagedPath);
   }
+  adapter.step("stage-created", stagedPath);
 
-  adapter.step("parent-directory-flush-unsupported", parent);
+  request.materialize(stagedPath);
+  adapter.step("materialized", stagedPath);
+
+  assertCandidate(stagedPath, kind);
+  validate(request, stagedPath);
+  adapter.step("validated-before-publication", stagedPath);
+
+  flushRegularFiles(stagedPath, kind, adapter);
+  adapter.step("regular-files-flushed", stagedPath);
+
+  assertNoOpenWriters(stagedPath);
+  adapter.step("writers-closed", stagedPath);
+}
+
+function publishStagedCandidate(
+  request: PublicationRequest,
+  stagedPath: string,
+  parentDirectory: string,
+  adapter: PublicationAdapter,
+): void {
+  renameSync(stagedPath, request.target);
+  adapter.step("published", request.target);
+
+  validate(request, request.target);
+  adapter.step("validated-after-publication", request.target);
+
+  const flushResult = adapter.flushDirectory(parentDirectory);
+  if (flushResult === "flushed") {
+    adapter.step("parent-directory-flushed", parentDirectory);
+  } else {
+    adapter.step("parent-directory-flush-unsupported", parentDirectory);
+  }
 }
 
 function validate(request: PublicationRequest, path: string): void {
@@ -180,7 +193,7 @@ function validate(request: PublicationRequest, path: string): void {
   }
 }
 
-function isValid(request: PublicationRequest, path: string): boolean {
+function passesValidation(request: PublicationRequest, path: string): boolean {
   try {
     validate(request, path);
     return true;
@@ -199,11 +212,7 @@ function assertCandidate(path: string, kind: PublicationKind): void {
   }
 }
 
-function regularFiles(root: string, kind: PublicationKind): string[] {
-  if (kind === "file") {
-    return [root];
-  }
-
+function regularFilesInTree(root: string): string[] {
   const result: string[] = [];
   const entries = readdirSync(root, { withFileTypes: true }).sort(
     (left, right) => left.name.localeCompare(right.name),
@@ -215,7 +224,7 @@ function regularFiles(root: string, kind: PublicationKind): string[] {
       throw new Error("Validated trees cannot contain symbolic links");
     }
     if (entry.isDirectory()) {
-      result.push(...regularFiles(path, "tree"));
+      result.push(...regularFilesInTree(path));
     } else if (entry.isFile()) {
       result.push(path);
     } else {
@@ -231,9 +240,10 @@ function regularFiles(root: string, kind: PublicationKind): string[] {
 function flushRegularFiles(
   root: string,
   kind: PublicationKind,
-  adapter: DurabilityPlatformAdapter,
+  adapter: PublicationAdapter,
 ): void {
-  for (const path of regularFiles(root, kind)) {
+  const paths = kind === "file" ? [root] : regularFilesInTree(root);
+  for (const path of paths) {
     adapter.flushFile(path);
   }
 }
@@ -268,55 +278,47 @@ function assertNoOpenWriters(root: string): void {
   }
 }
 
-function equivalent(
+function areEquivalent(
   left: string,
   right: string,
   kind: PublicationKind,
 ): boolean {
   try {
     if (kind === "file") {
-      return equivalentFiles(left, right);
+      return (
+        statSync(right).isFile() &&
+        readFileSync(left).equals(readFileSync(right))
+      );
     }
-    return equivalentTrees(left, right);
+    if (!statSync(right).isDirectory()) {
+      return false;
+    }
+
+    const leftEntries = readdirSync(left).sort();
+    const rightEntries = readdirSync(right).sort();
+    if (leftEntries.length !== rightEntries.length) {
+      return false;
+    }
+
+    return leftEntries.every((name, index) => {
+      if (name !== rightEntries[index]) {
+        return false;
+      }
+
+      const leftPath = join(left, name);
+      const rightPath = join(right, name);
+      const entryKind = lstatSync(leftPath).isDirectory() ? "tree" : "file";
+      return areEquivalent(leftPath, rightPath, entryKind);
+    });
   } catch {
     return false;
   }
 }
 
-function equivalentFiles(left: string, right: string): boolean {
-  return (
-    statSync(right).isFile() &&
-    readFileSync(left).equals(readFileSync(right))
-  );
-}
-
-function equivalentTrees(left: string, right: string): boolean {
-  if (!statSync(right).isDirectory()) {
-    return false;
-  }
-
-  const leftEntries = readdirSync(left).sort();
-  const rightEntries = readdirSync(right).sort();
-  if (leftEntries.length !== rightEntries.length) {
-    return false;
-  }
-
-  return leftEntries.every((name, index) => {
-    if (name !== rightEntries[index]) {
-      return false;
-    }
-
-    const leftPath = join(left, name);
-    const rightPath = join(right, name);
-    const entryKind = lstatSync(leftPath).isDirectory() ? "tree" : "file";
-    return equivalent(leftPath, rightPath, entryKind);
-  });
-}
-
-function createAdapter(
+function createFilesystemAdapter(
   platform: PublicationPlatform,
   options: DeterministicPublicationOptions = {},
-): DurabilityPlatformAdapter {
+): PublicationAdapter {
   return {
     step(step, path) {
       options.onStep?.(step, path);
@@ -326,29 +328,30 @@ function createAdapter(
     },
     flushFile(path) {
       // r+ is deliberate: Windows FlushFileBuffers requires a write-capable handle.
-      flushPath(path, "r+");
+      const descriptor = openSync(path, "r+");
+      try {
+        fsyncSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
     },
     flushDirectory(path) {
       if (platform === "windows") {
         return "unsupported";
       }
 
-      flushPath(path, "r");
+      const descriptor = openSync(path, "r");
+      try {
+        fsyncSync(descriptor);
+      } finally {
+        closeSync(descriptor);
+      }
       return "flushed";
     },
   };
 }
 
-function flushPath(path: string, mode: "r" | "r+"): void {
-  const descriptor = openSync(path, mode);
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
-function currentPlatform(): PublicationPlatform {
+function currentPublicationPlatform(): PublicationPlatform {
   return process.platform === "win32" ? "windows" : "portable";
 }
 
