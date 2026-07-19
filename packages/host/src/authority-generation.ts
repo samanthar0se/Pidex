@@ -54,6 +54,7 @@ interface AuthorityGenerationCandidate {
 
 /** Owns canonical Authority discovery. The selector is output, never input. */
 export class AuthorityGenerationStore {
+  readonly #dataDir: string;
   readonly #authorityDirectory: string;
   readonly #generationsDirectory: string;
   readonly #objectsDirectory: string;
@@ -63,6 +64,7 @@ export class AuthorityGenerationStore {
     readonly release: string,
     readonly adapters: HostAdapters,
   ) {
+    this.#dataDir = dataDir;
     this.#authorityDirectory = join(dataDir, "authority");
     this.#generationsDirectory = join(
       this.#authorityDirectory,
@@ -78,6 +80,23 @@ export class AuthorityGenerationStore {
       this.#createGenesis(catalog);
     }
 
+    return this.#openCanonical(catalog);
+  }
+
+  /** Uses legacy authority until canonical state has already been published. */
+  openBridge(catalog: InitialCatalog = {}): AuthorityStore {
+    if (this.#sealedDirectories().length === 0) {
+      return new AuthorityStore(
+        join(this.#dataDir, "authority.sqlite"),
+        this.adapters,
+        catalog,
+      );
+    }
+
+    return this.#openCanonical(catalog);
+  }
+
+  #openCanonical(catalog: InitialCatalog): AuthorityStore {
     const selected = this.#select();
     this.#repairSelector(selected.envelope.generationId);
     return new AuthorityStore(
@@ -277,6 +296,10 @@ export class AuthorityGenerationStore {
       const row = database
         .prepare("SELECT * FROM authority_generation WHERE singleton=1")
         .get();
+      if (!row) {
+        throw new Error("SQLite metadata disagreement");
+      }
+
       const expected = [
         envelope.generationId,
         envelope.predecessorId,
@@ -286,7 +309,7 @@ export class AuthorityGenerationStore {
         envelope.releaseMin,
         envelope.releaseMax,
       ];
-      const actual = row && [
+      const actual = [
         row.generation_id,
         row.predecessor_id,
         row.activation_index,
@@ -295,10 +318,7 @@ export class AuthorityGenerationStore {
         row.release_min,
         row.release_max,
       ];
-      const metadataDisagrees =
-        !actual ||
-        expected.some((value, index) => value !== actual[index]);
-      if (metadataDisagrees) {
+      if (expected.some((value, index) => value !== actual[index])) {
         throw new Error("SQLite metadata disagreement");
       }
     } finally {

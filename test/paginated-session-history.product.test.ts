@@ -174,15 +174,15 @@ test("returns bounded Session windows, pages stable finalized history, and verif
     assert.equal(blob.status, 200);
     assert.equal(blob.headers["x-content-id"], blobId);
     assert.match(String(blob.headers.digest), /^sha-256=/);
-    const authorityGeneration = (
-      await readFile(join(dataDir, "authority", "Generation"), "utf8")
-    ).trim();
+    const authorityGenerationPath = join(dataDir, "authority", "Generation");
+    const authorityRoot = await readFile(authorityGenerationPath, "utf8")
+      .then(generation =>
+        join(dataDir, "authority", "generations", generation.trim()),
+      )
+      .catch(() => dataDir);
     await writeFile(
       join(
-        dataDir,
-        "authority",
-        "generations",
-        authorityGeneration,
+        authorityRoot,
         "blobs",
         blobId.slice(7),
       ),
