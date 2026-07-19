@@ -1,17 +1,14 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { publishImmutableFile } from "../../durability/src/index.js";
 
 const completionEvidenceSchema = z.object({
   body: z.string(),
@@ -44,12 +41,13 @@ export class RunArtifactStore {
 
     const body = JSON.stringify({ runId, text, checkpoint });
     const evidence = JSON.stringify({ body, digest: sha256(body) });
-    const stagedPath = join(directory, `${runId}.${randomUUID()}.stage`);
-
-    writeFileSync(stagedPath, evidence, { flag: "wx" });
-    flushPath(stagedPath);
-    renameSync(stagedPath, this.completionEvidencePath(runId));
-    flushPath(directory);
+    publishImmutableFile({
+      target: this.completionEvidencePath(runId),
+      materialize: path => writeFileSync(path, evidence, { flag: "wx" }),
+      validate: path => {
+        completionEvidenceSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+      },
+    });
   }
 
   readCompletionEvidence(runId: string): CompletionEvidence | null {
@@ -87,17 +85,11 @@ export class RunArtifactStore {
     mkdirSync(directory, { recursive: true });
 
     if (!existsSync(destination)) {
-      const stagedPath = `${destination}.${randomUUID()}.stage`;
-      writeFileSync(stagedPath, bytes, { flag: "wx" });
-      flushPath(stagedPath);
-
-      if (sha256(readFileSync(stagedPath)) !== digest) {
-        unlinkSync(stagedPath);
-        throw new Error("blob-verification-failed");
-      }
-
-      renameSync(stagedPath, destination);
-      flushPath(directory);
+      publishImmutableFile({
+        target: destination,
+        materialize: path => writeFileSync(path, bytes, { flag: "wx" }),
+        validate: path => sha256(readFileSync(path)) === digest,
+      });
     }
 
     return `sha256:${digest}`;
@@ -114,13 +106,4 @@ export class RunArtifactStore {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function flushPath(path: string): void {
-  const fileDescriptor = openSync(path, "r");
-  try {
-    fsyncSync(fileDescriptor);
-  } finally {
-    closeSync(fileDescriptor);
-  }
 }

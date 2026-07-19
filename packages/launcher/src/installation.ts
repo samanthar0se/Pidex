@@ -2,6 +2,11 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
+import {
+  publishImmutableFile,
+  publishValidatedTree,
+  replaceRebuildableFile,
+} from "../../durability/src/index.js";
 
 export const CANONICAL_PORT = 47831;
 
@@ -34,8 +39,16 @@ export function installForCurrentUser(
   const identity = loadOrCreateIdentity(identityPath);
 
   const releaseDir = join(options.installDir, "releases", options.releaseId);
-  mkdirSync(releaseDir, { recursive: true });
-  writeFileSync(join(options.installDir, "active-release"), options.releaseId);
+  publishValidatedTree({
+    target: releaseDir,
+    materialize: path => mkdirSync(path),
+    validate: path => existsSync(path),
+  });
+  replaceRebuildableFile({
+    target: join(options.installDir, "active-release"),
+    materialize: path => writeFileSync(path, options.releaseId),
+    validate: path => readFileSync(path, "utf8") === options.releaseId,
+  });
   options.windows.restrictToCurrentUser(options.installDir);
   options.windows.registerLogonTask(
     join(options.installDir, "pidex-launcher.exe"),
@@ -54,7 +67,13 @@ function loadOrCreateIdentity(identityPath: string): InstallationIdentity {
     hostname: `pidex-${randomBytes(10).toString("hex")}.local`,
     port: CANONICAL_PORT,
   };
-  writeFileSync(identityPath, JSON.stringify(identity, null, 2));
+  publishImmutableFile({
+    target: identityPath,
+    materialize: path => writeFileSync(path, JSON.stringify(identity, null, 2)),
+    validate: path => {
+      parseInstallationIdentity(readFileSync(path, "utf8"));
+    },
+  });
   return identity;
 }
 
