@@ -15,7 +15,11 @@ test("supported mobile browsers and standalone PWAs expose the routable Session 
   assert.match(shell, /id="mobile-host-state"/);
   assert.match(shell, /@media \(max-width: 720px\)/);
   assert.match(shell, /min-height: 44px/);
+  assert.match(shell, /pidex-app-icon-white\.svg/);
+  assert.match(shell, /pidex-gradient\.svg/);
   assert.match(manifest, /"display":\s*"standalone"/);
+  assert.match(manifest, /pidex-app-icon-white\.png/);
+  assert.match(manifest, /pidex-app-icon-white\.svg/);
 
   assert.match(application, /function closeDrawer/);
   assert.match(application, /closeDrawer\(\);\s*route\(\)/);

@@ -18,6 +18,9 @@ test("drafts survive independently and shell updates cannot gain background auth
   assert.doesNotMatch(app, /sync\.register/);
 
   assert.match(worker, /SHELL_GENERATION = "sha256-/);
+  assert.match(worker, /pidex-app-icon-white\.png/);
+  assert.match(worker, /pidex-app-icon-white\.svg/);
+  assert.match(worker, /pidex-gradient\.svg/);
   assert.match(worker, /Promise\.all\(\s*SHELL\.map/);
   assert.match(worker, /incomplete shell generation/);
   assert.match(worker, /Deliberately no skipWaiting/);
@@ -26,4 +29,7 @@ test("drafts survive independently and shell updates cannot gain background auth
   assert.match(worker, /notificationclick/);
   assert.doesNotMatch(worker, /WebSocket|run\.submit|session\.create|backgroundsync/);
   assert.match(host, /"\/service-worker\.js"/);
+  assert.match(host, /"\/icons\/pidex-app-icon-white\.png"/);
+  assert.match(host, /"\/icons\/pidex-app-icon-white\.svg"/);
+  assert.match(host, /"\/icons\/pidex-gradient\.svg"/);
 });

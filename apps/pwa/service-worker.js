@@ -1,6 +1,6 @@
 // This digest identifies one immutable, complete shell manifest. Release
 // tooling changes it whenever any member changes.
-const SHELL_GENERATION = "sha256-3578b68c-pidex-shell-v1";
+const SHELL_GENERATION = "sha256-6dfeb471-pidex-shell-v1";
 const SHELL_CACHE = `pidex-shell-${SHELL_GENERATION}`;
 const SHELL = [
   "/",
@@ -8,6 +8,9 @@ const SHELL = [
   "/app.js",
   "/browser-compatibility.mjs",
   "/manifest.webmanifest",
+  "/icons/pidex-app-icon-white.png",
+  "/icons/pidex-app-icon-white.svg",
+  "/icons/pidex-gradient.svg",
 ];
 const PUSH_RECEIPT_DATABASE = "pidex-push-receipts";
 const PUSH_RECEIPT_STORE = "events";

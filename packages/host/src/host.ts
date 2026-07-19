@@ -208,19 +208,31 @@ interface ClientDelivery {
 }
 
 const PWA_ASSETS: Record<string, PwaAsset> = {
-  "/": { file: "index.html", contentType: "text/html" },
-  "/app.js": { file: "app.js", contentType: "text/javascript" },
+  "/": { file: "apps/pwa/index.html", contentType: "text/html" },
+  "/app.js": { file: "apps/pwa/app.js", contentType: "text/javascript" },
   "/browser-compatibility.mjs": {
-    file: "browser-compatibility.mjs",
+    file: "apps/pwa/browser-compatibility.mjs",
     contentType: "text/javascript",
   },
   "/service-worker.js": {
-    file: "service-worker.js",
+    file: "apps/pwa/service-worker.js",
     contentType: "text/javascript",
   },
   "/manifest.webmanifest": {
-    file: "manifest.webmanifest",
+    file: "apps/pwa/manifest.webmanifest",
     contentType: "application/manifest+json",
+  },
+  "/icons/pidex-app-icon-white.png": {
+    file: "icon/pidex-app-icon-white.png",
+    contentType: "image/png",
+  },
+  "/icons/pidex-app-icon-white.svg": {
+    file: "icon/pidex-app-icon-white.svg",
+    contentType: "image/svg+xml",
+  },
+  "/icons/pidex-gradient.svg": {
+    file: "icon/pidex-gradient.svg",
+    contentType: "image/svg+xml",
   },
 };
 
@@ -350,7 +362,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       }
 
       response.writeHead(200, { "content-type": asset.contentType });
-      response.end(readFileSync(resolve("apps/pwa", asset.file)));
+      response.end(readFileSync(resolve(asset.file)));
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });

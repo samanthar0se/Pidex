@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="theme-color" content="#11110f">
     <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icons/pidex-app-icon-white.svg">
+    <link rel="apple-touch-icon" href="/icons/pidex-app-icon-white.png">
     <title>Pidex</title>
     <style>
       :root {
@@ -61,9 +63,17 @@
       }
 
       .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         margin: 0 0 18px;
         font-weight: 700;
         letter-spacing: .08em;
+      }
+
+      .brand img {
+        width: 24px;
+        height: 24px;
       }
 
       .primary {
@@ -404,7 +414,10 @@
       <button class="drawer-toggle" id="drawer-toggle" aria-label="Open Session drawer" aria-expanded="false">☰</button>
       <button class="drawer-backdrop" id="drawer-backdrop" aria-label="Close Session drawer"></button>
       <aside class="sidebar" id="session-drawer" aria-label="Session drawer">
-        <p class="brand" aria-label="Pidex Host">PIDEX</p>
+        <p class="brand" aria-label="Pidex Host">
+          <img src="/icons/pidex-gradient.svg" alt="">
+          PIDEX
+        </p>
         <button class="primary" id="new-session">＋ New Session</button>
         <input
           class="search"
