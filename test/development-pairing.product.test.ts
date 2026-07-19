@@ -9,11 +9,11 @@ import test from "node:test";
 const HOST_STARTUP_TIMEOUT_MS = 10_000;
 
 test(
-  "development command selects deterministic adapters and prints launch guidance",
+  "development entry point selects deterministic adapters and prints launch guidance",
   { timeout: HOST_STARTUP_TIMEOUT_MS + 5_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
-    const host = spawn(
+    const hostProcess = spawn(
       process.execPath,
       ["--import", "tsx", "packages/host/src/development.ts"],
       {
@@ -40,8 +40,8 @@ test(
             ),
           );
         }, HOST_STARTUP_TIMEOUT_MS);
-        host.stdout.setEncoding("utf8");
-        host.stdout.on("data", chunk => {
+        hostProcess.stdout.setEncoding("utf8");
+        hostProcess.stdout.on("data", chunk => {
           stdout += String(chunk);
           if (
             stdout.includes("Pair this device:") &&
@@ -51,21 +51,21 @@ test(
             resolve();
           }
         });
-        host.stderr.setEncoding("utf8");
-        host.stderr.on("data", chunk => {
+        hostProcess.stderr.setEncoding("utf8");
+        hostProcess.stderr.on("data", chunk => {
           stderr += String(chunk);
         });
-        host.once("error", error => {
+        hostProcess.once("error", error => {
           clearTimeout(timeout);
           reject(error);
         });
-        host.once("exit", code => {
+        hostProcess.once("exit", code => {
           clearTimeout(timeout);
           reject(new Error(`Development Host exited with code ${code}`));
         });
       });
 
-      const readyOrigin = stdout.match(
+      const reportedOrigin = stdout.match(
         /Pidex ready at (https:\/\/[^ ]+)/,
       )?.[1];
       const pairingUrl = stdout.match(
@@ -73,17 +73,17 @@ test(
       )?.[1];
       const certificatePath = join(dataDir, "tls", "pidex-ca.pem");
 
-      assert.ok(readyOrigin);
+      assert.ok(reportedOrigin);
       assert.ok(pairingUrl);
-      assert.match(readyOrigin, /^https:\/\/192\.0\.2\.10:\d+$/);
-      assert.equal(new URL(pairingUrl).origin, readyOrigin);
+      assert.match(reportedOrigin, /^https:\/\/192\.0\.2\.10:\d+$/);
+      assert.equal(new URL(pairingUrl).origin, reportedOrigin);
       assert.match(stdout, /If HTTPS is not trusted/);
       assert.ok(stdout.includes(certificatePath));
     } finally {
-      if (host.exitCode === null) {
-        const exit = once(host, "exit");
-        host.kill("SIGTERM");
-        await exit;
+      if (hostProcess.exitCode === null) {
+        const hostExit = once(hostProcess, "exit");
+        hostProcess.kill("SIGTERM");
+        await hostExit;
       }
       await rm(dataDir, { recursive: true, force: true });
     }

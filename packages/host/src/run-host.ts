@@ -5,20 +5,20 @@ import {
 } from "../../adapters/src/index.js";
 import { startHost } from "./host.js";
 
-export async function runHost(mode: AdapterMode): Promise<void> {
+export async function runHost(adapterMode: AdapterMode): Promise<void> {
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
   const port = Number(process.env.PIDEX_PORT ?? 7443);
   const hostname =
-    mode === "deterministic" ? process.env.PIDEX_HOSTNAME : undefined;
+    adapterMode === "deterministic" ? process.env.PIDEX_HOSTNAME : undefined;
   const host = await startHost({
     dataDir,
     port,
     hostname,
-    adapters: adaptersFor(mode),
+    adapters: adaptersFor(adapterMode),
   });
 
   console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
-  if (mode === "deterministic") {
+  if (adapterMode === "deterministic") {
     console.log(`Pair this device: ${host.createPairing().qrPayload}`);
     printCertificateTrustGuidance(dataDir);
   }
@@ -40,5 +40,7 @@ function printCertificateTrustGuidance(dataDir: string): void {
     return;
   }
 
-  console.log(`If HTTPS is not trusted, trust the development CA: ${certificatePath}`);
+  console.log(
+    `If HTTPS is not trusted, trust the development CA: ${certificatePath}`,
+  );
 }
