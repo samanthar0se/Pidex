@@ -1,13 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { backup, DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type { HostAdapters } from "../../adapters/src/index.js";
 import {
@@ -52,6 +55,11 @@ interface AuthorityGenerationCandidate {
   envelope: AuthorityGenerationEnvelope;
 }
 
+export interface LegacyMigrationOptions {
+  /** Retained release B used if release M must be rolled back. */
+  bridgeDirectory: string;
+}
+
 /** Owns canonical Authority discovery. The selector is output, never input. */
 export class AuthorityGenerationStore {
   readonly #dataDir: string;
@@ -86,6 +94,9 @@ export class AuthorityGenerationStore {
   /** Uses legacy authority until canonical state has already been published. */
   openBridge(catalog: InitialCatalog = {}): AuthorityStore {
     if (this.#sealedDirectories().length === 0) {
+      if (existsSync(join(this.#authorityDirectory, "MIGRATION-FROZEN"))) {
+        throw new Error("legacy authority is frozen for migration");
+      }
       return new AuthorityStore(
         join(this.#dataDir, "authority.sqlite"),
         this.adapters,
@@ -94,6 +105,119 @@ export class AuthorityGenerationStore {
     }
 
     return this.#openCanonical(catalog);
+  }
+
+  /** Offline release-M cutover. The sealed envelope is the one-way marker. */
+  async migrateLegacy(options: LegacyMigrationOptions): Promise<void> {
+    if (this.#sealedDirectories().length !== 0) {
+      // A retry may prove selection, but can never copy legacy over canonical.
+      this.#openCanonical({}).close();
+      return;
+    }
+    this.#validateBridge(options.bridgeDirectory);
+    this.#validateLegacyIdentityAndTls();
+
+    const legacyPath = join(this.#dataDir, "authority.sqlite");
+    if (!existsSync(legacyPath)) {
+      throw new AuthorityGenerationError("invalid-generation", "legacy authority is missing");
+    }
+    const source = new DatabaseSync(legacyPath);
+    const backupPath = join(this.#authorityDirectory, `.legacy-backup-${randomUUID()}.sqlite`);
+    try {
+      const integrity = source.prepare("PRAGMA integrity_check").get() as
+        | { integrity_check?: unknown }
+        | undefined;
+      if (integrity?.integrity_check !== "ok") {
+        throw new AuthorityGenerationError("invalid-generation", "legacy database integrity failed");
+      }
+      // Published before backup: startup cannot reopen legacy after this
+      // durable freeze. Release M is invoked only after release B has quiesced.
+      replaceRebuildableFile({
+        target: join(this.#authorityDirectory, "MIGRATION-FROZEN"),
+        materialize: stage => writeFileSync(stage, "release-m\n"),
+        validate: candidate => readFileSync(candidate, "utf8") === "release-m\n",
+      });
+      await backup(source, backupPath);
+    } catch (error) {
+      throw error;
+    } finally {
+      source.close();
+    }
+
+    try {
+      const objects = this.#publishLegacyObjects();
+      const generationId = `generation_${randomUUID()}`;
+      const envelope: AuthorityGenerationEnvelope = {
+        generationId, predecessorId: null, activationIndex: 1,
+        schemaVersion: AUTHORITY_SCHEMA_VERSION,
+        formatVersion: GENERATION_FORMAT_VERSION,
+        releaseMin: this.release, releaseMax: this.release, objects,
+      };
+      publishValidatedTree({
+        target: join(this.#generationsDirectory, generationId),
+        materialize: stage => {
+          copyFileSync(backupPath, join(stage, "authority.sqlite"));
+          const migrated = new AuthorityStore(join(stage, "authority.sqlite"), this.adapters);
+          migrated.initializeGeneration(envelope);
+          migrated.close();
+          writeFileSync(join(stage, "envelope.json"), JSON.stringify(envelope));
+          // Written last: discovery of this file is the irreversible cutover.
+          writeFileSync(join(stage, "SEALED"), "sealed\n");
+        },
+        validate: stage => { this.#validateDirectory(stage); },
+      });
+      // Work remains closed until the startup-equivalent resolver selects it.
+      this.#openCanonical({}).close();
+    } finally {
+      rmSync(backupPath, { force: true });
+    }
+  }
+
+  #validateBridge(directory: string): void {
+    const manifestPath = join(directory, "release.json");
+    if (!existsSync(manifestPath)) throw new Error("compatible bridge release is not retained");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    if (manifest.role !== "bridge" || manifest.authorityFormat !== GENERATION_FORMAT_VERSION) {
+      throw new Error("retained bridge release is incompatible");
+    }
+  }
+
+  #validateLegacyIdentityAndTls(): void {
+    const identityPath = join(this.#dataDir, "identity.json");
+    if (existsSync(identityPath)) {
+      const identity = JSON.parse(readFileSync(identityPath, "utf8")) as Record<string, unknown>;
+      if (identity.schemaVersion !== 1 || typeof identity.hostname !== "string") {
+        throw new Error("installation identity is invalid");
+      }
+    }
+    const tls = join(this.#dataDir, "tls");
+    if (existsSync(tls)) {
+      for (const name of ["pidex-ca.pem", "pidex-ca-key.dpapi", "host.pem", "host-key.dpapi"]) {
+        const path = join(tls, name);
+        if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size === 0) {
+          throw new Error("TLS identity is incomplete");
+        }
+      }
+    }
+  }
+
+  #publishLegacyObjects(): string[] {
+    const legacyObjects = join(this.#dataDir, "blobs");
+    if (!existsSync(legacyObjects)) return [];
+    const objects: string[] = [];
+    for (const entry of readdirSync(legacyObjects, { withFileTypes: true })) {
+      if (!entry.isFile() || !/^[0-9a-f]{64}$/.test(entry.name)) {
+        throw new AuthorityGenerationError("absent-closure", entry.name);
+      }
+      const bytes = readFileSync(join(legacyObjects, entry.name));
+      if (createHash("sha256").update(bytes).digest("hex") !== entry.name) {
+        throw new AuthorityGenerationError("absent-closure", entry.name);
+      }
+      const target = join(this.#objectsDirectory, entry.name);
+      if (!existsSync(target)) copyFileSync(join(legacyObjects, entry.name), target);
+      objects.push(entry.name);
+    }
+    return objects.sort();
   }
 
   #openCanonical(catalog: InitialCatalog): AuthorityStore {

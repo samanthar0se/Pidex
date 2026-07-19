@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -79,6 +79,41 @@ test("bridge release permanently prefers discovered canonical authority", async 
       startHost({ dataDir, port: 0, adapters }),
       /invalid-generation/,
     );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("migration release freezes legacy and publishes it as canonical genesis before reopening", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-migration-"));
+  const adapters = adaptersFor("deterministic");
+  try {
+    const legacyHost = await startHost({ dataDir, port: 0, adapters });
+    const legacyIdentity = legacyHost.status().hostId;
+    await legacyHost.close();
+    const legacyDatabase = join(dataDir, "authority.sqlite");
+
+    const bridgeDirectory = join(dataDir, "releases", "bridge-0.1.0");
+    await mkdir(bridgeDirectory, { recursive: true });
+    await writeFile(join(bridgeDirectory, "release.json"), JSON.stringify({
+      role: "bridge", release: "0.1.0", authorityFormat: 1,
+    }));
+
+    const canonical = new AuthorityGenerationStore(dataDir, "0.1.0", adapters);
+    await canonical.migrateLegacy({ bridgeDirectory });
+    const selector = (await readFile(join(dataDir, "authority", "Generation"), "utf8")).trim();
+    const canonicalDatabase = join(dataDir, "authority", "generations", selector, "authority.sqlite");
+    assert.equal(hostIdentity(canonicalDatabase).hostId, legacyIdentity);
+
+    const migratedHost = await startHost({ dataDir, port: 0, adapters });
+    migratedHost.rotateSynchronizationEpoch();
+    await migratedHost.close();
+    assert.notEqual(hostIdentity(canonicalDatabase).epoch, hostIdentity(legacyDatabase).epoch);
+
+    // Rollback to B still resolves canonical and cannot mutate legacy.
+    const rollbackBridge = await startHost({ dataDir, port: 0, adapters });
+    assert.equal(rollbackBridge.status().hostId, legacyIdentity);
+    await rollbackBridge.close();
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
