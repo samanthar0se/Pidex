@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingHttpHeaders } from "node:http";
 import { request } from "node:https";
 import { tmpdir } from "node:os";
@@ -174,7 +174,20 @@ test("returns bounded Session windows, pages stable finalized history, and verif
     assert.equal(blob.status, 200);
     assert.equal(blob.headers["x-content-id"], blobId);
     assert.match(String(blob.headers.digest), /^sha-256=/);
-    await writeFile(join(dataDir, "blobs", blobId.slice(7)), "corrupt");
+    const authorityGeneration = (
+      await readFile(join(dataDir, "authority", "Generation"), "utf8")
+    ).trim();
+    await writeFile(
+      join(
+        dataDir,
+        "authority",
+        "generations",
+        authorityGeneration,
+        "blobs",
+        blobId.slice(7),
+      ),
+      "corrupt",
+    );
     const corruptBlob = await getHostResource(
       host.origin,
       `/api/blobs/${blobId}`,
