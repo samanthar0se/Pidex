@@ -2,6 +2,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
+import {
+  publishImmutableFile,
+  writeCandidate,
+} from "../../durability/src/index.js";
 
 export const CANONICAL_PORT = 47831;
 
@@ -54,7 +58,14 @@ function loadOrCreateIdentity(identityPath: string): InstallationIdentity {
     hostname: `pidex-${randomBytes(10).toString("hex")}.local`,
     port: CANONICAL_PORT,
   };
-  writeFileSync(identityPath, JSON.stringify(identity, null, 2));
+  const serialized = JSON.stringify(identity, null, 2);
+  publishImmutableFile({
+    target: identityPath,
+    materialize: writeCandidate(serialized),
+    validate(path) {
+      parseInstallationIdentity(readFileSync(path, "utf8"));
+    },
+  });
   return identity;
 }
 

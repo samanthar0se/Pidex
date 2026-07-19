@@ -44,15 +44,35 @@ test("per-user updates preserve installation identity and configure certificate 
     const second = installForCurrentUser({ ...options, releaseId: "1.0.1" });
     assert.deepEqual(second, first);
     assert.match(first.hostname, /^pidex-[a-f0-9]{20}\.local$/);
-    ensureCertificate(root, first.hostname, windows);
+    const certificate = ensureCertificate(root, first.hostname, windows);
     assert.ok(calls.some(call => call.startsWith("task:")));
     assert.ok(calls.some(call => call.startsWith("trust:")));
     assert.deepEqual((await readdir(join(root, "tls"))).sort(), [
-      "host-key.dpapi",
-      "host.pem",
-      "pidex-ca-key.dpapi",
-      "pidex-ca.pem",
+      "Generation",
+      "generations",
     ]);
+    const generation = (
+      await readFile(join(root, "tls", "Generation"), "utf8")
+    ).trim();
+    assert.deepEqual(
+      (
+        await readdir(join(root, "tls", "generations", generation))
+      ).sort(),
+      [
+        "host-key.dpapi",
+        "host.pem",
+        "identity.json",
+        "pidex-ca-key.dpapi",
+        "pidex-ca.pem",
+      ],
+    );
+
+    await writeFile(join(root, "tls", "Generation"), "damaged-selector");
+    assert.deepEqual(ensureCertificate(root, first.hostname, windows), certificate);
+    assert.equal(
+      (await readFile(join(root, "tls", "Generation"), "utf8")).trim(),
+      generation,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -90,16 +110,33 @@ test("certificate identity changes regenerate a leaf valid for an IPv4 origin", 
 
   try {
     ensureCertificate(root, "localhost", windows);
-    const initialCa = await readFile(join(root, "tls", "pidex-ca.pem"));
+    const initialCa = await readFile(await selectedTlsFile(root, "pidex-ca.pem"));
 
     ensureCertificate(root, "192.168.1.227", windows);
     const certificate = new X509Certificate(
-      await readFile(join(root, "tls", "host.pem")),
+      await readFile(await selectedTlsFile(root, "host.pem")),
     );
-    const replacementCa = await readFile(join(root, "tls", "pidex-ca.pem"));
+    const replacementCa = await readFile(
+      await selectedTlsFile(root, "pidex-ca.pem"),
+    );
 
     assert.equal(certificate.checkIP("192.168.1.227"), "192.168.1.227");
     assert.deepEqual(replacementCa, initialCa);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("TLS selection refuses mixed retained generation material", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-tls-"));
+  const windows = adaptersFor("deterministic").windows;
+  try {
+    ensureCertificate(root, "pidex-test.local", windows);
+    await writeFile(await selectedTlsFile(root, "host.pem"), "not the leaf");
+    assert.throws(
+      () => ensureCertificate(root, "pidex-test.local", windows),
+      /TLS generation/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -182,3 +219,10 @@ test("launcher contains the daemon before readiness and closes its Job after rep
     "closed",
   ]);
 });
+
+async function selectedTlsFile(root: string, name: string): Promise<string> {
+  const generation = (
+    await readFile(join(root, "tls", "Generation"), "utf8")
+  ).trim();
+  return join(root, "tls", "generations", generation, name);
+}
