@@ -122,9 +122,9 @@ test("scoped empty Sessions reject atomically, publish typed changes, and surviv
     assert.deepEqual(
       (await readdir(dataDir)).sort(),
       [
-        "authority.sqlite",
-        "authority.sqlite-shm",
-        "authority.sqlite-wal",
+        "active-generation.json",
+        "generations",
+        "objects",
         "tls",
       ].sort(),
     );

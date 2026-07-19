@@ -22,6 +22,7 @@ import {
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
+import { AuthorityGenerationStore } from "./authority-generations.js";
 import {
   PairingAuthority,
   PairingError,
@@ -162,8 +163,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       constraints: capability.constraints,
     }));
   const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
+  const authorityPath = new AuthorityGenerationStore(options.dataDir).resolve();
   const store = new AuthorityStore(
-    join(options.dataDir, "authority.sqlite"),
+    authorityPath,
     adapters,
     options.initialCatalog,
   );
