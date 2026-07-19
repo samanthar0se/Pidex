@@ -13,7 +13,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { publishImmutableFile, writeCandidate } from "../../durability/src/index.js";
+import {
+  publishImmutableFile,
+  writeCandidate,
+} from "../../durability/src/index.js";
 
 const completionEvidenceSchema = z.object({
   body: z.string(),
@@ -77,9 +80,7 @@ export class RunArtifactStore {
       target: destination,
       materialize: writeCandidate(bytes),
       validate: candidate => {
-        if (sha256(readFileSync(candidate)) !== digest) {
-          throw new Error("blob-verification-failed");
-        }
+        validateBlobFile(candidate, digest);
       },
     });
     return `sha256:${digest}`;
@@ -96,11 +97,7 @@ export class RunArtifactStore {
       return null;
     }
 
-    const bytes = readFileSync(path);
-    if (sha256(bytes) !== digest) {
-      throw new Error("blob-verification-failed");
-    }
-    return bytes;
+    return validateBlobFile(path, digest);
   }
 
   /**
@@ -172,9 +169,14 @@ export class RunArtifactStore {
     const evidence = completionEvidenceSchema.parse(
       JSON.parse(readFileSync(path, "utf8")),
     );
-    if (sha256(evidence.body) !== evidence.digest) throw new Error("bad-evidence");
+    if (sha256(evidence.body) !== evidence.digest) {
+      throw new Error("bad-evidence");
+    }
+
     const body = completionEvidenceBodySchema.parse(JSON.parse(evidence.body));
-    if (body.runId !== runId) throw new Error("bad-evidence");
+    if (body.runId !== runId) {
+      throw new Error("bad-evidence");
+    }
     return body;
   }
 
@@ -189,6 +191,14 @@ export class RunArtifactStore {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function validateBlobFile(path: string, expectedDigest: string): Buffer {
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== expectedDigest) {
+    throw new Error("blob-verification-failed");
+  }
+  return bytes;
 }
 
 function isBlobDigest(value: string): boolean {

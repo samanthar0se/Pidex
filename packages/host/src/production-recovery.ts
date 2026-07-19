@@ -3,6 +3,7 @@ import type { HostAdapters } from "../../adapters/src/index.js";
 import {
   AuthorityGenerationStore,
   type AuthorityGenerationEnvelope,
+  type GenerationResolution,
   type RecoveryWarning,
 } from "./authority-generations.js";
 import { AuthorityStore } from "./store.js";
@@ -37,7 +38,7 @@ export function recoverProductionAuthority(
   adapters: HostAdapters,
   now: number,
 ): ProductionRecoveryResult {
-  let resolution;
+  let resolution: GenerationResolution;
   try {
     resolution = new AuthorityGenerationStore(root).resolve();
   } catch (error) {
@@ -70,8 +71,14 @@ export function recoverProductionAuthority(
 
 function classifyRecoveryFailure(error: unknown): RecoveryFailureReason {
   const message = error instanceof Error ? error.message : "";
-  if (/ambiguous/i.test(message)) return "ambiguous-authority";
-  if (/lineage/i.test(message)) return "broken-lineage";
-  if (/valid Authority generation/i.test(message)) return "incomplete-closure";
+  if (/ambiguous/i.test(message)) {
+    return "ambiguous-authority";
+  }
+  if (/lineage/i.test(message)) {
+    return "broken-lineage";
+  }
+  if (/valid Authority generation/i.test(message)) {
+    return "incomplete-closure";
+  }
   return "invalid-authority";
 }

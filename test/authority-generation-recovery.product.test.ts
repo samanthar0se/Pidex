@@ -74,7 +74,10 @@ test("startup falls back by copying authority, rotating continuity, and retainin
 
     const restarted = new AuthorityGenerationStore(root);
     assert.equal(restarted.warnings()[0]?.failedGeneration, damaged.generationId);
-    assert.equal(restarted.resolve().selected.generationId, recovery.selected.generationId);
+    assert.equal(
+      restarted.resolve().selected.generationId,
+      recovery.selected.generationId,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -116,7 +119,11 @@ test("cleanup requires later scans and retains selected, predecessor, holds, war
     store.resolve();
     const cleanup = store.cleanup();
     assert.deepEqual(cleanup.generations, ["g2"]);
-    assert.deepEqual((await readdir(join(root, "objects"))).sort(), ["held", "old", "selected"]);
+    assert.deepEqual((await readdir(join(root, "objects"))).sort(), [
+      "held",
+      "old",
+      "selected",
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
