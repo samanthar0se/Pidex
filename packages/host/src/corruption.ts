@@ -6,18 +6,16 @@ import {
 } from "node:crypto";
 import {
   appendFileSync,
-  closeSync,
   copyFileSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   statSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { publishImmutableFile } from "../../durability/src/index.js";
 
 export type CorruptionObjectKind =
   | "sqlite"
@@ -168,6 +166,8 @@ export class CorruptionScrubber {
     // Catalog order and recency carry no authority: every candidate proves exact bytes.
     const copy = object.copies.find(
       candidate =>
+        candidate.provenance.trim().length > 0 &&
+        candidate.path !== object.path &&
         candidate.digest === object.digest &&
         this.isValid(candidate.path, object.digest, object.kind),
     );
@@ -206,21 +206,18 @@ export class CorruptionScrubber {
       `${object.id}.${now}.${randomUUID()}`,
     );
     mkdirSync(dirname(destination), { recursive: true });
-    const staged = `${destination}.${randomUUID()}.repair`;
-
-    // Materialize and prove the replacement before disturbing live bytes.
-    copyFileSync(this.resolvePath(copy.path), staged);
-    if (!this.isValidAbsolute(staged, object.digest, object.kind)) {
-      throw new Error("repair-verification-failed");
-    }
-    flushPath(staged);
-
     mkdirSync(dirname(quarantine), { recursive: true });
     if (existsSync(destination)) {
       renameSync(destination, quarantine);
     }
-    renameSync(staged, destination);
-    flushPath(dirname(destination));
+    // Damage remains immutable evidence; the shared publisher owns staging,
+    // validation, flush, and publication of the proven byte-identical copy.
+    publishImmutableFile({
+      target: destination,
+      materialize: stage => copyFileSync(this.resolvePath(copy.path), stage),
+      validate: candidate =>
+        this.isValidAbsolute(candidate, object.digest, object.kind),
+    });
 
     result.repaired.push(object.id);
     this.recordDiagnostic({
@@ -300,14 +297,5 @@ function hasValidDatabaseIntegrity(path: string): boolean {
     }
   } catch {
     return false;
-  }
-}
-
-function flushPath(path: string): void {
-  const descriptor = openSync(path, "r");
-  try {
-    fsyncSync(descriptor);
-  } finally {
-    closeSync(descriptor);
   }
 }
