@@ -27,6 +27,7 @@ import {
   type PairingInstructions,
 } from "./pairing.js";
 import { PiSessionWorker } from "./pi-worker.js";
+import { AuthorityGenerationStore } from "./authority-generation.js";
 import {
   AuthorityStore,
   type InitialCatalog,
@@ -161,11 +162,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       constraints: capability.constraints,
     }));
   const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
-  const store = new AuthorityStore(
-    join(options.dataDir, "authority.sqlite"),
+  const store = new AuthorityGenerationStore(
+    options.dataDir,
+    RELEASE_ID.replace("pidex@", ""),
     adapters,
-    options.initialCatalog,
-  );
+  ).open(options.initialCatalog);
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;

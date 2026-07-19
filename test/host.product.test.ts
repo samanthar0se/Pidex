@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { get } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,6 +71,17 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
       await initialHost.close();
     }
 
+    const generations = await readdir(join(dataDir, "authority", "generations"));
+    assert.equal(generations.length, 1);
+    assert.equal(
+      await readFile(join(dataDir, "authority", "Generation"), "utf8"),
+      `${generations[0]}\n`,
+    );
+    await assert.rejects(readFile(join(dataDir, "authority.sqlite")), { code: "ENOENT" });
+
+    // Selector contents are not authority and are repaired from validated candidates.
+    await writeFile(join(dataDir, "authority", "Generation"), "stale-and-corrupt\n");
+
     const restartedHost = await startHost({
       dataDir,
       port: 0,
@@ -82,6 +93,10 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
       assert.deepEqual(
         await readStatus(restartedHost.origin, authorization),
         initialStatus,
+      );
+      assert.equal(
+        await readFile(join(dataDir, "authority", "Generation"), "utf8"),
+        `${generations[0]}\n`,
       );
     } finally {
       await restartedHost.close();

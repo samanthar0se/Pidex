@@ -121,12 +121,7 @@ test("scoped empty Sessions reject atomically, publish typed changes, and surviv
     restarted.socket.close();
     assert.deepEqual(
       (await readdir(dataDir)).sort(),
-      [
-        "authority.sqlite",
-        "authority.sqlite-shm",
-        "authority.sqlite-wal",
-        "tls",
-      ].sort(),
+      ["authority", "tls"],
     );
   } finally {
     await host.close();
