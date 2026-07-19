@@ -1,3 +1,3 @@
 import { runHost } from "./run-host.js";
 
-await runHost("product");
+await runHost("deterministic");

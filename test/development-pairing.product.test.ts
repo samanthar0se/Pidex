@@ -9,18 +9,18 @@ import test from "node:test";
 const HOST_STARTUP_TIMEOUT_MS = 10_000;
 
 test(
-  "deterministic development startup prints a pairing URL",
+  "development command selects deterministic adapters and prints launch guidance",
   { timeout: HOST_STARTUP_TIMEOUT_MS + 5_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
     const host = spawn(
       process.execPath,
-      ["--import", "tsx", "packages/host/src/main.ts"],
+      ["--import", "tsx", "packages/host/src/development.ts"],
       {
         cwd: process.cwd(),
         env: {
           ...process.env,
-          PIDEX_ADAPTERS: "deterministic",
+          PIDEX_ADAPTERS: "product",
           PIDEX_DATA_DIR: dataDir,
           PIDEX_HOSTNAME: "192.0.2.10",
           PIDEX_PORT: "0",
@@ -43,7 +43,10 @@ test(
         host.stdout.setEncoding("utf8");
         host.stdout.on("data", chunk => {
           stdout += String(chunk);
-          if (stdout.includes("Pair this device:")) {
+          if (
+            stdout.includes("Pair this device:") &&
+            stdout.includes("If HTTPS is not trusted")
+          ) {
             clearTimeout(timeout);
             resolve();
           }
@@ -68,11 +71,14 @@ test(
       const pairingUrl = stdout.match(
         /Pair this device: (https:\/\/[^/]+\/\?pair=[A-Z0-9_-]{20})/,
       )?.[1];
+      const certificatePath = join(dataDir, "tls", "pidex-ca.pem");
 
       assert.ok(readyOrigin);
       assert.ok(pairingUrl);
       assert.match(readyOrigin, /^https:\/\/192\.0\.2\.10:\d+$/);
       assert.equal(new URL(pairingUrl).origin, readyOrigin);
+      assert.match(stdout, /If HTTPS is not trusted/);
+      assert.ok(stdout.includes(certificatePath));
     } finally {
       if (host.exitCode === null) {
         const exit = once(host, "exit");

@@ -14,7 +14,6 @@ Stop the development Host, then set its current LAN IPv4 address as the
 deterministic development hostname:
 
 ```powershell
-$env:PIDEX_ADAPTERS = "deterministic"
 $env:PIDEX_HOSTNAME = "192.168.1.227"
 npm run dev
 ```
