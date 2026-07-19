@@ -15,30 +15,54 @@ test("Durability coverage is asynchronous, role-specific, conservative, and priv
   const checkpointDir = join(dataDir, "private-checkpoints");
   const adapters = adaptersFor("deterministic");
   const resolvers = new Map<string, (facts: StorageVolumeFacts) => void>();
-  adapters.windows.classifyStorage = path => new Promise(resolve => resolvers.set(path, resolve));
-  const host = await startHost({ dataDir, installationDir, piCheckpointDir: checkpointDir, port: 0,
-    authorization: "device", adapters });
+  adapters.windows.classifyStorage = path =>
+    new Promise(resolve => resolvers.set(path, resolve));
+  const resolveStorage = (path: string, facts: StorageVolumeFacts): void => {
+    const resolve = resolvers.get(path);
+    assert.ok(resolve, "expected a pending storage classification");
+    resolve(facts);
+  };
+  const host = await startHost({
+    dataDir,
+    installationDir,
+    piCheckpointDir: checkpointDir,
+    port: 0,
+    authorization: "device",
+    adapters,
+  });
+
   try {
     const pending = host.status();
     assert.equal(pending.readiness, "ready");
     assert.equal(pending.durability.assessment, "assessment-pending");
 
-    const socket = new WebSocket(`${host.origin.replace("https:", "wss:")}/control`, {
-      rejectUnauthorized: false, headers: { authorization: "Bearer device" },
-    });
+    const socket = new WebSocket(
+      `${host.origin.replace("https:", "wss:")}/control`,
+      {
+        rejectUnauthorized: false,
+        headers: { authorization: "Bearer device" },
+      },
+    );
     const offer = await nextControlMessage(socket);
     assert.equal(offer.type, "host.hello");
-    if (offer.type !== "host.hello") throw new Error("expected offer");
+    if (offer.type !== "host.hello") {
+      throw new Error("expected offer");
+    }
     socket.send(JSON.stringify(clientHello(offer.hostId)));
     assert.equal((await nextControlMessage(socket)).type, "protocol.admitted");
     assert.equal((await nextControlMessage(socket)).type, "host.snapshot");
 
-    resolvers.get(dataDir)?.({ fileSystem: "NTFS", driveType: "fixed" });
-    resolvers.get(installationDir)?.({ fileSystem: "ReFS", driveType: "fixed" });
-    resolvers.get(checkpointDir)?.({ fileSystem: "NTFS" });
+    resolveStorage(dataDir, { fileSystem: "NTFS", driveType: "fixed" });
+    resolveStorage(installationDir, {
+      fileSystem: "ReFS",
+      driveType: "fixed",
+    });
+    resolveStorage(checkpointDir, { fileSystem: "NTFS" });
     const change = await nextControlMessage(socket);
     assert.equal(change.type, "durability.coverage-changed");
-    if (change.type !== "durability.coverage-changed") throw new Error("expected coverage");
+    if (change.type !== "durability.coverage-changed") {
+      throw new Error("expected coverage");
+    }
     assert.equal(change.coverage.aggregate, "outside-boundary");
     assert.deepEqual(change.coverage.roles.map(({ role, state }) => ({ role, state })), [
       { role: "host-data", state: "covered" },

@@ -21,8 +21,8 @@ import {
   protocolMinor,
   protocolVersion,
   type ClientHello,
-  type HostStatus,
   type DurabilityCoverage,
+  type HostStatus,
   type RunRecord,
   type Interaction,
   type ServerMessage,
@@ -30,6 +30,11 @@ import {
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
+import {
+  assessDurabilityCoverage,
+  durabilityWarningsFor,
+  pendingDurabilityCoverage,
+} from "./durability.js";
 import {
   PairingAuthority,
   PairingError,
@@ -60,6 +65,7 @@ const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
 const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
+const DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS = 2_000;
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -69,6 +75,7 @@ const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
+const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
@@ -212,8 +219,11 @@ export interface HostOptions {
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
+  /** Directory containing the active installation release. */
   installationDir?: string;
+  /** Directory containing Pi's durable checkpoints. */
   piCheckpointDir?: string;
+  /** Time allowed to classify each durability storage role. */
   durabilityAssessmentTimeoutMs?: number;
 }
 
@@ -260,10 +270,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     adapters.windows,
   );
   const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
-  let durability: DurabilityCoverage = pendingDurabilityCoverage();
-  let durabilityWarnings: HostStatus["warnings"] = durabilityWarningsFor(durability);
-  const warnings = (): HostStatus["warnings"] => [...firewallWarnings, ...durabilityWarnings];
-  const currentStatus = (): HostStatus => store.status(RELEASE_ID, warnings(), durability);
+  let durabilityCoverage: DurabilityCoverage = pendingDurabilityCoverage();
+  let durabilityWarnings = durabilityWarningsFor(durabilityCoverage);
+  const currentWarnings = (): HostStatus["warnings"] => [
+    ...firewallWarnings,
+    ...durabilityWarnings,
+  ];
+  const currentStatus = (): HostStatus =>
+    store.status(RELEASE_ID, currentWarnings(), durabilityCoverage);
   const pairing = new PairingAuthority(adapters.clock, store);
 
   const server = createServer(
@@ -685,18 +699,24 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     {
       "host-data": options.dataDir,
       "installation-release": options.installationDir ?? resolve("."),
-      "pi-checkpoint": options.piCheckpointDir ?? join(options.dataDir, "pi-checkpoints"),
+      "pi-checkpoint":
+        options.piCheckpointDir ?? join(options.dataDir, "pi-checkpoints"),
     },
-    options.durabilityAssessmentTimeoutMs ?? 2_000,
+    options.durabilityAssessmentTimeoutMs ??
+      DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS,
   ).then(coverage => {
-    durability = coverage;
+    durabilityCoverage = coverage;
     durabilityWarnings = durabilityWarningsFor(coverage);
     for (const client of admittedClients) {
-      if (admittedCapabilityBasisByClient.get(client)?.has("durability.coverage@1")) {
+      if (
+        admittedCapabilityBasisByClient
+          .get(client)
+          ?.has(DURABILITY_COVERAGE_CAPABILITY)
+      ) {
         sendServerMessage(client, {
           type: "durability.coverage-changed",
           coverage,
-          warnings: warnings(),
+          warnings: currentWarnings(),
         });
       }
     }
@@ -2237,68 +2257,6 @@ function configureFirewall(
   console.error(JSON.stringify(warning));
 
   return [warning];
-}
-
-type DurabilityRole = DurabilityCoverage["roles"][number]["role"];
-
-function pendingDurabilityCoverage(): DurabilityCoverage {
-  return {
-    aggregate: "indeterminate",
-    assessment: "assessment-pending",
-    roles: (["host-data", "installation-release", "pi-checkpoint"] as const).map(role => ({
-      role,
-      state: "indeterminate" as const,
-      reason: "assessment-pending" as const,
-    })),
-  };
-}
-
-async function assessDurabilityCoverage(
-  windows: WindowsPlatformAdapter,
-  paths: Record<DurabilityRole, string>,
-  timeoutMs: number,
-): Promise<DurabilityCoverage> {
-  const roles = await Promise.all(
-    (Object.keys(paths) as DurabilityRole[]).map(async role => {
-      try {
-        const facts = await Promise.race([
-          windows.classifyStorage(paths[role]),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("classification-timeout")), timeoutMs),
-          ),
-        ]);
-        if (facts.fileSystem === "NTFS" && facts.driveType === "fixed") {
-          return { role, state: "covered" as const, reason: "fixed-ntfs" as const };
-        }
-        if (
-          (facts.fileSystem !== undefined && facts.fileSystem !== "NTFS") ||
-          (facts.driveType !== undefined && facts.driveType !== "fixed")
-        ) {
-          return { role, state: "outside-boundary" as const, reason: "outside-fixed-ntfs" as const };
-        }
-      } catch {
-        // Unsupported, failed, and timed-out classifications are deliberately equivalent.
-      }
-      return { role, state: "indeterminate" as const, reason: "classification-unavailable" as const };
-    }),
-  );
-  const aggregate = roles.some(role => role.state === "outside-boundary")
-    ? "outside-boundary"
-    : roles.some(role => role.state === "indeterminate") ? "indeterminate" : "covered";
-  return { aggregate, assessment: "complete", roles };
-}
-
-function durabilityWarningsFor(coverage: DurabilityCoverage): HostStatus["warnings"] {
-  return coverage.roles.flatMap(role => role.state === "covered" ? [] : [{
-    severity: "medium" as const,
-    code: "durability-coverage-degraded" as const,
-    role: role.role,
-    state: role.state,
-    reason: role.reason,
-    detail: role.state === "outside-boundary"
-      ? "This storage role is outside the fixed NTFS Durability boundary."
-      : "Durability coverage for this storage role could not be determined.",
-  }]);
 }
 
 function hasValidAuthorization(

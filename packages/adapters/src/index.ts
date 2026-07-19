@@ -134,7 +134,13 @@ export interface WindowsPlatformAdapter {
 
 export interface StorageVolumeFacts {
   fileSystem?: string;
-  driveType?: "fixed" | "removable" | "remote" | "optical" | "ramdisk" | "unknown";
+  driveType?:
+    | "fixed"
+    | "removable"
+    | "remote"
+    | "optical"
+    | "ramdisk"
+    | "unknown";
 }
 
 export interface SessionJob {

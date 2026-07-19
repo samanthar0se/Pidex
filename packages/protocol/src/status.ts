@@ -69,15 +69,32 @@ export function clientHello(expectedHostId: string): ClientHello {
   };
 }
 
-const durabilityStateSchema = z.enum(["covered", "outside-boundary", "indeterminate"]);
+export const durabilityRoles = [
+  "host-data",
+  "installation-release",
+  "pi-checkpoint",
+] as const;
+
+const durabilityStateSchema = z.enum([
+  "covered",
+  "outside-boundary",
+  "indeterminate",
+]);
 const durabilityCoverageSchema = z.object({
   aggregate: durabilityStateSchema,
   assessment: z.enum(["assessment-pending", "complete"]),
-  roles: z.array(z.object({
-    role: z.enum(["host-data", "installation-release", "pi-checkpoint"]),
-    state: durabilityStateSchema,
-    reason: z.enum(["fixed-ntfs", "outside-fixed-ntfs", "assessment-pending", "classification-unavailable"]),
-  })),
+  roles: z.array(
+    z.object({
+      role: z.enum(durabilityRoles),
+      state: durabilityStateSchema,
+      reason: z.enum([
+        "fixed-ntfs",
+        "outside-fixed-ntfs",
+        "assessment-pending",
+        "classification-unavailable",
+      ]),
+    }),
+  ),
 });
 export type DurabilityCoverage = z.infer<typeof durabilityCoverageSchema>;
 
@@ -85,21 +102,23 @@ export const hostStatusSchema = z.object({
   hostId: z.string(),
   releaseId: z.string(),
   readiness: z.literal("ready"),
-  warnings: z.array(z.union([
-    z.object({
-      severity: z.literal("high"),
-      code: z.literal("firewall-enforcement-degraded"),
-      detail: z.string(),
-    }),
-    z.object({
-      severity: z.literal("medium"),
-      code: z.literal("durability-coverage-degraded"),
-      role: z.enum(["host-data", "installation-release", "pi-checkpoint"]),
-      state: z.enum(["outside-boundary", "indeterminate"]),
-      reason: z.string(),
-      detail: z.string(),
-    }),
-  ])),
+  warnings: z.array(
+    z.union([
+      z.object({
+        severity: z.literal("high"),
+        code: z.literal("firewall-enforcement-degraded"),
+        detail: z.string(),
+      }),
+      z.object({
+        severity: z.literal("medium"),
+        code: z.literal("durability-coverage-degraded"),
+        role: z.enum(durabilityRoles),
+        state: z.enum(["outside-boundary", "indeterminate"]),
+        reason: z.string(),
+        detail: z.string(),
+      }),
+    ]),
+  ),
   durability: durabilityCoverageSchema,
   synchronization: z.object({
     epoch: z.string(),
