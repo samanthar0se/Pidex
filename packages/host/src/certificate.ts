@@ -31,23 +31,23 @@ export function ensureCertificate(
   };
   mkdirSync(directory, { recursive: true });
 
-  const certificateFilesExist = Object.values(paths).every(path =>
+  const certificateMaterialExists = Object.values(paths).every(path =>
     existsSync(path),
   );
-  const certificateExists =
-    certificateFilesExist &&
-    certificateCoversHostname(paths.hostCertificatePath, hostname);
+  const certificateNeedsRegeneration =
+    !certificateMaterialExists ||
+    !certificateCoversHostname(paths.hostCertificatePath, hostname);
 
-  if (!certificateExists) {
+  if (certificateNeedsRegeneration) {
     windows.restrictToCurrentUser(directory);
     generateCertificate(
       directory,
       hostname,
       windows,
       paths,
-      certificateFilesExist,
+      certificateMaterialExists,
     );
-    if (!certificateFilesExist) {
+    if (!certificateMaterialExists) {
       windows.trustCurrentUserCertificate(paths.caCertificatePath);
     }
   }
@@ -61,9 +61,12 @@ export function ensureCertificate(
   };
 }
 
-function certificateCoversHostname(path: string, hostname: string): boolean {
+function certificateCoversHostname(
+  certificatePath: string,
+  hostname: string,
+): boolean {
   try {
-    const certificate = new X509Certificate(readFileSync(path));
+    const certificate = new X509Certificate(readFileSync(certificatePath));
     return isIP(hostname)
       ? certificate.checkIP(hostname) !== undefined
       : certificate.checkHost(hostname) !== undefined;
@@ -122,9 +125,10 @@ function generateCertificate(
       "-out", certificateRequestPath,
       "-subj", `/CN=${hostname}`,
     ]);
+    const subjectAlternativeNameType = isIP(hostname) ? "IP" : "DNS";
     writeFileSync(
       extensionsPath,
-      `subjectAltName=${isIP(hostname) ? "IP" : "DNS"}:${hostname},DNS:localhost,IP:127.0.0.1\n`,
+      `subjectAltName=${subjectAlternativeNameType}:${hostname},DNS:localhost,IP:127.0.0.1\n`,
     );
     runOpenSsl([
       "x509", "-req",
