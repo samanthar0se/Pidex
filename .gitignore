@@ -1,1 +1,3 @@
 node_modules/
+.pidex-data/
+.pidex-data-dev/

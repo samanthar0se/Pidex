@@ -4,7 +4,7 @@
 
 **Blocked by:** 08 — Resume or reset Client scopes; 13 — Reach complete paginated Session history; 28 — Complete the mobile Session experience
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A per-Host IndexedDB store transactionally retains lightweight discovery summaries, opened Session projections, mutable-tail basis, fetched finalized pages, and verified immutable blobs.
 - [ ] Every cached record retains Host identity, epoch/cursor, protocol/cache schema basis, scope, relevant revisions, and last successful synchronization time.

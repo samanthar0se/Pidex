@@ -4,7 +4,7 @@
 
 **Blocked by:** 39 — Restore the whole Host; 41 — Update and roll back signed releases; 45 — Harden product and release security; 47 — Meet latency and resource budgets
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The campaign injects faults before/after every command acceptance, dispatch, checkpoint, blob publication, settlement, snapshot barrier, migration activation, release activation, backup verification, restore activation, and Reidentify boundary.
 - [ ] Process scenarios cover uncooperative descendants, worker/daemon/launcher termination, Job loss, Host reboot/power loss, startup circuit breaker, and multi-Session isolation.

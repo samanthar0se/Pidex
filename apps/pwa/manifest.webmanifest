@@ -2,5 +2,21 @@
   "name": "Pidex",
   "short_name": "Pidex",
   "start_url": "/",
-  "display": "standalone"
+  "display": "standalone",
+  "theme_color": "#11110f",
+  "background_color": "#fbfaf7",
+  "icons": [
+    {
+      "src": "/icons/pidex-app-icon-white.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/pidex-app-icon-white.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
 }

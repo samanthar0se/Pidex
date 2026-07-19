@@ -4,7 +4,7 @@
 
 **Blocked by:** 19 — Resolve Interaction races, deadlines, and redaction; 23 — Archive and restore Sessions safely; 24 — Fork stable Session history; 26 — Recover from daemon or Host loss
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The persistent sidebar provides New Session, Archived, Project/Workspace-grouped available Sessions, search/filtering, and fixed Host/Device/settings status.
 - [ ] Sessions remain ordered by recent authoritative activity within groups rather than moving into state-priority sections.

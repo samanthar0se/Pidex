@@ -9,6 +9,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
+import {
+  publishValidatedTree,
+  replaceRebuildableFile,
+} from "../../durability/src/index.js";
 
 export interface AuthorityGenerationEnvelope {
   formatVersion: 1;
@@ -32,6 +36,15 @@ export interface GenerationResolution {
   warning?: RecoveryWarning;
 }
 
+export interface AuthorityTransition {
+  /** The generation whose bytes form the recovery basis. It is never changed. */
+  sourceGeneration: string;
+  objects?: string[];
+  rotateContinuity?: boolean;
+  materialize(stagingDirectory: string, sourceDirectory: string): void;
+  validate?(stagingDirectory: string): void;
+}
+
 interface GenerationCandidates {
   envelopes: AuthorityGenerationEnvelope[];
   ambiguous: boolean;
@@ -51,6 +64,64 @@ export class AuthorityGenerationStore {
     this.#objects = join(root, "objects");
     mkdirSync(this.#generations, { recursive: true });
     mkdirSync(this.#objects, { recursive: true });
+  }
+
+  /**
+   * Publishes a sealed generation for migration, restore, rollback,
+   * Reidentify, or whole-Authority repair. Activation succeeds only when the
+   * production resolver selects the published generation.
+   */
+  activate(transition: AuthorityTransition): GenerationResolution {
+    const sourceEnvelope = this.resolve().selected;
+    if (sourceEnvelope.generationId !== transition.sourceGeneration) {
+      throw new Error("Authority transition source is not selected");
+    }
+
+    const generationId = randomUUID();
+    const sourceDirectory = join(
+      this.#generations,
+      sourceEnvelope.generationId,
+    );
+    const envelope: AuthorityGenerationEnvelope = {
+      formatVersion: 1,
+      generationId,
+      activationIndex: sourceEnvelope.activationIndex + 1,
+      predecessor: sourceEnvelope.generationId,
+      continuity: transition.rotateContinuity
+        ? randomUUID()
+        : sourceEnvelope.continuity,
+      objects: transition.objects ?? sourceEnvelope.objects,
+      sealed: true,
+    };
+
+    publishValidatedTree({
+      target: join(this.#generations, generationId),
+      materialize: stagingDirectory => {
+        transition.materialize(stagingDirectory, sourceDirectory);
+        writeFileSync(
+          join(stagingDirectory, "envelope.json"),
+          JSON.stringify(envelope, null, 2),
+        );
+      },
+      validate: stagingDirectory => {
+        const stagedEnvelope = this.#readJson(
+          join(stagingDirectory, "envelope.json"),
+        );
+        if (
+          !isEnvelope(stagedEnvelope) ||
+          stagedEnvelope.generationId !== generationId
+        ) {
+          throw new Error("Invalid Authority transition envelope");
+        }
+        transition.validate?.(stagingDirectory);
+      },
+    });
+
+    const resolution = this.resolve();
+    if (resolution.selected.generationId !== generationId) {
+      throw new Error("Authority transition was not selected");
+    }
+    return resolution;
   }
 
   /** Startup-equivalent scan. The selector is repaired, never trusted. */
@@ -331,11 +402,12 @@ export class AuthorityGenerationStore {
   }
 
   #replaceJson(name: string, value: unknown): void {
-    const stage = join(this.#root, `${name}.new`);
-    writeFileSync(stage, JSON.stringify(value));
-    rmSync(join(this.#root, name), { force: true });
-    writeFileSync(join(this.#root, name), readFileSync(stage));
-    rmSync(stage);
+    replaceRebuildableFile({
+      target: join(this.#root, name),
+      materialize: stage => writeFileSync(stage, JSON.stringify(value)),
+      validate: stage =>
+        JSON.stringify(this.#readJson(stage)) === JSON.stringify(value),
+    });
   }
 
   #readJson(path: string): unknown {

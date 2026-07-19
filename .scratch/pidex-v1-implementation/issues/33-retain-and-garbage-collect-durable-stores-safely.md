@@ -4,7 +4,7 @@
 
 **Blocked by:** 19 — Resolve Interaction races, deadlines, and redaction; 24 — Fork stable Session history; 26 — Recover from daemon or Host loss
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] SQLite is the sole authority for Host identity metadata, Projects, Workspaces, Sessions, Runs, Timeline, Interactions, revisions, cursors, receipts, Devices, manifests, and maintenance facts.
 - [ ] Pi artifacts remain authoritative only for pinned-runtime resume/fork state, and immutable blob bytes remain subordinate to SQLite meaning and references.

@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Install and autostart the canonical Host; 23 — Archive and restore Sessions safely; 34 — Migrate versioned data and Pi artifacts safely; 37 — Create and manage online recovery snapshots
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The Host verifies release metadata and complete packages against a pinned signing root and stages them in immutable versioned directories.
 - [ ] Partial, corrupt, or unverified downloads never execute; paired Clients can see a ready update and defer activation.

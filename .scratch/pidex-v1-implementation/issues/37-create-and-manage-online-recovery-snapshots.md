@@ -4,7 +4,7 @@
 
 **Blocked by:** 34 — Migrate versioned data and Pi artifacts safely; 36 — Detect and isolate corruption
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The Host creates at most one scheduled snapshot in each changed 24-hour period, skips unchanged days, and begins a due snapshot within two hours of healthy availability with at most 30 minutes jitter.
 - [ ] Upgrade/migration risk boundaries create protected snapshots and paired Devices/CLI can request manual snapshots.

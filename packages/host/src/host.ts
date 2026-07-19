@@ -1,5 +1,5 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, statfsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
 import { join, resolve } from "node:path";
@@ -21,6 +21,7 @@ import {
   protocolMinor,
   protocolVersion,
   type ClientHello,
+  type DurabilityCoverage,
   type HostStatus,
   type RunRecord,
   type Interaction,
@@ -29,6 +30,11 @@ import {
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
+import {
+  type CoverageDiagnostic,
+  DurabilityCoverageMonitor,
+  type DurabilityRole,
+} from "./durability-coverage.js";
 import {
   PairingAuthority,
   PairingError,
@@ -39,6 +45,7 @@ import {
   WorkerLossError,
   WORKER_PROTOCOL_GENERATION,
 } from "./pi-worker.js";
+import { AuthorityGenerationStore } from "./authority-generation.js";
 import {
   AuthorityStore,
   type InitialCatalog,
@@ -48,6 +55,10 @@ import {
   type SteerCommand,
   type StopCommand,
 } from "./store.js";
+import {
+  StorageProtection,
+  type StorageProtectionStatus,
+} from "./storage-protection.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
@@ -60,6 +71,7 @@ const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
 const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
+const DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS = 2_000;
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -69,6 +81,7 @@ const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
+const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
@@ -204,11 +217,31 @@ interface ClientDelivery {
 }
 
 const PWA_ASSETS: Record<string, PwaAsset> = {
-  "/": { file: "index.html", contentType: "text/html" },
-  "/app.js": { file: "app.js", contentType: "text/javascript" },
+  "/": { file: "apps/pwa/index.html", contentType: "text/html" },
+  "/app.js": { file: "apps/pwa/app.js", contentType: "text/javascript" },
+  "/browser-compatibility.mjs": {
+    file: "apps/pwa/browser-compatibility.mjs",
+    contentType: "text/javascript",
+  },
+  "/service-worker.js": {
+    file: "apps/pwa/service-worker.js",
+    contentType: "text/javascript",
+  },
   "/manifest.webmanifest": {
-    file: "manifest.webmanifest",
+    file: "apps/pwa/manifest.webmanifest",
     contentType: "application/manifest+json",
+  },
+  "/icons/pidex-app-icon-white.png": {
+    file: "icon/pidex-app-icon-white.png",
+    contentType: "image/png",
+  },
+  "/icons/pidex-app-icon-white.svg": {
+    file: "icon/pidex-app-icon-white.svg",
+    contentType: "image/svg+xml",
+  },
+  "/icons/pidex-gradient.svg": {
+    file: "icon/pidex-gradient.svg",
+    contentType: "image/svg+xml",
   },
 };
 
@@ -227,6 +260,24 @@ export interface HostOptions {
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
+  /** Capacity used to validate the configured storage-protection thresholds. */
+  storageCapacityBytes?: number;
+  /** Storage kept available for writes needed to settle accepted work. */
+  emergencyReserveBytes?: number;
+  /** Available storage required before discretionary writes are admitted. */
+  admissionHeadroomBytes?: number;
+  /** Deterministic capacity seam; production uses the data volume. */
+  availableStorageBytes?: () => number;
+  /** Directory containing the active installation release. */
+  installationDir?: string;
+  /** Directory containing Pi's durable checkpoints. */
+  piCheckpointDir?: string;
+  /** Time allowed to classify each durability storage role. */
+  durabilityAssessmentTimeoutMs?: number;
+  /** Time allowed for each operational coverage refresh. */
+  coverageRefreshTimeoutMs?: number;
+  /** Receives privacy-safe state transition diagnostics. */
+  onDiagnostic?: (event: CoverageDiagnostic) => void;
 }
 
 export interface StartedHost {
@@ -238,6 +289,14 @@ export interface StartedHost {
   revokeDevice(deviceId: string): void;
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
+  storageProtection(): StorageProtectionStatus;
+  doctor(): Promise<{
+    check: "storage";
+    outcome: "healthy" | "degraded";
+    coverage: DurabilityCoverage;
+  }>;
+  exportSupport(): Promise<{ durability: DurabilityCoverage }>;
+  updateStorageRoots(roots: Partial<Record<DurabilityRole, string>>): void;
   close(): Promise<void>;
 }
 
@@ -254,11 +313,26 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       constraints: capability.constraints,
     }));
   const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
-  const store = new AuthorityStore(
-    join(options.dataDir, "authority.sqlite"),
+  const store = new AuthorityGenerationStore(
+    options.dataDir,
+    RELEASE_ID.replace("pidex@", ""),
     adapters,
-    options.initialCatalog,
-  );
+  ).open(options.initialCatalog);
+  const availableStorageBytes = options.availableStorageBytes ?? (() => {
+    const volume = statfsSync(options.dataDir);
+    return Number(volume.bavail) * Number(volume.bsize);
+  });
+  const storageProtection = new StorageProtection({
+    capacityBytes: options.storageCapacityBytes,
+    emergencyReserveBytes: options.emergencyReserveBytes,
+    admissionHeadroomBytes: options.admissionHeadroomBytes,
+    availableBytes: availableStorageBytes,
+  });
+  const admitDiscretionaryWrite = (): void => {
+    storageProtection.admitDiscretionary(() => {
+      store.runMaintenance(adapters.clock.now());
+    });
+  };
   // An executing tail surviving daemon loss has no proof of normal completion.
   // Settle it conservatively and never dispatch it again to discover the result.
   store.reconcileAcceptedRuns(adapters.clock.now());
@@ -271,8 +345,54 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     hostname,
     adapters.windows,
   );
-  const warnings = configureFirewall(adapters.windows, firewallPort);
+  const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
+  const coverage = new DurabilityCoverageMonitor(
+    adapters.windows,
+    {
+      "host-data": options.dataDir,
+      "installation-release": options.installationDir ?? options.dataDir,
+      "pi-checkpoint": options.piCheckpointDir ?? options.dataDir,
+    },
+    () => adapters.clock.now(),
+    options.coverageRefreshTimeoutMs ??
+      options.durabilityAssessmentTimeoutMs ??
+      DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS,
+    options.onDiagnostic ?? (() => {}),
+  );
+  const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => {
+    void refreshCoverage();
+  });
   const pairing = new PairingAuthority(adapters.clock, store);
+
+  function status(): HostStatus {
+    const durability = coverage.current();
+    return {
+      ...store.status(RELEASE_ID, firewallWarnings),
+      warnings: [
+        ...firewallWarnings,
+        ...createDurabilityWarnings(durability),
+      ],
+      durability,
+    };
+  }
+
+  async function refreshCoverage(): Promise<DurabilityCoverage> {
+    const refreshed = await coverage.refresh();
+    for (const client of admittedClients) {
+      if (
+        admittedCapabilityBasisByClient
+          .get(client)
+          ?.has(DURABILITY_COVERAGE_CAPABILITY)
+      ) {
+        sendServerMessage(client, {
+          type: "durability.coverage-changed",
+          coverage: refreshed,
+          warnings: status().warnings,
+        });
+      }
+    }
+    return refreshed;
+  }
 
   const server = createServer(
     {
@@ -314,7 +434,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       }
 
       response.writeHead(200, { "content-type": asset.contentType });
-      response.end(readFileSync(resolve("apps/pwa", asset.file)));
+      response.end(readFileSync(resolve(asset.file)));
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
@@ -369,7 +489,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         JSON.stringify({
           type: "delivery.resynchronize",
           reason: "outbound-queue-overflow",
-          lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+          lastCursor: status().synchronization.cursor,
         } satisfies ServerMessage),
       );
       client.close(4009, "resynchronize:outbound-queue-overflow");
@@ -492,16 +612,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     sendServerMessage(webSocket, {
       type: "host.hello",
-      hostId: store.status(RELEASE_ID, warnings).hostId,
+      hostId: status().hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
   });
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
-    const status = store.status(RELEASE_ID, warnings);
-    if (hello.expectedHostId !== status.hostId) {
-      sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
+    const currentStatus = status();
+    if (hello.expectedHostId !== currentStatus.hostId) {
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "host-mismatch");
       return;
     }
 
@@ -509,7 +629,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       .filter(protocol => protocol.major === protocolMajor)
       .sort((a, b) => b.minor - a.minor)[0];
     if (!offered) {
-      sendProtocolUpdateRequired(client, status.hostId, "no-common-major");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "no-common-major");
       return;
     }
 
@@ -526,7 +646,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         !admittedCapabilities.some(capability => capability.id === requiredId),
     );
     if (missingRequiredCapability) {
-      sendProtocolUpdateRequired(client, status.hostId, "missing-capability");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "missing-capability");
       return;
     }
 
@@ -537,7 +657,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     );
     sendServerMessage(client, {
       type: "protocol.admitted",
-      hostId: status.hostId,
+      hostId: currentStatus.hostId,
       protocol: {
         major: protocolMajor,
         minor: Math.min(protocolMinor, offered.minor),
@@ -547,7 +667,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sendServerMessage(client, {
       type: "host.snapshot",
       protocolVersion,
-      status,
+      status: currentStatus,
       ...store.projection(),
     });
   }
@@ -567,7 +687,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
-    const status = store.status(RELEASE_ID, warnings);
+    const currentStatus = status();
     const allSessions = [
       ...projection.sessions,
       ...projection.archivedSessions,
@@ -599,7 +719,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       sendServerMessage(client, {
         type: "scope.current",
         scope: { kind: "host" },
-        cursor: status.synchronization.cursor,
+        cursor: currentStatus.synchronization.cursor,
       });
     } else {
       let reason: ScopeResetReason;
@@ -618,7 +738,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         reason,
         barrier: {
           scope: { kind: "host" },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
             allSessions.map(session => [
               session.sessionId,
@@ -650,7 +770,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(client, {
           type: "scope.current",
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
         });
         continue;
       }
@@ -662,7 +782,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             : "revision-mismatch",
         barrier: {
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: {
             metadata: session.metadataRevision,
             timeline: session.timelineRevision,
@@ -696,6 +816,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       : (options.port ?? DEFAULT_PORT);
 
   const canonicalOrigin = `https://${hostname}:${port}`;
+  void refreshCoverage();
   const fingerprint = createHash("sha256")
     .update(certificate.ca)
     .digest("hex");
@@ -726,6 +847,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     command: SessionCreateMessage,
   ): void {
     try {
+      admitDiscretionaryWrite();
       adapters.storage.beforeCommit();
       const created = store.createSession(
         command.projectId ?? null,
@@ -763,6 +885,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     command: SessionForkMessage,
   ): Promise<void> {
     try {
+      admitDiscretionaryWrite();
       const checkpoint = store.checkpointAt(
         command.parentSessionId,
         command.forkPointEntryId,
@@ -999,6 +1122,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     try {
+      admitDiscretionaryWrite();
       if (command.invokingView) {
         observeView(client, {
           type: "view.observe",
@@ -1839,12 +1963,27 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   return {
     origin: canonicalOrigin,
-    createPairing: () => pairing.create(canonicalOrigin),
-    status: () => store.status(RELEASE_ID, warnings),
+    createPairing: () => {
+      admitDiscretionaryWrite();
+      return pairing.create(canonicalOrigin);
+    },
+    status,
+    storageProtection: () => storageProtection.status(),
+    doctor: async () => {
+      const refreshed = await refreshCoverage();
+      return {
+        check: "storage",
+        outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
+        coverage: refreshed,
+      };
+    },
+    exportSupport: async () => ({ durability: await refreshCoverage() }),
+    updateStorageRoots: roots => coverage.setRoots(roots),
     revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
+      stopVolumeObservation();
       stopAdvertisement();
       for (const timer of interactionDeadlineTimers.values()) {
         clearTimeout(timer);
@@ -2375,11 +2514,15 @@ function handleApiRequest(
 }
 
 function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
-  const asset = PWA_ASSETS[request.url ?? ""];
+  const pathname = new URL(
+    request.url ?? "/",
+    "https://pidex.invalid",
+  ).pathname;
+  const asset = PWA_ASSETS[pathname];
   if (asset) {
     return asset;
   }
-  if (request.method === "GET" && request.url?.startsWith("/sessions/")) {
+  if (request.method === "GET" && pathname.startsWith("/sessions/")) {
     return PWA_ASSETS["/"];
   }
   return undefined;
@@ -2425,6 +2568,26 @@ function configureFirewall(
   console.error(JSON.stringify(warning));
 
   return [warning];
+}
+
+function createDurabilityWarnings(
+  coverage: DurabilityCoverage,
+): HostStatus["warnings"] {
+  const warnings: HostStatus["warnings"] = [];
+  for (const role of coverage.roles) {
+    if (role.state === "covered") {
+      continue;
+    }
+    warnings.push({
+      severity: "medium",
+      code: "durability-coverage-degraded",
+      role: role.role,
+      state: role.state,
+      reason: role.reason,
+      detail: `Durability coverage for ${role.role} is ${role.state}.`,
+    });
+  }
+  return warnings;
 }
 
 function hasValidAuthorization(

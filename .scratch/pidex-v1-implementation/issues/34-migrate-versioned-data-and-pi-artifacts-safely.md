@@ -4,7 +4,7 @@
 
 **Blocked by:** 33 — Retain and garbage-collect durable stores safely
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A data-changing migration preflights release/schema compatibility, integrity, required free space, and protected recovery basis before stopping mutations/workers.
 - [ ] SQLite migration materializes in a new versioned data generation and activates atomically only after deterministic migration and full validation.

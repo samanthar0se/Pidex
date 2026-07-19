@@ -1,6 +1,44 @@
+import { assessBrowser, browserSemantics } from "./browser-compatibility.mjs";
+
 const $ = (selector, root = document) => root.querySelector(selector);
 
 const EXPECTED_HOST_ID_KEY = "pidex.expectedHostId";
+const CACHE_SCHEMA_VERSION = 2;
+const DEVICE_SCHEMA_VERSION = 2;
+const DEVICE_DATABASE = "pidex-device";
+const IDENTITY_STORE = "identity";
+const DRAFT_STORE = "drafts";
+const PREFERENCES_STORE = "preferences";
+const DEVICE_STORES = [IDENTITY_STORE, DRAFT_STORE, PREFERENCES_STORE];
+const PROTOCOL_BASIS = "1.1";
+const MAX_CACHED_SESSION_PROJECTIONS = 10;
+const MAX_FINALIZED_PAGES = 25;
+const BYTES_PER_MEGABYTE = 1024 * 1024;
+const DEFAULT_CACHE_BUDGET_BYTES = 50 * BYTES_PER_MEGABYTE;
+const CACHE_BUDGET_PREFERENCE = "cache-budget-bytes";
+const PUSH_RECEIPT_DATABASE = "pidex-push-receipts";
+const HOST_SCOPE_KEY = "host";
+const SESSION_SCOPE_PREFIX = "session:";
+const CACHE_STORES = {
+  metadata: "metadata",
+  discovery: "discovery",
+  sessionProjections: "session-projections",
+  finalizedPages: "finalized-pages",
+  immutableBlobs: "immutable-blobs",
+};
+const WORKING_SET_STORES = [
+  CACHE_STORES.metadata,
+  CACHE_STORES.discovery,
+  CACHE_STORES.sessionProjections,
+];
+const SESSION_DETAIL_CACHE_STORES = [
+  CACHE_STORES.finalizedPages,
+  CACHE_STORES.immutableBlobs,
+];
+const BUDGETED_CACHE_STORES = [
+  ...SESSION_DETAIL_CACHE_STORES,
+  CACHE_STORES.sessionProjections,
+];
 const OFFLINE_STATUS = "Offline · cached state may be stale";
 const ACTIVE_INTERACTION_STATES = ["open", "resolving"];
 const ACTIVE_RUN_STATES = ["executing", "cancelling"];
@@ -35,14 +73,55 @@ const state = {
   current: false,
   pending: new Set(),
   apiToken: null,
+  hostId: null,
+  epoch: null,
+  cursor: null,
+  lastSuccessfulSync: null,
+  currentScopes: new Set(),
+  drafts: new Map(),
+  draftFailures: new Map(),
 };
+
+const isStandalone = matchMedia("(display-mode: standalone)").matches ||
+  navigator.standalone === true;
+const browserAssessment = assessBrowser(
+  navigator.userAgent,
+  browserSemantics(window),
+  isStandalone,
+);
+if (!browserAssessment.supported) {
+  const stopScreen = Object.assign(document.createElement("main"), {
+    id: "unsupported-browser",
+    role: "alert",
+    textContent: `Pidex cannot safely run in this browser (${browserAssessment.reason}). Use a supported current or previous Edge/Chrome on Windows, Chrome on Android, or Safari/PWA on iOS or iPadOS. No Host controls are available.`,
+  });
+  document.body.replaceChildren(stopScreen);
+  throw new Error(browserAssessment.reason);
+}
 
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let socket;
+let messageChain = Promise.resolve();
+const mobileLayoutQuery = matchMedia("(max-width: 720px)");
+
+function setDrawerOpen(isOpen) {
+  document.body.classList.toggle("drawer-open", isOpen);
+  $("#drawer-toggle").setAttribute("aria-expanded", String(isOpen));
+}
+
+function closeDrawer() {
+  setDrawerOpen(false);
+}
+
+function toggleDrawer() {
+  const isOpen = document.body.classList.contains("drawer-open");
+  setDrawerOpen(!isOpen);
+}
 
 function send(command) {
+  const targetSessionId = command.sessionId || currentSessionId();
   if (
-    !state.current ||
+    !targetScopesCurrent(targetSessionId) ||
     !socket ||
     socket.readyState !== WebSocket.OPEN
   ) {
@@ -58,6 +137,7 @@ function send(command) {
 
 function navigate(path) {
   history.pushState({}, "", path);
+  closeDrawer();
   route();
 }
 
@@ -84,11 +164,62 @@ addEventListener("visibilitychange", () => {
 
   if (socket?.readyState === WebSocket.OPEN) {
     const selectedSessionId = currentSessionId();
-    socket.send(JSON.stringify({
-      type: "scope.set",
-      sessionIds: selectedSessionId ? [selectedSessionId] : [],
-      protocolVersion: "1.1",
-    }));
+    sendScopeSet(selectedSessionId);
+  }
+});
+addEventListener("pageshow", event => {
+  // Safari may restore a standalone PWA from its page cache. Reconcile the
+  // View without coupling its lifecycle to Session execution or ownership.
+  if (event.persisted) {
+    setCurrent(false, "Reconnecting after suspension");
+    authenticateStoredDevice();
+  }
+});
+navigator.serviceWorker?.addEventListener(
+  "message",
+  reconcilePushNotification,
+);
+
+function reconcilePushNotification(event) {
+  if (event.data?.type !== "push-reconcile") {
+    return;
+  }
+
+  // Notification hints are historical. Authenticate and synchronize before
+  // rendering their target or enabling any control.
+  setCurrent(false, "Reconciling notification");
+  history.replaceState({}, "", event.data.path || "/");
+  authenticateStoredDevice();
+}
+
+// Device-owned defaults are stored before permission is requested so lock-
+// screen exposure is disclosed and can be changed both before and afterwards.
+async function configurePush({ enabled, privacy = "rich", categories }) {
+  const preferences = { enabled, privacy, categories };
+  await savePreference("push", preferences);
+  if (!("Notification" in window) || !("PushManager" in window)) {
+    return "unsupported";
+  }
+  if (!enabled) {
+    return "disabled";
+  }
+  if (Notification.permission === "default") {
+    return await Notification.requestPermission();
+  }
+  return Notification.permission;
+}
+
+function savePreference(key, value) {
+  return withDeviceStore(PREFERENCES_STORE, "readwrite", store =>
+    requestValue(store.put(value, key)),
+  );
+}
+mobileLayoutQuery.addEventListener("change", closeDrawer);
+$("#drawer-toggle").onclick = toggleDrawer;
+$("#drawer-backdrop").onclick = closeDrawer;
+addEventListener("keydown", event => {
+  if (event.key === "Escape") {
+    closeDrawer();
   }
 });
 
@@ -106,7 +237,9 @@ if (pairingSecret) {
   $("#content").hidden = true;
   $("#pair-device").onclick = pairDevice;
 } else {
-  authenticateStoredDevice();
+  void registerServiceWorker();
+  void initializeStorageManagement();
+  loadCachedWorkingSet().finally(authenticateStoredDevice);
 }
 
 async function pairDevice() {
@@ -155,21 +288,37 @@ async function authenticateStoredDevice() {
 
     state.apiToken = authentication.session;
     openControl(authentication.session);
-  } catch {
-    setCurrent(false, OFFLINE_STATUS);
+  } catch (error) {
+    setCurrent(
+      false,
+      String(error?.message).includes("revoked") ? "Revoked" : OFFLINE_STATUS,
+    );
   }
 }
 
 function openControl(token) {
   socket?.close();
+  state.currentScopes.clear();
   socket = new WebSocket(
     `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
   );
-  socket.onmessage = event => handleMessage(JSON.parse(event.data));
-  socket.onclose = () => setCurrent(false, OFFLINE_STATUS);
+  socket.onmessage = event => {
+    // Preserve wire order while IndexedDB transactions commit. A scope cannot
+    // become current before its replacement projection is durable.
+    messageChain = messageChain
+      .then(() => handleMessage(JSON.parse(event.data)))
+      .catch(() => setCurrent(false, OFFLINE_STATUS));
+  };
+  socket.onclose = event => {
+    if (event.code === 4003 && event.reason === "device-revoked") {
+      void cleanupRevokedDevice();
+      return;
+    }
+    setCurrent(false, OFFLINE_STATUS);
+  };
 }
 
-function handleMessage(message) {
+async function handleMessage(message) {
   switch (message.type) {
     case "host.hello":
       sendClientHello(message.hostId);
@@ -180,7 +329,7 @@ function handleMessage(message) {
       );
       return;
     case "host.snapshot":
-      handleHostSnapshot(message);
+      await handleHostSnapshot(message);
       return;
     case "host.change-set":
       for (const change of message.changes) {
@@ -188,14 +337,16 @@ function handleMessage(message) {
       }
       renderSidebar();
       renderCurrentView();
+      state.cursor = message.cursor;
+      await persistWorkingSet();
       return;
     case "scope.reset":
-      if (message.barrier.scope.kind === "session") {
-        resetSessionScope(message);
-      }
+      await handleScopeReset(message);
       return;
     case "scope.current":
-      setCurrent(true, "Current");
+      state.cursor = message.cursor;
+      await persistWorkingSet();
+      markScopeCurrent(message.scope);
       return;
     case "timeline.change":
       applyTimelineChange(message);
@@ -233,21 +384,25 @@ function sendClientHello(hostId) {
   }));
 }
 
-function handleHostSnapshot(message) {
+async function handleHostSnapshot(message) {
   Object.assign(state, {
     projects: message.projects,
     workspaces: message.workspaces,
     sessions: message.sessions,
     archivedSessions: message.archivedSessions,
   });
+  state.hostId = message.status.hostId;
+  state.epoch = message.status.synchronization.epoch;
+  state.cursor = message.status.synchronization.cursor;
   localStorage.setItem(EXPECTED_HOST_ID_KEY, message.status.hostId);
   $("#device-state").textContent = `Device · ${message.status.hostId}`;
-  setCurrent(true, "Current");
   renderCatalogControls();
+  await persistWorkingSet();
+  markScopeCurrent({ kind: "host" });
   route();
 }
 
-function resetSessionScope(message) {
+async function resetSessionScope(message) {
   const { scope } = message.barrier;
   const { snapshot } = message;
   const timeline = [
@@ -259,8 +414,30 @@ function resetSessionScope(message) {
     timeline,
     olderCursor: snapshot.timelineWindow?.olderCursor || null,
   });
-  setCurrent(true, "Current");
+  state.cursor = message.barrier.cursor;
+  state.currentScopes.delete(sessionScopeKey(scope.sessionId));
+  await persistWorkingSet();
+  markScopeCurrent(scope);
   renderCurrentView();
+}
+
+async function handleScopeReset(message) {
+  if (message.barrier.scope.kind === "session") {
+    await resetSessionScope(message);
+    return;
+  }
+
+  installHostReset(message);
+  await persistWorkingSet();
+  markScopeCurrent(message.barrier.scope);
+}
+
+function installHostReset(message) {
+  Object.assign(state, message.snapshot);
+  state.cursor = message.barrier.cursor;
+  state.currentScopes.delete(HOST_SCOPE_KEY);
+  renderCatalogControls();
+  route();
 }
 
 function applyTimelineChange(message) {
@@ -336,7 +513,15 @@ function applyHostChange(change) {
 function setCurrent(current, label) {
   state.current = current;
   $("#connection-state").textContent = label;
+  const lastSync = $("#last-sync");
+  if (lastSync) {
+    lastSync.textContent = state.lastSuccessfulSync
+      ? `Last sync ${new Date(state.lastSuccessfulSync).toLocaleString()}`
+      : "Never synchronized on this Device";
+  }
   document.body.classList.toggle("stale", !current);
+  $("#new-session").disabled =
+    !current || !state.currentScopes.has(HOST_SCOPE_KEY);
   renderCurrentView();
 }
 
@@ -405,11 +590,7 @@ function route() {
   if (selectedSessionId && socket?.readyState === WebSocket.OPEN) {
     state.current = false;
     $("#connection-state").textContent = "Reconciling Session";
-    socket.send(JSON.stringify({
-      type: "scope.set",
-      sessionIds: [selectedSessionId],
-      protocolVersion: "1.1",
-    }));
+    sendScopeSet(selectedSessionId);
   }
   renderCurrentView();
 }
@@ -518,6 +699,9 @@ function renderCurrentView() {
   $("#session-title").textContent = session.name;
   $("#session-scope").textContent =
     `${sessionGroupName(session)} · ${session.sessionId}`;
+  const mobileHostState = $("#mobile-host-state");
+  mobileHostState.hidden = state.current;
+  mobileHostState.textContent = `Host · ${$("#connection-state").textContent}`;
   wireSessionView(session);
 }
 
@@ -576,10 +760,20 @@ function renderTimeline(scope) {
 
 function wireComposer(session, executingRun) {
   const input = $("#run-input");
-  input.disabled = !state.current;
-  $("#composer-state").textContent = state.current
-    ? sessionCue(session)
-    : $("#connection-state").textContent;
+  const draftKey = deviceDraftKey(session.sessionId);
+  input.value = state.drafts.get(draftKey) || "";
+  input.oninput = () => {
+    state.drafts.set(draftKey, input.value);
+    persistDraft(draftKey, input.value).then(() => {
+      state.draftFailures.delete(draftKey);
+      renderComposerState(session, draftKey);
+    }).catch(() => {
+      state.draftFailures.set(draftKey, "Draft is only in memory · save failed");
+      renderComposerState(session, draftKey);
+    });
+  };
+  loadDraft(draftKey, input, session);
+  renderComposerState(session, draftKey);
 
   const commandType = executingRun ? "run.follow-up" : "run.submit";
   const submitButton = $("#submit-run");
@@ -598,8 +792,75 @@ function wireComposer(session, executingRun) {
     });
     if (sent) {
       input.value = "";
+      state.drafts.set(draftKey, "");
+      persistDraft(draftKey, "").catch(() => {
+        state.draftFailures.set(draftKey, "Sent, but saved draft cleanup failed");
+        renderComposerState(session, draftKey);
+      });
     }
   };
+}
+
+function renderComposerState(session, draftKey) {
+  const label = $("#composer-state");
+  if (!label) {
+    return;
+  }
+
+  const failure = state.draftFailures.get(draftKey);
+  if (failure) {
+    label.classList.add("draft-warning");
+    label.textContent = failure;
+    return;
+  }
+
+  label.classList.remove("draft-warning");
+  if (state.current) {
+    label.textContent = sessionCue(session);
+    return;
+  }
+
+  label.textContent =
+    `${$("#connection-state").textContent} · draft local and unsent`;
+}
+
+function deviceDraftKey(sessionId) {
+  const hostId = state.hostId ||
+    localStorage.getItem(EXPECTED_HOST_ID_KEY) ||
+    "unpaired";
+  return `${hostId}:${sessionId}`;
+}
+
+async function loadDraft(key, input, session) {
+  if (state.drafts.has(key)) {
+    return;
+  }
+
+  try {
+    const value = await withDeviceStore(DRAFT_STORE, "readonly", store =>
+      requestValue(store.get(key))
+    );
+    // An input event may have supplied newer text while storage was loading.
+    if (state.drafts.has(key)) {
+      return;
+    }
+    state.drafts.set(key, value?.text || "");
+    if (input.isConnected && !input.value) {
+      input.value = value?.text || "";
+    }
+  } catch {
+    state.draftFailures.set(
+      key,
+      "Draft storage unavailable · text remains in memory",
+    );
+    renderComposerState(session, key);
+  }
+}
+
+function persistDraft(key, text) {
+  return withDeviceStore(DRAFT_STORE, "readwrite", store =>
+    requestValue(store.put({ text, updatedAt: new Date().toISOString() }, key))
+  );
 }
 
 function wireRunControls(session, executingRun, queuedRun, heldRun) {
@@ -708,6 +969,7 @@ function renderInteractions(interactions) {
     const control = createInteractionControl(interaction);
     const respondButton = document.createElement("button");
     respondButton.textContent = "Respond";
+    respondButton.disabled = !targetScopesCurrent(interaction.sessionId);
     respondButton.onclick = () => {
       send({
         type: "interaction.resolve",
@@ -721,6 +983,7 @@ function renderInteractions(interactions) {
 
     const dismissButton = document.createElement("button");
     dismissButton.textContent = "Dismiss";
+    dismissButton.disabled = !targetScopesCurrent(interaction.sessionId);
     dismissButton.onclick = () => send({
       type: "interaction.resolve",
       interactionId: interaction.interactionId,
@@ -785,7 +1048,7 @@ function createTimelineEntry(entry) {
   metadata.className = "entry-meta";
   metadata.textContent = entry.finalized
     ? entry.kind
-    : `${entry.kind} · streaming`;
+    : `${entry.kind} · last observed · incomplete`;
 
   const text = document.createElement("div");
   text.textContent = entry.text;
@@ -807,11 +1070,14 @@ async function loadOlder(sessionId, scope) {
   const page = await response.json();
   scope.timeline = [...page.entries, ...scope.timeline];
   scope.olderCursor = page.olderCursor;
+  await persistFinalizedPage(sessionId, encodedCursor, page);
+  await persistWorkingSet();
   renderCurrentView();
 }
 
 function can(capabilityId) {
-  return state.current &&
+  const sessionId = currentSessionId();
+  return targetScopesCurrent(sessionId) &&
     state.capabilities.has(capabilityId) &&
     !state.pending.size;
 }
@@ -875,34 +1141,633 @@ function bytesToBase64Url(bytes) {
     .replace(/=+$/, "");
 }
 
-function deviceStore(mode) {
-  return new Promise((resolve, reject) => {
-    const openRequest = indexedDB.open("pidex-device", 1);
-    openRequest.onupgradeneeded = () => {
-      openRequest.result.createObjectStore("identity");
-    };
-    openRequest.onerror = () => reject(openRequest.error);
-    openRequest.onsuccess = () => {
-      const transaction = openRequest.result.transaction("identity", mode);
-      resolve(transaction.objectStore("identity"));
-    };
-  });
+function targetScopesCurrent(sessionId) {
+  return state.current && requiredScopesCurrent(sessionId);
 }
 
-async function saveDevice(value) {
-  const store = await deviceStore("readwrite");
-  await new Promise((resolve, reject) => {
-    const request = store.put(value, "device");
-    request.onsuccess = resolve;
+function requiredScopesCurrent(sessionId) {
+  if (!state.currentScopes.has(HOST_SCOPE_KEY)) {
+    return false;
+  }
+  return !sessionId || state.currentScopes.has(sessionScopeKey(sessionId));
+}
+
+function markScopeCurrent(scope) {
+  state.currentScopes.add(scopeKey(scope));
+  const current = requiredScopesCurrent(currentSessionId());
+  const label = current ? "Current" : "Reconciling Session";
+  setCurrent(current, label);
+}
+
+function sendScopeSet(sessionId) {
+  const session = findSession(sessionId);
+  const resourceRevisions = scopeResourceRevisions(session);
+
+  state.currentScopes.clear();
+  socket.send(JSON.stringify({
+    type: "scope.set",
+    sessionIds: sessionId ? [sessionId] : [],
+    cursor: state.cursor || undefined,
+    resourceRevisions,
+    protocolVersion: PROTOCOL_BASIS,
+  }));
+}
+
+function scopeResourceRevisions(session) {
+  if (!session) {
+    return {};
+  }
+
+  const resourceRevisions = {
+    [session.sessionId]: session.metadataRevision,
+  };
+  const projection = state.scopes.get(session.sessionId);
+  const timelineRevision = projection?.session?.timelineRevision;
+  if (timelineRevision !== undefined) {
+    resourceRevisions[`timeline:${session.sessionId}`] =
+      timelineRevision;
+  }
+  return resourceRevisions;
+}
+
+function scopeKey(scope) {
+  return scope.kind === "host"
+    ? HOST_SCOPE_KEY
+    : sessionScopeKey(scope.sessionId);
+}
+
+function sessionScopeKey(sessionId) {
+  return `${SESSION_SCOPE_PREFIX}${sessionId}`;
+}
+
+function sessionCatalog() {
+  return [...state.sessions, ...state.archivedSessions];
+}
+
+function findSession(sessionId) {
+  return sessionCatalog().find(session => session.sessionId === sessionId);
+}
+
+function cacheDatabaseName(hostId) {
+  return `pidex-cache-${encodeURIComponent(hostId)}`;
+}
+
+function openCache(hostId) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(
+      cacheDatabaseName(hostId),
+      CACHE_SCHEMA_VERSION,
+    );
+    request.onupgradeneeded = () => {
+      const database = request.result;
+      for (const name of Object.values(CACHE_STORES)) {
+        if (!database.objectStoreNames.contains(name)) {
+          database.createObjectStore(name);
+        }
+      }
+    };
     request.onerror = () => reject(request.error);
+    request.onsuccess = () => resolve(request.result);
   });
 }
 
-async function loadDevice() {
-  const store = await deviceStore("readonly");
+async function withCache(hostId, operation) {
+  const database = await openCache(hostId);
+  try {
+    return await operation(database);
+  } finally {
+    database.close();
+  }
+}
+
+function requestValue(request) {
   return new Promise((resolve, reject) => {
-    const request = store.get("device");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+  });
+}
+
+function transactionDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+}
+
+function cacheBasis(scope, resourceRevisions = {}) {
+  return {
+    hostId: state.hostId,
+    epoch: state.epoch,
+    cursor: state.cursor,
+    protocolBasis: PROTOCOL_BASIS,
+    cacheSchemaBasis: CACHE_SCHEMA_VERSION,
+    scope,
+    resourceRevisions,
+    lastSuccessfulSync: state.lastSuccessfulSync,
+  };
+}
+
+async function writeWorkingSet(database, sessions) {
+  const transaction = database.transaction(
+    WORKING_SET_STORES,
+    "readwrite",
+  );
+  transaction.objectStore(CACHE_STORES.metadata).put(
+    cacheBasis(HOST_SCOPE_KEY),
+    "basis",
+  );
+  transaction.objectStore(CACHE_STORES.discovery).put({
+    ...cacheBasis(HOST_SCOPE_KEY, Object.fromEntries(
+      sessions.map(session => [
+        session.sessionId,
+        session.metadataRevision,
+      ]),
+    )),
+    projects: state.projects,
+    workspaces: state.workspaces,
+    sessions: state.sessions,
+    archivedSessions: state.archivedSessions,
+  }, "catalog");
+
+  const projections = transaction.objectStore(
+    CACHE_STORES.sessionProjections,
+  );
+  projections.clear();
+  const cachedScopes = [...state.scopes]
+    .slice(-MAX_CACHED_SESSION_PROJECTIONS);
+  for (const [sessionId, projection] of cachedScopes) {
+    projections.put({
+      ...cacheBasis(sessionScopeKey(sessionId), {
+        metadata: projection.session?.metadataRevision,
+        timeline: projection.session?.timelineRevision,
+      }),
+      projection,
+      lastViewed: state.lastSuccessfulSync,
+    }, sessionId);
+  }
+  await transactionDone(transaction);
+}
+
+async function persistWorkingSet() {
+  if (!state.hostId || !state.cursor) {
+    return;
+  }
+
+  const previousSuccessfulSync = state.lastSuccessfulSync;
+  state.lastSuccessfulSync = new Date().toISOString();
+  const sessions = sessionCatalog();
+  try {
+    await withCache(
+      state.hostId,
+      database => writeWorkingSet(database, sessions),
+    );
+  } catch (error) {
+    state.lastSuccessfulSync = previousSuccessfulSync;
+    throw error;
+  }
+
+  const connectionLabel = state.current
+    ? "Current"
+    : $("#connection-state").textContent;
+  setCurrent(state.current, connectionLabel);
+  void enforceCacheBudget().catch(reportStorageWriteFailure);
+}
+
+async function persistFinalizedPage(sessionId, pageCursor, page) {
+  if (!state.hostId || page.entries.some(entry => !entry.finalized)) {
+    return;
+  }
+  await withCache(state.hostId, async database => {
+    const transaction = database.transaction(
+      CACHE_STORES.finalizedPages,
+      "readwrite",
+    );
+    const store = transaction.objectStore(CACHE_STORES.finalizedPages);
+    store.put({
+      ...cacheBasis(sessionScopeKey(sessionId), {
+        timeline: page.timelineRevision,
+      }),
+      page,
+      fetchedAt: new Date().toISOString(),
+      lastViewed: new Date().toISOString(),
+    }, `${sessionId}:${pageCursor}`);
+    const keys = await requestValue(store.getAllKeys());
+    const excessPageCount = Math.max(0, keys.length - MAX_FINALIZED_PAGES);
+    for (const key of keys.slice(0, excessPageCount)) {
+      store.delete(key);
+    }
+    await transactionDone(transaction);
+  });
+}
+
+// Immutable HTTP bodies enter this store only after application-level identity
+// verification; authenticated responses are never delegated to an HTTP cache.
+async function persistVerifiedImmutableBlob(identity, body, verifiedMetadata) {
+  if (!state.hostId || verifiedMetadata.hostId !== state.hostId) {
+    return;
+  }
+  await withCache(state.hostId, async database => {
+    const transaction = database.transaction(
+      CACHE_STORES.immutableBlobs,
+      "readwrite",
+    );
+    transaction.objectStore(CACHE_STORES.immutableBlobs).put({
+      ...cacheBasis(verifiedMetadata.scope, verifiedMetadata.resourceRevisions),
+      identity,
+      body,
+      lastViewed: new Date().toISOString(),
+    }, identity);
+    await transactionDone(transaction);
+  });
+}
+
+async function loadCachedWorkingSet() {
+  const hostId = localStorage.getItem(EXPECTED_HOST_ID_KEY);
+  if (!hostId) {
+    return;
+  }
+  try {
+    const { basis, discovery, projections } = await withCache(
+      hostId,
+      async database => {
+        const transaction = database.transaction(
+          WORKING_SET_STORES,
+          "readonly",
+        );
+        const [basis, discovery, projections] = await Promise.all([
+          requestValue(
+            transaction.objectStore(CACHE_STORES.metadata).get("basis"),
+          ),
+          requestValue(
+            transaction.objectStore(CACHE_STORES.discovery).get("catalog"),
+          ),
+          requestValue(
+            transaction.objectStore(CACHE_STORES.sessionProjections).getAll(),
+          ),
+        ]);
+        await transactionDone(transaction);
+        return { basis, discovery, projections };
+      },
+    );
+    if (!cacheIsCompatible(basis, discovery, hostId)) {
+      return;
+    }
+    Object.assign(state, {
+      hostId,
+      epoch: basis.epoch,
+      cursor: basis.cursor,
+      lastSuccessfulSync: basis.lastSuccessfulSync,
+      projects: discovery.projects,
+      workspaces: discovery.workspaces,
+      sessions: discovery.sessions,
+      archivedSessions: discovery.archivedSessions,
+    });
+    state.scopes = new Map(projections.map(item => [
+      item.projection.session?.sessionId ||
+        item.scope.slice(SESSION_SCOPE_PREFIX.length),
+      item.projection,
+    ]));
+    renderCatalogControls();
+    route();
+    setCurrent(false, OFFLINE_STATUS);
+  } catch {
+    // Projection schemas are replaceable. Device identity, preferences, and
+    // drafts live in another database and are never part of this reset.
+    await resetDisposableCache(hostId).catch(() => {});
+  }
+}
+
+function resetDisposableCache(hostId) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(cacheDatabaseName(hostId));
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(Error("projection reset blocked"));
+  });
+}
+
+function cacheIsCompatible(basis, discovery, hostId) {
+  return Boolean(
+    basis &&
+    discovery &&
+    basis.hostId === hostId &&
+    basis.cacheSchemaBasis === CACHE_SCHEMA_VERSION &&
+    basis.protocolBasis === PROTOCOL_BASIS
+  );
+}
+
+function openDeviceDatabase() {
+  return new Promise((resolve, reject) => {
+    const openRequest = indexedDB.open(DEVICE_DATABASE, DEVICE_SCHEMA_VERSION);
+    openRequest.onupgradeneeded = () => {
+      for (const name of DEVICE_STORES) {
+        if (!openRequest.result.objectStoreNames.contains(name)) {
+          openRequest.result.createObjectStore(name);
+        }
+      }
+    };
+    openRequest.onerror = () => reject(openRequest.error);
+    openRequest.onsuccess = () => resolve(openRequest.result);
+  });
+}
+
+async function withDeviceStore(name, mode, operation) {
+  const database = await openDeviceDatabase();
+  try {
+    const transaction = database.transaction(name, mode);
+    const result = await operation(transaction.objectStore(name));
+    await transactionDone(transaction);
+    return result;
+  } finally {
+    database.close();
+  }
+}
+
+async function persistAllDrafts() {
+  const writes = [...state.drafts].map(([key, text]) =>
+    persistDraft(key, text)
+  );
+  await Promise.all(writes);
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  const registration = await navigator.serviceWorker.register(
+    "/service-worker.js",
+  );
+  void offerShellUpdate(registration.waiting);
+  registration.addEventListener("updatefound", () => {
+    watchInstallingServiceWorker(registration);
+  });
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    location.reload();
+  });
+  navigator.serviceWorker.addEventListener(
+    "message",
+    handleServiceWorkerMessage,
+  );
+}
+
+function watchInstallingServiceWorker(registration) {
+  const installingWorker = registration.installing;
+  if (!installingWorker) {
+    return;
+  }
+
+  installingWorker.addEventListener("statechange", () => {
+    if (
+      installingWorker.state === "installed" &&
+      navigator.serviceWorker.controller
+    ) {
+      void offerShellUpdate(registration.waiting);
+    }
+  });
+}
+
+async function offerShellUpdate(worker) {
+  if (
+    !worker ||
+    !confirm("A complete Pidex update is ready. Save drafts and reload?")
+  ) {
+    return;
+  }
+
+  try {
+    await persistAllDrafts();
+    worker.postMessage({ type: "activate-shell" });
+  } catch {
+    alert("Update refused: a Device-owned draft could not be saved.");
+  }
+}
+
+function handleServiceWorkerMessage(event) {
+  if (event.data?.type === "update-refused-multiple-clients") {
+    alert("Update refused: close other Pidex windows, then reload explicitly.");
+  }
+}
+
+addEventListener("pagehide", () => {
+  void persistAllDrafts();
+});
+
+async function saveDevice(value) {
+  await withDeviceStore(IDENTITY_STORE, "readwrite", store =>
+    requestValue(store.put(value, "device"))
+  );
+}
+
+function loadDevice() {
+  return withDeviceStore(IDENTITY_STORE, "readonly", store =>
+    requestValue(store.get("device"))
+  );
+}
+
+async function initializeStorageManagement() {
+  let persisted = false;
+  if (navigator.storage?.persist) {
+    persisted = await navigator.storage.persist().catch(() => false);
+  }
+  if (!persisted && navigator.storage?.persisted) {
+    persisted = await navigator.storage.persisted().catch(() => false);
+  }
+
+  const budget = await loadCacheBudget();
+  const budgetInput = $("#storage-budget");
+  if (budgetInput) {
+    budgetInput.value = String(Math.round(budget / BYTES_PER_MEGABYTE));
+  }
+  $("#storage-persistence").textContent = persisted
+    ? "Persistent storage granted"
+    : "Storage may be evicted by the browser or OS";
+
+  $("#settings").disabled = false;
+  $("#settings").onclick = async () => {
+    await refreshStorageUsage(budget);
+    $("#storage-settings").showModal();
+  };
+  $("#save-storage-budget").onclick = async () => {
+    const bytes = Math.max(1, Number(budgetInput.value)) * BYTES_PER_MEGABYTE;
+    await savePreference(CACHE_BUDGET_PREFERENCE, bytes);
+    await enforceCacheBudget(bytes);
+    await refreshStorageUsage(bytes);
+  };
+  $("#clear-session-data").onclick = clearSessionData;
+  $("#clear-all-data").onclick = async () => {
+    if (confirm("Delete Device identity and drafts? Re-pairing is required.")) {
+      await clearAllDeviceData();
+      location.href = "/";
+    }
+  };
+}
+
+function loadPreference(key) {
+  return withDeviceStore(PREFERENCES_STORE, "readonly", store =>
+    requestValue(store.get(key))
+  );
+}
+
+async function loadCacheBudget() {
+  const budget = await loadPreference(CACHE_BUDGET_PREFERENCE)
+    .catch(() => DEFAULT_CACHE_BUDGET_BYTES);
+  return budget || DEFAULT_CACHE_BUDGET_BYTES;
+}
+
+async function refreshStorageUsage(budget) {
+  let estimate = {};
+  if (navigator.storage?.estimate) {
+    estimate = await navigator.storage.estimate().catch(() => ({}));
+  }
+  $("#storage-usage").textContent =
+    `${formatBytes(estimate.usage || 0)} used · ${formatBytes(budget)} Pidex budget`;
+}
+
+function formatBytes(bytes) {
+  return `${(bytes / BYTES_PER_MEGABYTE).toFixed(1)} MB`;
+}
+
+function reportStorageWriteFailure(error) {
+  const label = $("#storage-failure");
+  if (label) {
+    label.textContent = `Storage write failed: ${error?.message || error}`;
+  }
+}
+
+async function enforceCacheBudget(explicitBudget) {
+  if (!state.hostId) {
+    return;
+  }
+
+  const budget = explicitBudget || await loadCacheBudget();
+  await withCache(state.hostId, async database => {
+    const transaction = database.transaction(
+      BUDGETED_CACHE_STORES,
+      "readwrite",
+    );
+    const candidates = [];
+    let usage = 0;
+    for (const storeName of BUDGETED_CACHE_STORES) {
+      const store = transaction.objectStore(storeName);
+      for (const { key, value } of await readStoreEntries(store)) {
+        const bytes = new Blob([JSON.stringify(value)]).size;
+        usage += bytes;
+        candidates.push({
+          storeName,
+          key,
+          bytes,
+          sessionId: cacheEntrySessionId(value),
+          lastViewed: String(value.lastViewed || value.fetchedAt || ""),
+        });
+      }
+    }
+    candidates.sort((left, right) => {
+      return cacheEvictionTier(left.storeName) -
+        cacheEvictionTier(right.storeName) ||
+        left.lastViewed.localeCompare(right.lastViewed);
+    });
+
+    const protectedSessionId = currentSessionId();
+    for (const candidate of candidates) {
+      if (usage <= budget) {
+        break;
+      }
+      // Never evict the current View; lightweight discovery summaries remain.
+      if (candidate.sessionId === protectedSessionId) {
+        continue;
+      }
+      transaction.objectStore(candidate.storeName).delete(candidate.key);
+      usage -= candidate.bytes;
+    }
+    await transactionDone(transaction);
+  });
+}
+
+function cacheEntrySessionId(value) {
+  if (!value.scope?.startsWith(SESSION_SCOPE_PREFIX)) {
+    return null;
+  }
+  return value.scope.slice(SESSION_SCOPE_PREFIX.length);
+}
+
+function cacheEvictionTier(storeName) {
+  return storeName === CACHE_STORES.sessionProjections ? 1 : 0;
+}
+
+async function readStoreEntries(store) {
+  const [keys, values] = await Promise.all([
+    requestValue(store.getAllKeys()),
+    requestValue(store.getAll()),
+  ]);
+  return values.map((value, index) => ({ key: keys[index], value }));
+}
+
+async function clearSessionData() {
+  const sessionId = currentSessionId();
+  if (!state.hostId || !sessionId) {
+    return;
+  }
+
+  await withCache(state.hostId, async database => {
+    const transaction = database.transaction(
+      BUDGETED_CACHE_STORES,
+      "readwrite",
+    );
+    transaction.objectStore(CACHE_STORES.sessionProjections).delete(sessionId);
+    for (const storeName of SESSION_DETAIL_CACHE_STORES) {
+      const store = transaction.objectStore(storeName);
+      for (const { key, value } of await readStoreEntries(store)) {
+        if (value.scope === sessionScopeKey(sessionId)) {
+          store.delete(key);
+        }
+      }
+    }
+    await transactionDone(transaction);
+  });
+  state.scopes.delete(sessionId);
+  announce("Session cache cleared; pairing and retained draft preserved");
+}
+
+async function cleanupRevokedDevice() {
+  setCurrent(false, "Revoked · cleaning local data");
+  await clearAllDeviceData().catch(reportStorageWriteFailure);
+  setCurrent(false, "Revoked");
+}
+
+async function clearAllDeviceData() {
+  socket?.close();
+  const registration = await navigator.serviceWorker?.ready.catch(() => null);
+  await registration?.pushManager?.getSubscription()
+    .then(subscription => subscription?.unsubscribe())
+    .catch(() => {});
+  const hostId = state.hostId || localStorage.getItem(EXPECTED_HOST_ID_KEY);
+  if (hostId) {
+    await resetDisposableCache(hostId).catch(() => {});
+  }
+  await Promise.all(
+    [DEVICE_DATABASE, PUSH_RECEIPT_DATABASE].map(deleteDatabase),
+  );
+  for (const name of await caches.keys()) {
+    if (name.startsWith("pidex-")) {
+      await caches.delete(name);
+    }
+  }
+  localStorage.removeItem(EXPECTED_HOST_ID_KEY);
+  Object.assign(state, {
+    hostId: null,
+    apiToken: null,
+    drafts: new Map(),
+    scopes: new Map(),
+  });
+}
+
+function deleteDatabase(name) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = resolve;
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(Error(`cleanup blocked for ${name}`));
   });
 }

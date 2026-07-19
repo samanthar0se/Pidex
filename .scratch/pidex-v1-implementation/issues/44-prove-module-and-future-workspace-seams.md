@@ -4,7 +4,7 @@
 
 **Blocked by:** 27 — Complete the desktop Session experience; 33 — Retain and garbage-collect durable stores safely; 36 — Detect and isolate corruption
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] The kernel registers namespaced immutable module identities/versions, resource kinds, protocol families, capabilities, storage families, diagnostics, lifecycle services, and UI contributions before readiness.
 - [ ] Durable module-owned objects use opaque type-qualified Host-local IDs and declared Project/Workspace relationships; paths/process IDs/URLs remain mutable locators.

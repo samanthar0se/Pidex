@@ -4,7 +4,7 @@
 
 **Blocked by:** 48 — Complete the deterministic fault and recovery campaign
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] A 72-hour automated soak at each applicable capacity tier completes with zero invariant violation, daemon crash, stuck accepted work, incorrect Client convergence, unbounded queue growth, or resource-limit failure.
 - [ ] After soak returns to equivalent quiescence, handle/memory resource gates remain satisfied with recorded diagnostic evidence.

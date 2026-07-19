@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, writeFileSync } from "node:fs";
 import {
   mkdtemp,
   mkdir,
@@ -74,7 +75,69 @@ test("startup falls back by copying authority, rotating continuity, and retainin
 
     const restarted = new AuthorityGenerationStore(root);
     assert.equal(restarted.warnings()[0]?.failedGeneration, damaged.generationId);
-    assert.equal(restarted.resolve().selected.generationId, recovery.selected.generationId);
+    assert.equal(
+      restarted.resolve().selected.generationId,
+      recovery.selected.generationId,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("whole-Authority transitions publish and validate a generation before resolver selection", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-transition-"));
+  try {
+    await mkdir(join(root, "generations", "source"), { recursive: true });
+    await mkdir(join(root, "objects"), { recursive: true });
+    await writeFile(
+      join(root, "generations", "source", "authority.sqlite"),
+      "source bytes",
+    );
+    const sourceEnvelope: AuthorityGenerationEnvelope = {
+      formatVersion: 1,
+      generationId: "source",
+      activationIndex: 1,
+      predecessor: null,
+      continuity: "continuity-1",
+      objects: [],
+      sealed: true,
+    };
+    await writeFile(
+      join(root, "generations", "source", "envelope.json"),
+      JSON.stringify(sourceEnvelope),
+    );
+
+    const store = new AuthorityGenerationStore(root);
+    const result = store.activate({
+      sourceGeneration: "source",
+      rotateContinuity: true,
+      materialize: (stagingDirectory, sourceDirectory) =>
+        writeFileSync(
+          join(stagingDirectory, "authority.sqlite"),
+          `${sourceDirectory}: migrated`,
+        ),
+      validate: stagingDirectory =>
+        assert.match(
+          readFileSync(
+            join(stagingDirectory, "authority.sqlite"),
+            "utf8",
+          ),
+          /migrated/,
+        ),
+    });
+    assert.equal(result.selected.predecessor, "source");
+    assert.notEqual(result.selected.continuity, "continuity-1");
+    assert.equal(
+      JSON.parse(await readFile(join(root, "Generation"), "utf8")).generationId,
+      result.selected.generationId,
+    );
+    assert.equal(
+      await readFile(
+        join(root, "generations", "source", "authority.sqlite"),
+        "utf8",
+      ),
+      "source bytes",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -13,6 +13,31 @@ interface JsonResponse {
   body: Record<string, unknown> | undefined;
 }
 
+interface TextResponse {
+  status: number;
+  body: string;
+}
+
+function get(url: string): Promise<TextResponse> {
+  return new Promise((resolve, reject) => {
+    const outgoingRequest = request(
+      url,
+      { method: "GET", rejectUnauthorized: false },
+      response => {
+        let body = "";
+        response.on("data", chunk => {
+          body += chunk;
+        });
+        response.on("end", () => {
+          resolve({ status: response.statusCode ?? 0, body });
+        });
+      },
+    );
+    outgoingRequest.on("error", reject);
+    outgoingRequest.end();
+  });
+}
+
 function post(
   origin: string,
   path: string,
@@ -100,7 +125,13 @@ test("one-time pairing registers a public Device key and authenticates only sign
       instructions.authorityNotice,
       /complete Pidex surface.*Windows user's Pi machine authority/,
     );
-    assert.equal(JSON.stringify(host.status()).includes(instructions.secret), false);
+    assert.equal(
+      JSON.stringify(host.status()).includes(instructions.secret),
+      false,
+    );
+    const pairingPage = await get(instructions.qrPayload);
+    assert.equal(pairingPage.status, 200);
+    assert.match(pairingPage.body, /id="pair-device"/);
 
     const deviceKey = generateDeviceKey();
     const publicKey = deviceKey.publicKey.export({ format: "jwk" });

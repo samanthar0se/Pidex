@@ -4,7 +4,7 @@
 
 **Blocked by:** 21 — Force-stop an uncooperative Session tree; 38 — Export and verify a portable backup; 41 — Update and roll back signed releases; 42 — Diagnose the Host and export support evidence
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Normal stop, restart, and uninstall enter draining, reject new mutations, show remaining work, and wait up to 15 minutes for natural quiescence.
 - [ ] Drain timeout/failure aborts the operation and resumes normal acceptance without silently escalating to cancellation.

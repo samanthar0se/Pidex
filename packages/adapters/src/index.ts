@@ -106,6 +106,24 @@ export interface PiAdapter {
     checkpoint: string,
     childSessionId: string,
   ): Promise<string>;
+  /** Copy-migrates an artifact owned by an older pinned Pi runtime. */
+  migrateArtifact?(
+    request: PiArtifactMigrationRequest,
+  ): Promise<PiArtifactMigrationResult>;
+}
+
+export interface PiArtifactMigrationRequest {
+  sessionId: string;
+  sourcePath: string;
+  destinationPath: string;
+  sourcePidexVersion: string;
+  sourcePiVersion: string;
+  targetPidexVersion: string;
+  targetPiVersion: string;
+}
+
+export interface PiArtifactMigrationResult {
+  checkpoint: string;
 }
 
 export interface NetworkAdapter {
@@ -134,6 +152,28 @@ export interface WindowsPlatformAdapter {
    * native implementation must not return a handle for an uncontained worker.
    */
   createContainedSessionWorker(sessionId: string): SessionJob;
+  /** Returns only coarse volume facts; callers must not publish the resolved path or device. */
+  classifyStorage(path: string): Promise<StorageVolumeFacts>;
+  /** Classifies a root for refreshed recovery-oriented coverage reporting. */
+  classifyStorageRoot(path: string): Promise<StorageClassification>;
+  /** Reports volume topology changes; the returned function removes the observer. */
+  observeVolumeChanges(listener: () => void): () => void;
+}
+
+export interface StorageVolumeFacts {
+  fileSystem?: string;
+  driveType?:
+    | "fixed"
+    | "removable"
+    | "remote"
+    | "optical"
+    | "ramdisk"
+    | "unknown";
+}
+
+export interface StorageClassification {
+  fileSystem: string;
+  driveType: "fixed" | "remote" | "removable" | "unknown";
 }
 
 export interface SessionJob {
@@ -328,6 +368,12 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       terminate() {},
       close() {},
     }),
+    classifyStorage: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    classifyStorageRoot: async () => ({
+      fileSystem: "NTFS",
+      driveType: "fixed",
+    }),
+    observeVolumeChanges: () => () => {},
   };
 }
 
@@ -384,6 +430,17 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new SessionContainmentError(
         "Pidex Windows Session Job bridge is not bundled",
       );
+    },
+    async classifyStorage() {
+      throw new Error("Pidex Windows volume classification bridge is not bundled");
+    },
+    async classifyStorageRoot() {
+      throw new Error(
+        "Pidex Windows storage classification bridge is not bundled",
+      );
+    },
+    observeVolumeChanges() {
+      return () => {};
     },
   };
 }

@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="theme-color" content="#11110f">
     <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icons/pidex-app-icon-white.svg">
+    <link rel="apple-touch-icon" href="/icons/pidex-app-icon-white.png">
     <title>Pidex</title>
     <style>
       :root {
@@ -40,6 +42,11 @@
         cursor: pointer;
       }
 
+      .drawer-toggle,
+      .drawer-backdrop {
+        display: none;
+      }
+
       .shell {
         display: grid;
         grid-template-columns: 280px minmax(0, 1fr);
@@ -56,9 +63,17 @@
       }
 
       .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         margin: 0 0 18px;
         font-weight: 700;
         letter-spacing: .08em;
+      }
+
+      .brand img {
+        width: 24px;
+        height: 24px;
       }
 
       .primary {
@@ -175,6 +190,36 @@
         border-radius: 7px;
       }
 
+      .action-overflow summary {
+        padding: 6px 9px;
+        cursor: pointer;
+        list-style: none;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+      }
+
+      .action-overflow[open] {
+        position: relative;
+      }
+
+      .action-overflow-menu {
+        position: absolute;
+        z-index: 3;
+        right: 0;
+        display: grid;
+        min-width: 130px;
+        padding: 6px;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: 0 8px 24px #0002;
+      }
+
+      .mobile-host-state {
+        color: var(--danger);
+        font-size: 12px;
+      }
+
       .timeline {
         padding: 24px 0;
       }
@@ -279,7 +324,8 @@
         opacity: .55;
       }
 
-      .danger {
+      .danger,
+      .draft-warning {
         color: var(--danger);
       }
 
@@ -293,24 +339,85 @@
         }
 
         .sidebar {
-          display: none;
+          position: fixed;
+          z-index: 10;
+          inset: 0 auto 0 0;
+          display: flex;
+          width: min(84vw, 320px);
+          padding-top: max(60px, env(safe-area-inset-top));
+          box-shadow: 10px 0 35px #0003;
+          transform: translateX(-105%);
+          transition: transform 160ms ease-out;
+        }
+
+        body.drawer-open .sidebar {
+          transform: translateX(0);
+        }
+
+        .drawer-toggle {
+          position: fixed;
+          z-index: 12;
+          top: max(8px, env(safe-area-inset-top));
+          left: 10px;
+          display: block;
+          min-width: 44px;
+          min-height: 44px;
+          background: var(--paper);
+          border: 1px solid var(--line);
+          border-radius: 9px;
+        }
+
+        .drawer-backdrop {
+          position: fixed;
+          z-index: 9;
+          inset: 0;
+          background: #0005;
+          border: 0;
+        }
+
+        body.drawer-open .drawer-backdrop {
+          display: block;
         }
 
         .view {
-          padding: 20px 18px 150px;
+          padding: 66px 18px 165px;
         }
 
         .composer {
           left: 0;
           padding: 28px 18px 12px;
         }
+
+        button,
+        .action-overflow summary,
+        .interaction input,
+        .interaction select,
+        .interaction textarea {
+          min-height: 44px;
+        }
+
+        .view-header {
+          gap: 8px;
+        }
+
+        .mobile-host-state:not([hidden]) {
+          display: block;
+          margin: 8px 0 0;
+          padding: 7px 0;
+          border-bottom: 1px solid var(--line);
+        }
       }
     </style>
   </head>
   <body>
     <div class="shell">
-      <aside class="sidebar">
-        <p class="brand" aria-label="Pidex Host">PIDEX</p>
+      <button class="drawer-toggle" id="drawer-toggle" aria-label="Open Session drawer" aria-expanded="false">☰</button>
+      <button class="drawer-backdrop" id="drawer-backdrop" aria-label="Close Session drawer"></button>
+      <aside class="sidebar" id="session-drawer" aria-label="Session drawer">
+        <p class="brand" aria-label="Pidex Host">
+          <img src="/icons/pidex-gradient.svg" alt="">
+          PIDEX
+        </p>
         <button class="primary" id="new-session">＋ New Session</button>
         <input
           class="search"
@@ -326,11 +433,11 @@
         <nav class="sessions" id="sessions" aria-label="Sessions"></nav>
         <div class="host-card">
           <strong id="connection-state">Connecting</strong><br>
+          <span id="last-sync">Never synchronized on this Device</span><br>
           <span id="device-state">Device authentication</span><br>
           <button
             id="settings"
             disabled
-            title="Settings are not available in this release"
           >
             Settings
           </button>
@@ -340,6 +447,11 @@
         <section id="pairing" hidden class="view">
           <h1>Pair this Device</h1>
           <p>This Device gains complete Pidex and Host-user authority.</p>
+          <p class="danger">
+            Cached data can be incomplete and may contain sensitive prompts,
+            paths, source, model output, and tool data. Pidex uses your browser
+            profile and Device lock; it adds no separate content-unlock secret.
+          </p>
           <button id="pair-device">Pair Device</button>
         </section>
         <section id="content" class="view">
@@ -384,18 +496,47 @@
       </form>
     </dialog>
 
+    <dialog id="storage-settings">
+      <form method="dialog">
+        <h2>Device storage</h2>
+        <p id="storage-usage">Calculating usage…</p>
+        <p id="storage-persistence" class="scope"></p>
+        <p id="storage-failure" class="danger" aria-live="polite"></p>
+        <label>
+          Cache budget (MB)
+          <input id="storage-budget" type="number" min="1" step="1">
+        </label>
+        <button type="button" id="save-storage-budget">Save budget</button>
+        <button type="button" id="clear-session-data">Clear Session data</button>
+        <button type="button" id="clear-all-data" class="danger">
+          Clear all local data
+        </button>
+        <p class="danger">
+          Offline copies and backups may retain cached content; revocation is
+          not remote wipe. Clearing all data loses Device identity and drafts,
+          and re-pairing is required. Clearing Session data preserves pairing
+          and retained drafts.
+        </p>
+        <button value="close">Close</button>
+      </form>
+    </dialog>
+
     <template id="session-view">
       <header class="view-header">
         <div>
           <h1 id="session-title"></h1>
           <div class="scope" id="session-scope"></div>
         </div>
-        <div class="actions">
-          <button id="rename-session">Rename</button>
-          <button id="fork-session">Fork</button>
-          <button id="archive-session">Archive</button>
-        </div>
+        <details class="action-overflow">
+          <summary>More</summary>
+          <div class="action-overflow-menu">
+            <button id="rename-session">Rename</button>
+            <button id="fork-session">Fork</button>
+            <button id="archive-session">Archive</button>
+          </div>
+        </details>
       </header>
+      <div id="mobile-host-state" class="mobile-host-state" hidden></div>
       <div id="runtime-controls" class="actions">
         <select id="run-model" hidden aria-label="Model"></select>
         <select id="run-mode" hidden aria-label="Mode"></select>
@@ -420,7 +561,7 @@
             placeholder="Ask Pi…"
           ></textarea>
           <div class="composer-row">
-            <span class="sync-label" id="composer-state"></span>
+            <span class="sync-label" id="composer-state" aria-live="polite"></span>
             <button id="release-run" hidden>Release held</button>
             <button id="cancel-run" hidden>Cancel queued</button>
             <button id="stop-run" hidden>Stop</button>

@@ -4,7 +4,7 @@
 
 **Blocked by:** 26 — Recover from daemon or Host loss; 32 — Clean revoked Devices and manage cache storage; 36 — Detect and isolate corruption; 37 — Create and manage online recovery snapshots; 38 — Export and verify a portable backup
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] While normal authority is valid, any paired Device can request revision-preconditioned whole-Host restore; in global recovery mode only Host-local CLI/localhost recovery can do so.
 - [ ] Preflight fully verifies current source bytes, encryption, identity, manifest/reference closure, version compatibility, and required migrations before materialization.

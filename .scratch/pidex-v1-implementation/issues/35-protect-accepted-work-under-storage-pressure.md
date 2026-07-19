@@ -4,7 +4,7 @@
 
 **Blocked by:** 33 — Retain and garbage-collect durable stores safely
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Pidex reserves configurable emergency headroom for SQLite/WAL, accepted Run settlement, cancellation evidence, revocation, maintenance bookkeeping, and recovery diagnostics.
 - [ ] Admission control begins before reserve use and reports pressure with actionable context rather than relying on best-effort writes.

@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Authenticate and revoke Devices; 29 — Read a bounded working set offline; 31 — Deliver advisory Push notifications
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] Host revocation stops new Push scheduling and may send one final encrypted revocation hint when a usable subscription exists.
 - [ ] An explicit authenticated revoked result transitions the Device to `revoked` and best-effort deletes signing key, Push subscription, drafts, preferences, projections, pages, blobs, and Host metadata.
