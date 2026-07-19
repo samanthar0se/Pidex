@@ -179,7 +179,11 @@ test("cleanup requires later scans and retains selected, predecessor, holds, war
     store.resolve();
     const cleanup = store.cleanup();
     assert.deepEqual(cleanup.generations, ["g2"]);
-    assert.deepEqual((await readdir(join(root, "objects"))).sort(), ["held", "old", "selected"]);
+    assert.deepEqual((await readdir(join(root, "objects"))).sort(), [
+      "held",
+      "old",
+      "selected",
+    ]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

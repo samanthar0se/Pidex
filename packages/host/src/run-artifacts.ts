@@ -62,7 +62,6 @@ export class RunArtifactStore {
     if (!existsSync(path)) {
       return null;
     }
-
     return this.validateEvidenceFile(path, runId);
   }
 
@@ -77,17 +76,13 @@ export class RunArtifactStore {
   publishBlob(bytes: Buffer): string {
     const digest = sha256(bytes);
     const destination = join(this.blobDirectory(), digest);
-
     publishImmutableFile({
       target: destination,
       materialize: writeCandidate(bytes),
       validate: candidate => {
-        if (sha256(readFileSync(candidate)) !== digest) {
-          throw new Error("blob-verification-failed");
-        }
+        validateBlobFile(candidate, digest);
       },
     });
-
     return `sha256:${digest}`;
   }
 
@@ -102,11 +97,7 @@ export class RunArtifactStore {
       return null;
     }
 
-    const bytes = readFileSync(path);
-    if (sha256(bytes) !== digest) {
-      throw new Error("blob-verification-failed");
-    }
-    return bytes;
+    return validateBlobFile(path, digest);
   }
 
   /**
@@ -186,7 +177,6 @@ export class RunArtifactStore {
     if (body.runId !== runId) {
       throw new Error("bad-evidence");
     }
-
     return body;
   }
 
@@ -201,6 +191,14 @@ export class RunArtifactStore {
 
 function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function validateBlobFile(path: string, expectedDigest: string): Buffer {
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== expectedDigest) {
+    throw new Error("blob-verification-failed");
+  }
+  return bytes;
 }
 
 function isBlobDigest(value: string): boolean {
