@@ -70,6 +70,41 @@ export function clientHello(expectedHostId: string): ClientHello {
   };
 }
 
+export const durabilityRoles = [
+  "host-data",
+  "installation-release",
+  "pi-checkpoint",
+] as const;
+export const coverageStates = [
+  "covered",
+  "outside-boundary",
+  "indeterminate",
+] as const;
+
+const durabilityRoleSchema = z.enum(durabilityRoles);
+const coverageStateSchema = z.enum(coverageStates);
+const degradedCoverageStateSchema = z.enum([
+  "outside-boundary",
+  "indeterminate",
+]);
+
+export const roleCoverageSchema = z.object({
+  role: durabilityRoleSchema,
+  state: coverageStateSchema,
+  reason: z.string(),
+});
+
+export const durabilityCoverageSchema = z.object({
+  aggregate: coverageStateSchema,
+  assessedAt: z.number(),
+  roles: z.array(roleCoverageSchema),
+});
+
+export type DurabilityRole = z.infer<typeof durabilityRoleSchema>;
+export type CoverageState = z.infer<typeof coverageStateSchema>;
+export type RoleCoverage = z.infer<typeof roleCoverageSchema>;
+export type DurabilityCoverage = z.infer<typeof durabilityCoverageSchema>;
+
 export const hostStatusSchema = z.object({
   hostId: z.string(),
   releaseId: z.string(),
@@ -83,21 +118,13 @@ export const hostStatusSchema = z.object({
     z.object({
       severity: z.literal("medium"),
       code: z.literal("durability-coverage-degraded"),
-      role: z.enum(["host-data", "installation-release", "pi-checkpoint"]),
-      state: z.enum(["outside-boundary", "indeterminate"]),
+      role: durabilityRoleSchema,
+      state: degradedCoverageStateSchema,
       reason: z.string(),
       detail: z.string(),
     }),
   ])),
-  durability: z.object({
-    aggregate: z.enum(["covered", "outside-boundary", "indeterminate"]),
-    assessedAt: z.number(),
-    roles: z.array(z.object({
-      role: z.enum(["host-data", "installation-release", "pi-checkpoint"]),
-      state: z.enum(["covered", "outside-boundary", "indeterminate"]),
-      reason: z.string(),
-    })),
-  }).optional(),
+  durability: durabilityCoverageSchema.optional(),
   synchronization: z.object({
     epoch: z.string(),
     sequence: z.number(),

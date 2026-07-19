@@ -29,7 +29,12 @@ import {
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
-import { DurabilityCoverageMonitor, type CoverageDiagnostic, type DurabilityCoverage, type DurabilityRole } from "./durability-coverage.js";
+import {
+  type CoverageDiagnostic,
+  type DurabilityCoverage,
+  DurabilityCoverageMonitor,
+  type DurabilityRole,
+} from "./durability-coverage.js";
 import {
   PairingAuthority,
   PairingError,
@@ -233,7 +238,11 @@ export interface StartedHost {
   revokeDevice(deviceId: string): void;
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
-  doctor(): Promise<{ check: "storage"; outcome: "healthy" | "degraded"; coverage: DurabilityCoverage }>;
+  doctor(): Promise<{
+    check: "storage";
+    outcome: "healthy" | "degraded";
+    coverage: DurabilityCoverage;
+  }>;
   exportSupport(): Promise<{ durability: DurabilityCoverage }>;
   updateStorageRoots(roots: Partial<Record<DurabilityRole, string>>): void;
   close(): Promise<void>;
@@ -269,22 +278,34 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     hostname,
     adapters.windows,
   );
-  const warnings = configureFirewall(adapters.windows, firewallPort);
-  const coverage = new DurabilityCoverageMonitor(adapters.windows, {
-    "host-data": options.dataDir,
-    "installation-release": options.installationDir ?? options.dataDir,
-    "pi-checkpoint": options.piCheckpointDir ?? options.dataDir,
-  }, () => adapters.clock.now(), options.coverageRefreshTimeoutMs ?? 2_000, options.onDiagnostic ?? (() => {}));
-  const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => { void coverage.refresh(); });
+  const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
+  const coverage = new DurabilityCoverageMonitor(
+    adapters.windows,
+    {
+      "host-data": options.dataDir,
+      "installation-release": options.installationDir ?? options.dataDir,
+      "pi-checkpoint": options.piCheckpointDir ?? options.dataDir,
+    },
+    () => adapters.clock.now(),
+    options.coverageRefreshTimeoutMs ?? 2_000,
+    options.onDiagnostic ?? (() => {}),
+  );
+  const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => {
+    void coverage.refresh();
+  });
   void coverage.refresh();
   const pairing = new PairingAuthority(adapters.clock, store);
 
   function status(): HostStatus {
     const durability = coverage.current();
-    const durabilityWarnings: HostStatus["warnings"] = durability.roles.flatMap(role =>
-      role.state === "covered" ? [] : [{ severity: "medium" as const, code: "durability-coverage-degraded" as const, role: role.role, state: role.state, reason: role.reason, detail: `Durability coverage for ${role.role} is ${role.state}.` }],
-    );
-    return { ...store.status(RELEASE_ID, warnings), warnings: [...warnings, ...durabilityWarnings], durability };
+    return {
+      ...store.status(RELEASE_ID, firewallWarnings),
+      warnings: [
+        ...firewallWarnings,
+        ...createDurabilityWarnings(durability),
+      ],
+      durability,
+    };
   }
 
   const server = createServer(
@@ -1762,7 +1783,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     status,
     doctor: async () => {
       const refreshed = await coverage.refresh();
-      return { check: "storage", outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded", coverage: refreshed };
+      return {
+        check: "storage",
+        outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
+        coverage: refreshed,
+      };
     },
     exportSupport: async () => ({ durability: await coverage.refresh() }),
     updateStorageRoots: roots => coverage.setRoots(roots),
@@ -2326,6 +2351,26 @@ function configureFirewall(
   console.error(JSON.stringify(warning));
 
   return [warning];
+}
+
+function createDurabilityWarnings(
+  coverage: DurabilityCoverage,
+): HostStatus["warnings"] {
+  const warnings: HostStatus["warnings"] = [];
+  for (const role of coverage.roles) {
+    if (role.state === "covered") {
+      continue;
+    }
+    warnings.push({
+      severity: "medium",
+      code: "durability-coverage-degraded",
+      role: role.role,
+      state: role.state,
+      reason: role.reason,
+      detail: `Durability coverage for ${role.role} is ${role.state}.`,
+    });
+  }
+  return warnings;
 }
 
 function hasValidAuthorization(

@@ -134,9 +134,10 @@ export interface WindowsPlatformAdapter {
   observeVolumeChanges(listener: () => void): () => void;
 }
 
-export type StorageClassification =
-  | { fileSystem: "NTFS"; driveType: "fixed" }
-  | { fileSystem: string; driveType: "fixed" | "remote" | "removable" | "unknown" };
+export interface StorageClassification {
+  fileSystem: string;
+  driveType: "fixed" | "remote" | "removable" | "unknown";
+}
 
 export interface SessionJob {
   readonly sessionId: string;
@@ -329,7 +330,10 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       terminate() {},
       close() {},
     }),
-    classifyStorageRoot: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    classifyStorageRoot: async () => ({
+      fileSystem: "NTFS",
+      driveType: "fixed",
+    }),
     observeVolumeChanges: () => () => {},
   };
 }
@@ -389,7 +393,9 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       );
     },
     async classifyStorageRoot() {
-      throw new Error("Pidex Windows storage classification bridge is not bundled");
+      throw new Error(
+        "Pidex Windows storage classification bridge is not bundled",
+      );
     },
     observeVolumeChanges() {
       return () => {};
