@@ -178,6 +178,16 @@ export interface InitialCatalog {
   workspaces?: WorkspaceSummary[];
 }
 
+export interface AuthorityGenerationMetadata {
+  generationId: string;
+  predecessorId: string | null;
+  activationIndex: number;
+  schemaVersion: number;
+  formatVersion: number;
+  releaseMin: string;
+  releaseMax: string;
+}
+
 type CursorBasis =
   | { compatible: true; sequence: number }
   | {
@@ -231,26 +241,23 @@ export class AuthorityStore {
     }
   }
 
-  initializeGeneration(metadata: {
-    generationId: string;
-    predecessorId: string | null;
-    activationIndex: number;
-    schemaVersion: number;
-    formatVersion: number;
-    releaseMin: string;
-    releaseMax: string;
-  }): void {
-    this.#db.prepare(
-      `INSERT INTO authority_generation VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      metadata.generationId,
-      metadata.predecessorId,
-      metadata.activationIndex,
-      metadata.schemaVersion,
-      metadata.formatVersion,
-      metadata.releaseMin,
-      metadata.releaseMax,
-    );
+  initializeGeneration(metadata: AuthorityGenerationMetadata): void {
+    this.#db
+      .prepare(
+        `INSERT INTO authority_generation (
+           singleton, generation_id, predecessor_id, activation_index,
+           schema_version, format_version, release_min, release_max
+         ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        metadata.generationId,
+        metadata.predecessorId,
+        metadata.activationIndex,
+        metadata.schemaVersion,
+        metadata.formatVersion,
+        metadata.releaseMin,
+        metadata.releaseMax,
+      );
   }
 
   projection(): {
