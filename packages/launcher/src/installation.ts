@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
 import {
   publishImmutableFile,
+  publishValidatedTree,
+  replaceRebuildableFile,
   writeCandidate,
 } from "../../durability/src/index.js";
 
@@ -38,8 +40,16 @@ export function installForCurrentUser(
   const identity = loadOrCreateIdentity(identityPath);
 
   const releaseDir = join(options.installDir, "releases", options.releaseId);
-  mkdirSync(releaseDir, { recursive: true });
-  writeFileSync(join(options.installDir, "active-release"), options.releaseId);
+  publishValidatedTree({
+    target: releaseDir,
+    materialize() {},
+    validate: path => existsSync(path),
+  });
+  replaceRebuildableFile({
+    target: join(options.installDir, "active-release"),
+    materialize: writeCandidate(options.releaseId),
+    validate: path => readFileSync(path, "utf8") === options.releaseId,
+  });
   options.windows.restrictToCurrentUser(options.installDir);
   options.windows.registerLogonTask(
     join(options.installDir, "pidex-launcher.exe"),
