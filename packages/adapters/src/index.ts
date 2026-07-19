@@ -152,6 +152,19 @@ export interface WindowsPlatformAdapter {
    * native implementation must not return a handle for an uncontained worker.
    */
   createContainedSessionWorker(sessionId: string): SessionJob;
+  /** Returns only coarse volume facts; callers must not publish the resolved path or device. */
+  classifyStorage(path: string): Promise<StorageVolumeFacts>;
+}
+
+export interface StorageVolumeFacts {
+  fileSystem?: string;
+  driveType?:
+    | "fixed"
+    | "removable"
+    | "remote"
+    | "optical"
+    | "ramdisk"
+    | "unknown";
 }
 
 export interface SessionJob {
@@ -346,6 +359,7 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       terminate() {},
       close() {},
     }),
+    classifyStorage: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
   };
 }
 
@@ -402,6 +416,9 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new SessionContainmentError(
         "Pidex Windows Session Job bridge is not bundled",
       );
+    },
+    async classifyStorage() {
+      throw new Error("Pidex Windows volume classification bridge is not bundled");
     },
   };
 }

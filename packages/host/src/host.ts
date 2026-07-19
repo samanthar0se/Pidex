@@ -21,6 +21,7 @@ import {
   protocolMinor,
   protocolVersion,
   type ClientHello,
+  type DurabilityCoverage,
   type HostStatus,
   type RunRecord,
   type Interaction,
@@ -29,6 +30,11 @@ import {
   type TimelineChange,
 } from "../../protocol/src/status.js";
 import { ensureCertificate } from "./certificate.js";
+import {
+  assessDurabilityCoverage,
+  durabilityWarningsFor,
+  pendingDurabilityCoverage,
+} from "./durability.js";
 import {
   PairingAuthority,
   PairingError,
@@ -64,6 +70,7 @@ const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
 const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
+const DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS = 2_000;
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -73,6 +80,7 @@ const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
+const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
@@ -259,6 +267,12 @@ export interface HostOptions {
   admissionHeadroomBytes?: number;
   /** Deterministic capacity seam; production uses the data volume. */
   availableStorageBytes?: () => number;
+  /** Directory containing the active installation release. */
+  installationDir?: string;
+  /** Directory containing Pi's durable checkpoints. */
+  piCheckpointDir?: string;
+  /** Time allowed to classify each durability storage role. */
+  durabilityAssessmentTimeoutMs?: number;
 }
 
 export interface StartedHost {
@@ -319,7 +333,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     hostname,
     adapters.windows,
   );
-  const warnings = configureFirewall(adapters.windows, firewallPort);
+  const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
+  let durabilityCoverage: DurabilityCoverage = pendingDurabilityCoverage();
+  let durabilityWarnings = durabilityWarningsFor(durabilityCoverage);
+  const currentWarnings = (): HostStatus["warnings"] => [
+    ...firewallWarnings,
+    ...durabilityWarnings,
+  ];
+  const currentStatus = (): HostStatus =>
+    store.status(RELEASE_ID, currentWarnings(), durabilityCoverage);
   const pairing = new PairingAuthority(adapters.clock, store);
 
   const server = createServer(
@@ -417,7 +439,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         JSON.stringify({
           type: "delivery.resynchronize",
           reason: "outbound-queue-overflow",
-          lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+          lastCursor: currentStatus().synchronization.cursor,
         } satisfies ServerMessage),
       );
       client.close(4009, "resynchronize:outbound-queue-overflow");
@@ -540,14 +562,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     sendServerMessage(webSocket, {
       type: "host.hello",
-      hostId: store.status(RELEASE_ID, warnings).hostId,
+      hostId: currentStatus().hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
   });
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
-    const status = store.status(RELEASE_ID, warnings);
+    const status = currentStatus();
     if (hello.expectedHostId !== status.hostId) {
       sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
       return;
@@ -615,7 +637,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
-    const status = store.status(RELEASE_ID, warnings);
+    const status = currentStatus();
     const allSessions = [
       ...projection.sessions,
       ...projection.archivedSessions,
@@ -744,6 +766,33 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       : (options.port ?? DEFAULT_PORT);
 
   const canonicalOrigin = `https://${hostname}:${port}`;
+  void assessDurabilityCoverage(
+    adapters.windows,
+    {
+      "host-data": options.dataDir,
+      "installation-release": options.installationDir ?? resolve("."),
+      "pi-checkpoint":
+        options.piCheckpointDir ?? join(options.dataDir, "pi-checkpoints"),
+    },
+    options.durabilityAssessmentTimeoutMs ??
+      DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS,
+  ).then(coverage => {
+    durabilityCoverage = coverage;
+    durabilityWarnings = durabilityWarningsFor(coverage);
+    for (const client of admittedClients) {
+      if (
+        admittedCapabilityBasisByClient
+          .get(client)
+          ?.has(DURABILITY_COVERAGE_CAPABILITY)
+      ) {
+        sendServerMessage(client, {
+          type: "durability.coverage-changed",
+          coverage,
+          warnings: currentWarnings(),
+        });
+      }
+    }
+  });
   const fingerprint = createHash("sha256")
     .update(certificate.ca)
     .digest("hex");
@@ -1894,7 +1943,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       admitDiscretionaryWrite();
       return pairing.create(canonicalOrigin);
     },
-    status: () => store.status(RELEASE_ID, warnings),
+    status: currentStatus,
     storageProtection: () => storageProtection.status(),
     revokeDevice,
     rotateSynchronizationEpoch: () =>

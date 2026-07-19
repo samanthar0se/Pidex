@@ -29,6 +29,7 @@ import {
   type TimelineWindow,
   type WorkspaceSummary,
 } from "../../protocol/src/status.js";
+import { pendingDurabilityCoverage } from "./durability.js";
 import { RunArtifactStore } from "./run-artifacts.js";
 
 export type { RunRecord, TimelineEntry } from "../../protocol/src/status.js";
@@ -2486,6 +2487,7 @@ export class AuthorityStore {
   status(
     releaseId: string,
     warnings: HostStatus["warnings"] = [],
+    durability: HostStatus["durability"] = pendingDurabilityCoverage(),
   ): HostStatus {
     const row = this.#db
       .prepare("SELECT host_id, epoch, sequence FROM host WHERE singleton=1")
@@ -2505,6 +2507,7 @@ export class AuthorityStore {
       releaseId,
       readiness: "ready",
       warnings,
+      durability,
       synchronization: {
         epoch: row.epoch,
         sequence: row.sequence,
