@@ -22,6 +22,7 @@ import {
   protocolVersion,
   type ClientHello,
   type HostStatus,
+  type DurabilityCoverage,
   type RunRecord,
   type Interaction,
   type ServerMessage,
@@ -211,6 +212,9 @@ export interface HostOptions {
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
   forcedReconciliationTimeoutMs?: number;
+  installationDir?: string;
+  piCheckpointDir?: string;
+  durabilityAssessmentTimeoutMs?: number;
 }
 
 export interface StartedHost {
@@ -255,7 +259,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     hostname,
     adapters.windows,
   );
-  const warnings = configureFirewall(adapters.windows, firewallPort);
+  const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
+  let durability: DurabilityCoverage = pendingDurabilityCoverage();
+  let durabilityWarnings: HostStatus["warnings"] = durabilityWarningsFor(durability);
+  const warnings = (): HostStatus["warnings"] => [...firewallWarnings, ...durabilityWarnings];
+  const currentStatus = (): HostStatus => store.status(RELEASE_ID, warnings(), durability);
   const pairing = new PairingAuthority(adapters.clock, store);
 
   const server = createServer(
@@ -353,7 +361,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         JSON.stringify({
           type: "delivery.resynchronize",
           reason: "outbound-queue-overflow",
-          lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+          lastCursor: currentStatus().synchronization.cursor,
         } satisfies ServerMessage),
       );
       client.close(4009, "resynchronize:outbound-queue-overflow");
@@ -472,14 +480,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     sendServerMessage(webSocket, {
       type: "host.hello",
-      hostId: store.status(RELEASE_ID, warnings).hostId,
+      hostId: currentStatus().hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
   });
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
-    const status = store.status(RELEASE_ID, warnings);
+    const status = currentStatus();
     if (hello.expectedHostId !== status.hostId) {
       sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
       return;
@@ -547,7 +555,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
-    const status = store.status(RELEASE_ID, warnings);
+    const status = currentStatus();
     const sessionsById = new Map(
       projection.sessions.map(session => [session.sessionId, session]),
     );
@@ -672,6 +680,27 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       : (options.port ?? DEFAULT_PORT);
 
   const canonicalOrigin = `https://${hostname}:${port}`;
+  void assessDurabilityCoverage(
+    adapters.windows,
+    {
+      "host-data": options.dataDir,
+      "installation-release": options.installationDir ?? resolve("."),
+      "pi-checkpoint": options.piCheckpointDir ?? join(options.dataDir, "pi-checkpoints"),
+    },
+    options.durabilityAssessmentTimeoutMs ?? 2_000,
+  ).then(coverage => {
+    durability = coverage;
+    durabilityWarnings = durabilityWarningsFor(coverage);
+    for (const client of admittedClients) {
+      if (admittedCapabilityBasisByClient.get(client)?.has("durability.coverage@1")) {
+        sendServerMessage(client, {
+          type: "durability.coverage-changed",
+          coverage,
+          warnings: warnings(),
+        });
+      }
+    }
+  });
   const fingerprint = createHash("sha256")
     .update(certificate.ca)
     .digest("hex");
@@ -1665,7 +1694,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   return {
     origin: canonicalOrigin,
     createPairing: () => pairing.create(canonicalOrigin),
-    status: () => store.status(RELEASE_ID, warnings),
+    status: currentStatus,
     revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
@@ -2208,6 +2237,68 @@ function configureFirewall(
   console.error(JSON.stringify(warning));
 
   return [warning];
+}
+
+type DurabilityRole = DurabilityCoverage["roles"][number]["role"];
+
+function pendingDurabilityCoverage(): DurabilityCoverage {
+  return {
+    aggregate: "indeterminate",
+    assessment: "assessment-pending",
+    roles: (["host-data", "installation-release", "pi-checkpoint"] as const).map(role => ({
+      role,
+      state: "indeterminate" as const,
+      reason: "assessment-pending" as const,
+    })),
+  };
+}
+
+async function assessDurabilityCoverage(
+  windows: WindowsPlatformAdapter,
+  paths: Record<DurabilityRole, string>,
+  timeoutMs: number,
+): Promise<DurabilityCoverage> {
+  const roles = await Promise.all(
+    (Object.keys(paths) as DurabilityRole[]).map(async role => {
+      try {
+        const facts = await Promise.race([
+          windows.classifyStorage(paths[role]),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("classification-timeout")), timeoutMs),
+          ),
+        ]);
+        if (facts.fileSystem === "NTFS" && facts.driveType === "fixed") {
+          return { role, state: "covered" as const, reason: "fixed-ntfs" as const };
+        }
+        if (
+          (facts.fileSystem !== undefined && facts.fileSystem !== "NTFS") ||
+          (facts.driveType !== undefined && facts.driveType !== "fixed")
+        ) {
+          return { role, state: "outside-boundary" as const, reason: "outside-fixed-ntfs" as const };
+        }
+      } catch {
+        // Unsupported, failed, and timed-out classifications are deliberately equivalent.
+      }
+      return { role, state: "indeterminate" as const, reason: "classification-unavailable" as const };
+    }),
+  );
+  const aggregate = roles.some(role => role.state === "outside-boundary")
+    ? "outside-boundary"
+    : roles.some(role => role.state === "indeterminate") ? "indeterminate" : "covered";
+  return { aggregate, assessment: "complete", roles };
+}
+
+function durabilityWarningsFor(coverage: DurabilityCoverage): HostStatus["warnings"] {
+  return coverage.roles.flatMap(role => role.state === "covered" ? [] : [{
+    severity: "medium" as const,
+    code: "durability-coverage-degraded" as const,
+    role: role.role,
+    state: role.state,
+    reason: role.reason,
+    detail: role.state === "outside-boundary"
+      ? "This storage role is outside the fixed NTFS Durability boundary."
+      : "Durability coverage for this storage role could not be determined.",
+  }]);
 }
 
 function hasValidAuthorization(

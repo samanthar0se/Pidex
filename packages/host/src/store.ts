@@ -1967,6 +1967,15 @@ export class AuthorityStore {
   status(
     releaseId: string,
     warnings: HostStatus["warnings"] = [],
+    durability: HostStatus["durability"] = {
+      aggregate: "indeterminate",
+      assessment: "assessment-pending",
+      roles: ["host-data", "installation-release", "pi-checkpoint"].map(role => ({
+        role: role as "host-data" | "installation-release" | "pi-checkpoint",
+        state: "indeterminate" as const,
+        reason: "assessment-pending" as const,
+      })),
+    },
   ): HostStatus {
     const row = this.#db
       .prepare("SELECT host_id, epoch, sequence FROM host WHERE singleton=1")
@@ -1986,6 +1995,7 @@ export class AuthorityStore {
       releaseId,
       readiness: "ready",
       warnings,
+      durability,
       synchronization: {
         epoch: row.epoch,
         sequence: row.sequence,

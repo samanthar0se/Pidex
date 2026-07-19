@@ -16,6 +16,7 @@ export const protocolCapabilities = [
   { id: "run.release", version: 1 },
   { id: "run.cancel", version: 1 },
   { id: "run.stop", version: 1 },
+  { id: "durability.coverage", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -68,17 +69,38 @@ export function clientHello(expectedHostId: string): ClientHello {
   };
 }
 
+const durabilityStateSchema = z.enum(["covered", "outside-boundary", "indeterminate"]);
+const durabilityCoverageSchema = z.object({
+  aggregate: durabilityStateSchema,
+  assessment: z.enum(["assessment-pending", "complete"]),
+  roles: z.array(z.object({
+    role: z.enum(["host-data", "installation-release", "pi-checkpoint"]),
+    state: durabilityStateSchema,
+    reason: z.enum(["fixed-ntfs", "outside-fixed-ntfs", "assessment-pending", "classification-unavailable"]),
+  })),
+});
+export type DurabilityCoverage = z.infer<typeof durabilityCoverageSchema>;
+
 export const hostStatusSchema = z.object({
   hostId: z.string(),
   releaseId: z.string(),
   readiness: z.literal("ready"),
-  warnings: z.array(
+  warnings: z.array(z.union([
     z.object({
       severity: z.literal("high"),
       code: z.literal("firewall-enforcement-degraded"),
       detail: z.string(),
     }),
-  ),
+    z.object({
+      severity: z.literal("medium"),
+      code: z.literal("durability-coverage-degraded"),
+      role: z.enum(["host-data", "installation-release", "pi-checkpoint"]),
+      state: z.enum(["outside-boundary", "indeterminate"]),
+      reason: z.string(),
+      detail: z.string(),
+    }),
+  ])),
+  durability: durabilityCoverageSchema,
   synchronization: z.object({
     epoch: z.string(),
     sequence: z.number(),
@@ -299,6 +321,11 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("delivery.resynchronize"),
     reason: z.literal("outbound-queue-overflow"),
     lastCursor: z.string(),
+  }).passthrough(),
+  z.object({
+    type: z.literal("durability.coverage-changed"),
+    coverage: durabilityCoverageSchema,
+    warnings: hostStatusSchema.shape.warnings,
   }).passthrough(),
   z.object({
     type: z.literal("host.snapshot"),
