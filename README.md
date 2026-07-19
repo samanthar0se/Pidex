@@ -27,7 +27,21 @@ Pidex is a Windows-first, PWA-first control plane for durable [Pi](https://githu
 
 ## Development
 
-Requires Node.js 22+.
+Requires Node.js 22+ and the OpenSSL CLI available on `PATH`. Verify both
+before starting Pidex:
+
+```powershell
+node --version
+openssl version
+```
+
+Git for Windows includes OpenSSL but does not expose it to Command Prompt by
+default. Add `C:\Program Files\Git\mingw64\bin` to your user `PATH`, or expose
+it for the current Command Prompt session:
+
+```cmd
+set "PATH=C:\Program Files\Git\mingw64\bin;%PATH%"
+```
 
 ```powershell
 npm ci

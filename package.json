@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/check-development-prerequisites.mjs",
     "dev": "tsx packages/host/src/development.ts",
     "status": "tsx packages/cli/src/main.ts status",
     "typecheck": "tsc --noEmit",

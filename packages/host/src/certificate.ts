@@ -158,5 +158,19 @@ function generateCertificate(
 }
 
 function runOpenSsl(opensslArguments: string[]): void {
-  execFileSync("openssl", opensslArguments, { stdio: "ignore" });
+  try {
+    execFileSync("openssl", opensslArguments, { stdio: "ignore" });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      throw new Error(
+        'OpenSSL was not found on PATH. Run "npm run predev" for development setup guidance.',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
