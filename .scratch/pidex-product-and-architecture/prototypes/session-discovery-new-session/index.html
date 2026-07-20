@@ -177,6 +177,7 @@
         A: { name: "Nested scope rail", note: "Hierarchy stays in discovery" },
         B: { name: "Search-first catalog", note: "Scope travels with each result" },
         C: { name: "Workspace launch points", note: "Creation inherits its launch scope" },
+        D: { name: "Hybrid · unscoped first", note: "Unscoped stays open; scoped launch points inherit" },
       };
 
       const scenarios = {
@@ -325,6 +326,26 @@
           ${unscoped.length ? `<button class="tree-label"><span>⌄</span><span>Unscoped Sessions</span><span class="tree-add" data-new data-scope="Unscoped">＋</span></button>${unscoped.map(item => sessionRow(item, "tree-session")).join("")}` : ""}` : noResults(query)}</div>${railFooter()}</aside>`;
       }
 
+      function railD() {
+        const query = value("q") || "";
+        const items = currentSessions().filter(session => sessionMatches(session, query));
+        const unscoped = items.filter(item => !item.project);
+        const scoped = items.filter(item => item.project);
+        const groups = groupedSessions(scoped);
+        let catalog = unscoped.length ? `<div class="section-title"><span>Unscoped Sessions</span><button data-new data-scope="Unscoped" title="New unscoped Session">＋</button></div>${unscoped.map(item => sessionRow(item)).join("")}` : "";
+        let currentProject = "";
+        if (scoped.length) catalog += `<div class="section-title"><span>Projects & Workspaces</span><span>Recent activity</span></div>`;
+        for (const [key, grouped] of groups) {
+          const [project, workspace] = key.split("::");
+          if (project !== currentProject) {
+            catalog += `<button class="tree-label"><span>⌄</span><span>${project}</span><span class="tree-add" data-new data-scope="${project} / Project Sessions" title="New Project-scoped Session">＋</span></button>`;
+            currentProject = project;
+          }
+          catalog += `<button class="tree-label workspace-label"><span>⌄</span><span>${workspace}</span><span class="tree-add" data-new data-scope="${project} / ${workspace}" title="New Session in ${workspace}">＋</span></button>${grouped.map(item => sessionRow(item, "tree-session")).join("")}`;
+        }
+        return `<aside class="rail">${commonNav()}${searchBox()}<div class="rail-scroll">${items.length ? catalog : noResults(query)}</div>${railFooter()}</aside>`;
+      }
+
       function railFooter() {
         return `<footer class="rail-footer"><div class="host-state"><span style="display:flex;align-items:center"><span class="host-dot"></span><span class="host-copy"><strong>${isOffline() ? "Offline" : "Dev workstation"}</strong><small>${isOffline() ? "Last synchronized 8 minutes ago" : "Current · UD’s Device"}</small></span></span><button class="icon-button" title="Settings">⚙</button></div></footer>`;
       }
@@ -361,8 +382,8 @@
         if (variant === "B") {
           return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><div class="scope-browser"><aside class="scope-list"><h2>Choose a scope</h2><button class="scope-option selected"><span>▣</span><span><strong>Pidex / main</strong><small>C:\\git\\Pidex</small></span></button><button class="scope-option"><span>▣</span><span><strong>Pidex / release-validation</strong><small>C:\\git\\Pidex-release</small></span></button><button class="scope-option"><span>◇</span><span><strong>Pidex / Project Sessions</strong><small>No Workspace</small></span></button><button class="scope-option"><span>○</span><span><strong>Unscoped</strong><small>No Project or Workspace</small></span></button></aside><section class="compose-panel"><div class="scope-summary"><span class="scope-label">New Session in</span><h3>Pidex / main</h3><p>C:\\git\\Pidex</p></div>${composer("Pidex / main", variant)}${outcome()}</section></div><p class="new-note">Navigating away discards only this View; the Device-owned draft is retained.</p></div></section>`;
         }
-        if (variant === "C") {
-          return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1><div class="inherit-banner"><span class="scope-icon">▣</span><span class="scope-text"><strong>${inherited}</strong><small>${inherited.includes("main") ? "C:\\git\\Pidex" : "Scope inherited from its launch point"}</small></span><button class="quiet-button" data-scope-picker>Change</button></div>${composer(inherited, variant)}${outcome()}<p class="new-note">This scope was inherited from the Project or Workspace where New Session was opened.</p></div></section>`;
+        if (variant === "C" || variant === "D") {
+          return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1><div class="inherit-banner"><span class="scope-icon">▣</span><span class="scope-text"><strong>${inherited}</strong><small>${inherited.includes("main") ? "C:\\git\\Pidex" : "Scope inherited from its launch point"}</small></span><button class="quiet-button" data-scope-picker>Change</button></div>${composer(inherited, variant)}${outcome()}<p class="new-note">Scope is inherited from the launch point and can change without leaving the Composer Draft.</p></div></section>`;
         }
         return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1>${composer("Pidex / main", variant)}${outcome()}<p class="new-note">Project, Workspace, runtime options, and Composer Draft belong to this blank View until creation succeeds.</p></div></section>`;
       }
@@ -381,7 +402,7 @@
         const variant = currentVariant();
         document.body.classList.toggle("offline", isOffline());
         document.body.classList.remove("drawer-open");
-        const rail = variant === "A" ? railA() : variant === "B" ? railB() : railC();
+        const rail = variant === "A" ? railA() : variant === "B" ? railB() : variant === "C" ? railC() : railD();
         document.querySelector("#app").innerHTML = `<div class="app">${rail}<section class="main">${isNew() ? newView(variant) : sessionView()}</section></div>`;
         document.querySelector("#prototype-label").innerHTML = `<strong>${variant} — ${variants[variant].name}</strong><small>${variants[variant].note}</small>`;
         const scenario = document.querySelector("#scenario");
