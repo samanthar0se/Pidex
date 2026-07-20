@@ -26,4 +26,4 @@ This is a throwaway prototype. Session selection and all create actions are loca
 | A — Nested scope rail | [Discovery](screenshots/A-discovery.png) | [New Session](screenshots/A-new-session.png) |
 | B — Search-first catalog | [Discovery](screenshots/B-discovery.png) | [New Session](screenshots/B-new-session.png) |
 | C — Workspace launch points | [Discovery](screenshots/C-discovery.png) | [New Session](screenshots/C-new-session.png) |
-| D — Projects + Chats | [Discovery](screenshots/D-discovery.png) | [New Session](screenshots/D-new-session.png) |
+| D — Projects + Chats | [Discovery](screenshots/D-discovery.png) | [New Session](screenshots/D-new-session.png) · [Scope picker](screenshots/D-scope-picker.png) |

@@ -85,6 +85,12 @@
       .quiet-button:hover, .icon-button:hover { background: #f0f0ed; }
       .dark-button { color: #fff; background: #22221f; border-color: #22221f; }
       .dark-button:disabled { cursor: default; opacity: .38; }
+      .composer-more { position: relative; }
+      .composer-more summary { display: grid; width: 30px; min-height: 30px; place-items: center; cursor: pointer; list-style: none; border: 1px solid var(--line); border-radius: 7px; }
+      .composer-more summary::-webkit-details-marker { display: none; }
+      .composer-more-menu { position: absolute; z-index: 5; right: 0; bottom: 36px; width: 180px; padding: 5px; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 10px 30px #0002; }
+      .composer-more-menu button { width: 100%; padding: 7px 8px; text-align: left; background: transparent; border: 0; border-radius: 5px; }
+      .composer-more-menu button:hover { background: #f1f1ee; }
       .offline-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 20px; color: #714b1e; background: #fff6e7; border-bottom: 1px solid #edd8b7; }
       .offline-row small { color: #8b6b47; }
       .timeline-preview { width: min(760px, calc(100% - 64px)); margin: auto; padding: 42px 0 180px; }
@@ -119,6 +125,10 @@
       .inherit-banner .scope-text { min-width: 0; flex: 1; }
       .inherit-banner strong, .inherit-banner small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .inherit-banner small { color: var(--muted); }
+      .scope-popover { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: -6px 0 12px; padding: 8px; background: #fff; border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 8px 24px #0000000d; }
+      .scope-popover button { padding: 8px 9px; text-align: left; background: #f6f6f3; border: 1px solid transparent; border-radius: 7px; }
+      .scope-popover button:hover { border-color: var(--line-strong); }
+      .scope-popover small { display: block; color: var(--muted); }
       .tree-label { padding: 6px 8px; font-weight: 620; }
       .tree-label.workspace-label { padding-left: 23px; color: var(--muted); font-size: 11px; font-weight: 500; }
       .tree-label .tree-add { margin-left: auto; color: var(--faint); opacity: 0; }
@@ -241,7 +251,7 @@
 
       function setScenario(key) {
         const url = new URL(location.href);
-        ["q", "catalog", "mode", "draft", "capabilities", "outcome", "connection", "session"].forEach(name => url.searchParams.delete(name));
+        ["q", "catalog", "mode", "draft", "capabilities", "outcome", "connection", "session", "scope", "scopePicker"].forEach(name => url.searchParams.delete(name));
         url.searchParams.set("scenario", key);
         Object.entries(scenarioParams[key]).forEach(([name, value]) => url.searchParams.set(name, value));
         history.pushState({}, "", url);
@@ -358,7 +368,7 @@
             ${capabilitiesAbsent ? "" : `<button class="context-chip runtime-secondary">GPT-5 · Auto</button>`}
             <button class="context-chip runtime-secondary">＋ Add context</button>
             <span class="spacer"></span>
-            <button class="quiet-button" data-outcome="created-empty">Create empty</button>
+            <details class="composer-more"><summary aria-label="More creation actions">•••</summary><div class="composer-more-menu"><button data-outcome="created-empty">Create empty Session</button></div></details>
             <button class="dark-button" data-outcome="accepted" ${isOffline() ? "disabled" : ""}>Create & Run ↑</button>
           </div>${draftFailure ? `<div class="draft-failure">Draft is only in memory · saving on this Device failed</div>` : ""}</div>`;
       }
@@ -375,13 +385,23 @@
         return copy ? `<div class="outcome ${copy[0]}"><span>${copy[0] === "success" ? "✓" : "!"}</span><span><strong>${copy[1]}</strong><small>${copy[2]}</small></span></div>` : "";
       }
 
+      function scopeMenu() {
+        if (params().get("scopePicker") !== "open") return "";
+        return `<div class="scope-popover" aria-label="Choose Session scope">
+          <button data-scope-value="Unscoped"><strong>Unscoped</strong><small>Chat without a Project</small></button>
+          <button data-scope-value="Pidex / Project Sessions"><strong>Pidex</strong><small>Project scope · no Workspace</small></button>
+          <button data-scope-value="Pidex / main"><strong>Pidex / main</strong><small>Workspace · C:\\git\\Pidex</small></button>
+          <button data-scope-value="Pidex / release-validation"><strong>Pidex / release-validation</strong><small>Optional Workspace</small></button>
+        </div>`;
+      }
+
       function newView(variant) {
-        const inherited = params().get("scope") || "Pidex / main";
+        const inherited = params().get("scope") || "Unscoped";
         if (variant === "B") {
           return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><div class="scope-browser"><aside class="scope-list"><h2>Choose a scope</h2><button class="scope-option selected"><span>▣</span><span><strong>Pidex / main</strong><small>C:\\git\\Pidex</small></span></button><button class="scope-option"><span>▣</span><span><strong>Pidex / release-validation</strong><small>C:\\git\\Pidex-release</small></span></button><button class="scope-option"><span>◇</span><span><strong>Pidex / Project Sessions</strong><small>No Workspace</small></span></button><button class="scope-option"><span>○</span><span><strong>Unscoped</strong><small>No Project or Workspace</small></span></button></aside><section class="compose-panel"><div class="scope-summary"><span class="scope-label">New Session in</span><h3>Pidex / main</h3><p>C:\\git\\Pidex</p></div>${composer("Pidex / main", variant)}${outcome()}</section></div><p class="new-note">Navigating away discards only this View; the Device-owned draft is retained.</p></div></section>`;
         }
         if (variant === "C" || variant === "D") {
-          return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1><div class="inherit-banner"><span class="scope-icon">▣</span><span class="scope-text"><strong>${inherited}</strong><small>${inherited.includes("main") ? "C:\\git\\Pidex" : "Scope inherited from its launch point"}</small></span><button class="quiet-button" data-scope-picker>Change</button></div>${composer(inherited, variant)}${outcome()}<p class="new-note">Scope is inherited from the launch point and can change without leaving the Composer Draft.</p></div></section>`;
+          return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1><div class="inherit-banner"><span class="scope-icon">▣</span><span class="scope-text"><strong>${inherited}</strong><small>${inherited.includes("main") ? "C:\\git\\Pidex" : "Scope inherited from its launch point"}</small></span><button class="quiet-button" data-scope-picker>Change</button></div>${scopeMenu()}${composer(inherited, variant)}${outcome()}<p class="new-note">Scope is inherited from the launch point and can change without leaving the Composer Draft.</p></div></section>`;
         }
         return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1>${composer("Pidex / main", variant)}${outcome()}<p class="new-note">Project, Workspace, runtime options, and Composer Draft belong to this blank View until creation succeeds.</p></div></section>`;
       }
@@ -410,13 +430,14 @@
 
       function wire() {
         document.querySelectorAll("[data-session]").forEach(button => button.addEventListener("click", () => setParams({ mode: null, session: button.dataset.session, scenario: "default", outcome: null })));
-        document.querySelectorAll("[data-new]").forEach(button => button.addEventListener("click", event => { event.stopPropagation(); setParams({ mode: "new", scope: button.dataset.scope || "Pidex / main", scenario: "new", outcome: null }); }));
+        document.querySelectorAll("[data-new]").forEach(button => button.addEventListener("click", event => { event.stopPropagation(); setParams({ mode: "new", scope: button.dataset.scope || "Unscoped", scenario: "new", outcome: null }); }));
         document.querySelectorAll("[data-archived]").forEach(button => button.addEventListener("click", () => setScenario("archived")));
         document.querySelectorAll("[data-drawer]").forEach(button => button.addEventListener("click", () => document.body.classList.toggle("drawer-open")));
         document.querySelectorAll("[data-focus-search]").forEach(button => button.addEventListener("click", () => document.querySelector(".rail-search input")?.focus()));
         document.querySelector("[data-search-form]")?.addEventListener("submit", event => { event.preventDefault(); setParams({ q: new FormData(event.currentTarget).get("q"), scenario: "search" }); });
         document.querySelectorAll("[data-outcome]").forEach(button => button.addEventListener("click", () => setParams({ outcome: button.dataset.outcome })));
-        document.querySelectorAll("[data-scope-picker]").forEach(button => button.addEventListener("click", () => setParams({ scope: params().get("scope") === "Unscoped" ? "Pidex / main" : "Unscoped" })));
+        document.querySelectorAll("[data-scope-picker]").forEach(button => button.addEventListener("click", () => setParams({ scopePicker: params().get("scopePicker") === "open" ? null : "open" })));
+        document.querySelectorAll("[data-scope-value]").forEach(button => button.addEventListener("click", () => setParams({ scope: button.dataset.scopeValue, scopePicker: null })));
       }
 
       function cycle(direction) {
