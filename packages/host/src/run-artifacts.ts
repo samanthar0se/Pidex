@@ -211,7 +211,12 @@ function isOrdinaryFile(path: string): boolean {
 }
 
 function flushPath(path: string): void {
-  const fileDescriptor = openSync(path, "r");
+  const isDirectory = lstatSync(path).isDirectory();
+  if (isDirectory && process.platform === "win32") {
+    return;
+  }
+
+  const fileDescriptor = openSync(path, isDirectory ? "r" : "r+");
   try {
     fsyncSync(fileDescriptor);
   } finally {
