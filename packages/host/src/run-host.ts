@@ -1,9 +1,10 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
   adaptersFor,
   type AdapterMode,
 } from "../../adapters/src/index.js";
 import type { HostCertificateProvisioner } from "./certificate.js";
+import { developmentCaDirectory } from "./development-ca.js";
 import { startHost } from "./host.js";
 
 export async function runHost(
@@ -25,7 +26,7 @@ export async function runHost(
   console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
   if (adapterMode === "deterministic") {
     console.log(`Pair this device: ${host.createPairing().qrPayload}`);
-    printCertificateTrustGuidance(dataDir);
+    printCertificateTrustGuidance();
   }
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -36,8 +37,11 @@ export async function runHost(
   }
 }
 
-function printCertificateTrustGuidance(dataDir: string): void {
-  const certificatePath = resolve(dataDir, "tls", "pidex-ca.pem");
+function printCertificateTrustGuidance(): void {
+  const certificatePath = join(
+    developmentCaDirectory(process.env.PIDEX_DEVELOPMENT_PROFILE_ROOT),
+    "pidex-development-ca.pem",
+  );
   if (process.platform === "win32") {
     console.log(
       `If HTTPS is not trusted, run: certutil -user -addstore Root "${certificatePath}"`,
