@@ -49,6 +49,39 @@ npm run dev:ca:setup
 npm run dev
 ```
 
+`npm run dev` loads machine-specific development settings from an optional
+untracked `.env` file in the repository root. For LAN access, create it with
+the Host workstation's stable LAN address:
+
+```dotenv
+PIDEX_HOSTNAME=192.168.1.227
+```
+
+The repository ignores `.env`; do not commit machine-specific addresses or
+secrets. Shell environment variables take precedence over values in the file.
+
+### Background development Host
+
+Pidex can run the development Host without an open terminal by registering a
+per-user Scheduled Task. This intentionally uses the signed-in user's profile,
+Development CA, and LocalAppData instead of a Windows service account. Stop any
+terminal-hosted `npm run dev` process before installing the task:
+
+```powershell
+npm run dev:task:install
+```
+
+The task starts immediately and at each user logon. After updating the checkout
+or `.env`, restart it with:
+
+```powershell
+npm run dev:task:restart
+```
+
+Task output is appended to `.pidex-data-dev/development-host.log`. Manage or
+inspect the task with `npm run dev:task:status`, `npm run dev:task:stop`, and
+`npm run dev:task:uninstall`.
+
 Development CA setup is an explicit, one-time operation for the current Windows
 profile and must run before the first Host startup. It installs only the public
 certificate in Current User Root and reports `created` for a new CA or
