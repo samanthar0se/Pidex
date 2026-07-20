@@ -177,7 +177,7 @@
         A: { name: "Nested scope rail", note: "Hierarchy stays in discovery" },
         B: { name: "Search-first catalog", note: "Scope travels with each result" },
         C: { name: "Workspace launch points", note: "Creation inherits its launch scope" },
-        D: { name: "Hybrid · unscoped first", note: "Unscoped stays open; scoped launch points inherit" },
+        D: { name: "Projects + Chats", note: "Project accordions only; unscoped Chats stay flat" },
       };
 
       const scenarios = {
@@ -331,18 +331,16 @@
         const items = currentSessions().filter(session => sessionMatches(session, query));
         const unscoped = items.filter(item => !item.project);
         const scoped = items.filter(item => item.project);
-        const groups = groupedSessions(scoped);
-        let catalog = unscoped.length ? `<div class="section-title"><span>Unscoped Sessions</span><button data-new data-scope="Unscoped" title="New unscoped Session">＋</button></div>${unscoped.map(item => sessionRow(item)).join("")}` : "";
-        let currentProject = "";
-        if (scoped.length) catalog += `<div class="section-title"><span>Projects & Workspaces</span><span>Recent activity</span></div>`;
-        for (const [key, grouped] of groups) {
-          const [project, workspace] = key.split("::");
-          if (project !== currentProject) {
-            catalog += `<button class="tree-label"><span>⌄</span><span>${project}</span><span class="tree-add" data-new data-scope="${project} / Project Sessions" title="New Project-scoped Session">＋</span></button>`;
-            currentProject = project;
-          }
-          catalog += `<button class="tree-label workspace-label"><span>⌄</span><span>${workspace}</span><span class="tree-add" data-new data-scope="${project} / ${workspace}" title="New Session in ${workspace}">＋</span></button>${grouped.map(item => sessionRow(item, "tree-session")).join("")}`;
+        const projects = new Map();
+        scoped.forEach(session => {
+          if (!projects.has(session.project)) projects.set(session.project, []);
+          projects.get(session.project).push(session);
+        });
+        let catalog = scoped.length ? `<div class="section-title"><span>Projects</span><span>Recent activity</span></div>` : "";
+        for (const [project, projectSessions] of projects) {
+          catalog += `<button class="tree-label"><span>⌄</span><span>${project}</span><span class="tree-add" data-new data-scope="${project} / Project Sessions" title="New Session in ${project}">＋</span></button>${projectSessions.map(item => sessionRow({ ...item, meta: `${item.workspace || "Project scope"} · ${item.meta}` }, "tree-session")).join("")}`;
         }
+        if (unscoped.length) catalog += `<div class="section-title"><span>Chats</span><button data-new data-scope="Unscoped" title="New unscoped Session">＋</button></div>${unscoped.map(item => sessionRow(item)).join("")}`;
         return `<aside class="rail">${commonNav()}${searchBox()}<div class="rail-scroll">${items.length ? catalog : noResults(query)}</div>${railFooter()}</aside>`;
       }
 
