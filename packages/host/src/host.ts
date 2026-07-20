@@ -28,7 +28,10 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import { ensureCertificate } from "./certificate.js";
+import {
+  provisionPackagedHostCertificate,
+  type HostCertificateProvisioner,
+} from "./certificate.js";
 import {
   PairingAuthority,
   PairingError,
@@ -226,6 +229,8 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
 
 export interface HostOptions {
   dataDir: string;
+  /** Development entry points may inject a lifecycle isolated from packaged identity. */
+  certificateProvisioner?: HostCertificateProvisioner;
   port?: number;
   adapters?: HostAdapters;
   hostname?: string;
@@ -302,11 +307,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const certificate = ensureCertificate(
-    options.dataDir,
-    hostname,
-    adapters.windows,
-  );
+  const certificate = await (
+    options.certificateProvisioner ?? provisionPackagedHostCertificate
+  )({ dataDir: options.dataDir, hostname, windows: adapters.windows });
   const warnings = configureFirewall(adapters.windows, firewallPort);
   const pairing = new PairingAuthority(adapters.clock, store);
 
