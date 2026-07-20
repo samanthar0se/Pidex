@@ -17,8 +17,10 @@ const result = setupDevelopmentCa({
   },
 });
 
-console.log([
-  `Development CA: ${result.status}`,
-  `SHA-256 fingerprint: ${result.fingerprint}`,
-  `Public certificate: ${result.certificatePath}`,
-].join("\n"));
+console.log(
+  [
+    `Development CA: ${result.status}`,
+    `SHA-256 fingerprint: ${result.fingerprint}`,
+    `Public certificate: ${result.certificatePath}`,
+  ].join("\n"),
+);
