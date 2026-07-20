@@ -14,8 +14,16 @@ const CA_DIRECTORY = "Development CA";
 const CERTIFICATE_FILE = "pidex-development-ca.pem";
 const KEY_FILE = "pidex-development-ca-key.pem";
 const STATE_FILE = "state.json";
+const STATE_VERSION = 1;
 const TEN_YEARS_DAYS = 3650;
 const RENEWAL_MARGIN_MS = 30 * 24 * 60 * 60 * 1000;
+
+interface DevelopmentCaPaths {
+  directory: string;
+  certificatePath: string;
+  keyPath: string;
+  statePath: string;
+}
 
 export interface DevelopmentCaSetupOptions {
   /** Test/isolation seam. Production callers should use LocalAppData. */
@@ -64,83 +72,167 @@ export function developmentCaDirectory(profileRoot?: string): string {
 export function setupDevelopmentCa(
   options: DevelopmentCaSetupOptions,
 ): DevelopmentCaSetupResult {
-  const directory = developmentCaDirectory(options.profileRoot);
-  const certificatePath = join(directory, CERTIFICATE_FILE);
-  const keyPath = join(directory, KEY_FILE);
-  const statePath = join(directory, STATE_FILE);
-  const anyState = existsSync(directory);
-  let status: DevelopmentCaSetupResult["status"] = "unchanged";
+  const paths = getDevelopmentCaPaths(options.profileRoot);
+  let status: DevelopmentCaSetupResult["status"];
 
-  if (!anyState) {
-    verifyOpenSsl(options.runOpenSsl);
-    mkdirSync(directory, { recursive: true });
-    const temporaryKey = join(directory, ".ca-key.pem");
-    const temporaryCertificate = join(directory, ".ca.pem");
-    try {
-      runOpenSsl(options.runOpenSsl, [
-        "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-        "-keyout", temporaryKey, "-out", temporaryCertificate,
-        "-days", String(TEN_YEARS_DAYS), "-sha256",
-        "-subj", "/CN=Pidex Development CA",
-        "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
-        "-addext", "keyUsage=critical,keyCertSign",
-      ]);
-      validatePair(temporaryCertificate, temporaryKey, options.now ?? new Date(), options.runOpenSsl);
-      renameSync(temporaryKey, keyPath);
-      renameSync(temporaryCertificate, certificatePath);
-      writeFileSync(statePath, JSON.stringify({ version: 1 }) + "\n", { flag: "wx" });
-      status = "created";
-    } catch (error) {
-      rmSync(directory, { recursive: true, force: true });
-      if (isMissingExecutable(error)) throw new DevelopmentCaPrerequisiteError({ cause: error });
-      throw error;
-    }
+  if (existsSync(paths.directory)) {
+    validateExistingDevelopmentCa(paths, options.now);
+    status = "unchanged";
   } else {
-    if (![certificatePath, keyPath, statePath].every(existsSync)) {
-      throw new DevelopmentCaUnusableError("profile state is missing or partial");
-    }
-    try {
-      const state = JSON.parse(readFileSync(statePath, "utf8")) as { version?: unknown };
-      if (state.version !== 1) throw new Error("unsupported state version");
-    } catch (error) {
-      throw new DevelopmentCaUnusableError("profile state is invalid", { cause: error });
-    }
-    validatePair(certificatePath, keyPath, options.now ?? new Date(), options.runOpenSsl);
+    createDevelopmentCa(paths, options);
+    status = "created";
   }
 
-  const certificate = readCertificate(certificatePath);
-  options.trustCurrentUserCertificate(certificatePath);
-  return { status, fingerprint: certificate.fingerprint256, certificatePath };
+  const certificate = readCertificate(paths.certificatePath);
+  options.trustCurrentUserCertificate(paths.certificatePath);
+  return {
+    status,
+    fingerprint: certificate.fingerprint256,
+    certificatePath: paths.certificatePath,
+  };
+}
+
+function getDevelopmentCaPaths(profileRoot?: string): DevelopmentCaPaths {
+  const directory = developmentCaDirectory(profileRoot);
+  return {
+    directory,
+    certificatePath: join(directory, CERTIFICATE_FILE),
+    keyPath: join(directory, KEY_FILE),
+    statePath: join(directory, STATE_FILE),
+  };
+}
+
+function createDevelopmentCa(
+  paths: DevelopmentCaPaths,
+  options: DevelopmentCaSetupOptions,
+): void {
+  verifyOpenSsl(options.runOpenSsl);
+  mkdirSync(paths.directory, { recursive: true });
+
+  const temporaryKey = join(paths.directory, ".ca-key.pem");
+  const temporaryCertificate = join(paths.directory, ".ca.pem");
+  try {
+    runOpenSsl(options.runOpenSsl, [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      temporaryKey,
+      "-out",
+      temporaryCertificate,
+      "-days",
+      String(TEN_YEARS_DAYS),
+      "-sha256",
+      "-subj",
+      "/CN=Pidex Development CA",
+      "-addext",
+      "basicConstraints=critical,CA:TRUE,pathlen:0",
+      "-addext",
+      "keyUsage=critical,keyCertSign",
+    ]);
+    validatePair(
+      temporaryCertificate,
+      temporaryKey,
+      options.now ?? new Date(),
+    );
+    renameSync(temporaryKey, paths.keyPath);
+    renameSync(temporaryCertificate, paths.certificatePath);
+    writeFileSync(
+      paths.statePath,
+      `${JSON.stringify({ version: STATE_VERSION })}\n`,
+      { flag: "wx" },
+    );
+  } catch (error) {
+    rmSync(paths.directory, { recursive: true, force: true });
+    if (isMissingExecutable(error)) {
+      throw new DevelopmentCaPrerequisiteError({ cause: error });
+    }
+    throw error;
+  }
+}
+
+function validateExistingDevelopmentCa(
+  paths: DevelopmentCaPaths,
+  now?: Date,
+): void {
+  const requiredPaths = [
+    paths.certificatePath,
+    paths.keyPath,
+    paths.statePath,
+  ];
+  if (!requiredPaths.every(existsSync)) {
+    throw new DevelopmentCaUnusableError("profile state is missing or partial");
+  }
+
+  try {
+    const state: unknown = JSON.parse(readFileSync(paths.statePath, "utf8"));
+    if (
+      typeof state !== "object" ||
+      state === null ||
+      !("version" in state) ||
+      state.version !== STATE_VERSION
+    ) {
+      throw new Error("unsupported state version");
+    }
+  } catch (error) {
+    throw new DevelopmentCaUnusableError("profile state is invalid", {
+      cause: error,
+    });
+  }
+
+  validatePair(paths.certificatePath, paths.keyPath, now ?? new Date());
 }
 
 function validatePair(
   certificatePath: string,
   keyPath: string,
   now: Date,
-  runner?: (arguments_: readonly string[]) => void,
 ): void {
   try {
     const certificate = readCertificate(certificatePath);
     const privateKey = createPrivateKey(readFileSync(keyPath));
     const notBefore = Date.parse(certificate.validFrom);
     const notAfter = Date.parse(certificate.validTo);
-    if (!certificate.checkIssued(certificate) || !certificate.verify(certificate.publicKey)) {
+    if (
+      !certificate.checkIssued(certificate) ||
+      !certificate.verify(certificate.publicKey)
+    ) {
       throw new Error("certificate is not self-issued");
     }
-    if (!certificate.checkPrivateKey(privateKey)) throw new Error("private key does not match");
-    if (now.getTime() < notBefore || now.getTime() + RENEWAL_MARGIN_MS >= notAfter) {
+    if (!certificate.checkPrivateKey(privateKey)) {
+      throw new Error("private key does not match");
+    }
+    if (
+      now.getTime() < notBefore ||
+      now.getTime() + RENEWAL_MARGIN_MS >= notAfter
+    ) {
       throw new Error("certificate is expired, not yet valid, or near expiry");
     }
     // Node exposes CA but not criticality/path length/key usage consistently.
-    const text = execFileSync("openssl", ["x509", "-in", certificatePath, "-noout", "-text"], { encoding: "utf8" });
-    if (!/X509v3 Basic Constraints: critical[\s\S]*?CA:TRUE, pathlen:0/.test(text) ||
-        !/X509v3 Key Usage: critical[\s\S]*?Certificate Sign/.test(text)) {
+    const text = execFileSync(
+      "openssl",
+      ["x509", "-in", certificatePath, "-noout", "-text"],
+      { encoding: "utf8" },
+    );
+    const hasRequiredBasicConstraints =
+      /X509v3 Basic Constraints: critical[\s\S]*?CA:TRUE, pathlen:0/.test(
+        text,
+      );
+    const hasRequiredKeyUsage =
+      /X509v3 Key Usage: critical[\s\S]*?Certificate Sign/.test(text);
+    if (!hasRequiredBasicConstraints || !hasRequiredKeyUsage) {
       throw new Error("required CA constraints are absent");
     }
   } catch (error) {
-    if (error instanceof DevelopmentCaPrerequisiteError) throw error;
-    if (isMissingExecutable(error)) throw new DevelopmentCaPrerequisiteError({ cause: error });
-    throw new DevelopmentCaUnusableError("the certificate/key pair is invalid", { cause: error });
+    if (isMissingExecutable(error)) {
+      throw new DevelopmentCaPrerequisiteError({ cause: error });
+    }
+    throw new DevelopmentCaUnusableError(
+      "the certificate/key pair is invalid",
+      { cause: error },
+    );
   }
 }
 
@@ -156,8 +248,14 @@ function verifyOpenSsl(runner?: (arguments_: readonly string[]) => void): void {
   }
 }
 
-function runOpenSsl(runner: ((arguments_: readonly string[]) => void) | undefined, arguments_: readonly string[]): void {
-  if (runner) return runner(arguments_);
+function runOpenSsl(
+  runner: ((arguments_: readonly string[]) => void) | undefined,
+  arguments_: readonly string[],
+): void {
+  if (runner) {
+    runner(arguments_);
+    return;
+  }
   execFileSync("openssl", arguments_, { stdio: "ignore" });
 }
 
