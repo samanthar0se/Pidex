@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { adaptersFor } from "../../adapters/src/index.js";
-import { provisionPackagedHostCertificate } from "./certificate.js";
+import { provisionDevelopmentCertificate } from "./development-ca.js";
 import { startHost } from "./host.js";
 
 const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
@@ -11,7 +11,11 @@ const host = await startHost({
   dataDir,
   port,
   adapters: adaptersFor(mode),
-  certificateProvisioner: provisionPackagedHostCertificate,
+  certificateProvisioner: request => provisionDevelopmentCertificate({
+    dataDir: request.dataDir,
+    hostname: request.hostname,
+    profileRoot: process.env.PIDEX_DEVELOPMENT_PROFILE_ROOT,
+  }),
 });
 
 console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
