@@ -1,6 +1,6 @@
 // This digest identifies one immutable, complete shell manifest. Release
 // tooling changes it whenever any member changes.
-const SHELL_GENERATION = "sha256-6dfeb471-pidex-shell-v1";
+const SHELL_GENERATION = "sha256-11bd17d2-pidex-shell-v1";
 const SHELL_CACHE = `pidex-shell-${SHELL_GENERATION}`;
 const SHELL = [
   "/",

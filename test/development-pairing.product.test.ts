@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { setupDevelopmentCa } from "../packages/host/src/development-ca.js";
 
 const HOST_STARTUP_TIMEOUT_MS = 10_000;
 
@@ -13,6 +14,11 @@ test(
   { timeout: HOST_STARTUP_TIMEOUT_MS + 5_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
+    const profileRoot = join(dataDir, "profile");
+    setupDevelopmentCa({
+      profileRoot,
+      trustCurrentUserCertificate() {},
+    });
     const hostProcess = spawn(
       process.execPath,
       ["--import", "tsx", "packages/host/src/development.ts"],
@@ -24,6 +30,7 @@ test(
           PIDEX_DATA_DIR: dataDir,
           PIDEX_HOSTNAME: "192.0.2.10",
           PIDEX_PORT: "0",
+          PIDEX_DEVELOPMENT_PROFILE_ROOT: profileRoot,
         },
         stdio: ["ignore", "pipe", "pipe"],
       },
@@ -71,7 +78,12 @@ test(
       const pairingUrl = stdout.match(
         /Pair this device: (https:\/\/[^/]+\/\?pair=[A-Z0-9_-]{20})/,
       )?.[1];
-      const certificatePath = join(dataDir, "tls", "pidex-ca.pem");
+      const certificatePath = join(
+        profileRoot,
+        "Pidex",
+        "Development CA",
+        "pidex-development-ca.pem",
+      );
 
       assert.ok(reportedOrigin);
       assert.ok(pairingUrl);

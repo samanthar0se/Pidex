@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -10,10 +10,13 @@ import {
   readdirSync,
   renameSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import {
+  publishImmutableFile,
+  writeCandidate,
+} from "../../durability/src/index.js";
 
 const completionEvidenceSchema = z.object({
   body: z.string(),
@@ -43,17 +46,15 @@ export class RunArtifactStore {
     text: string,
     checkpoint: string,
   ): void {
-    const directory = this.settlementDirectory();
-    mkdirSync(directory, { recursive: true });
-
     const body = JSON.stringify({ runId, text, checkpoint });
     const evidence = JSON.stringify({ body, digest: sha256(body) });
-    const stagedPath = join(directory, `${runId}.${randomUUID()}.stage`);
-
-    writeFileSync(stagedPath, evidence, { flag: "wx" });
-    flushPath(stagedPath);
-    renameSync(stagedPath, this.completionEvidencePath(runId));
-    flushPath(directory);
+    publishImmutableFile({
+      target: this.completionEvidencePath(runId),
+      materialize: writeCandidate(evidence),
+      validate: candidate => {
+        this.validateEvidenceFile(candidate, runId);
+      },
+    });
   }
 
   readCompletionEvidence(runId: string): CompletionEvidence | null {
@@ -61,19 +62,7 @@ export class RunArtifactStore {
     if (!existsSync(path)) {
       return null;
     }
-
-    const evidence = completionEvidenceSchema.parse(
-      JSON.parse(readFileSync(path, "utf8")),
-    );
-    if (sha256(evidence.body) !== evidence.digest) {
-      throw new Error("bad-evidence");
-    }
-
-    const body = completionEvidenceBodySchema.parse(JSON.parse(evidence.body));
-    if (body.runId !== runId) {
-      throw new Error("bad-evidence");
-    }
-    return body;
+    return this.validateEvidenceFile(path, runId);
   }
 
   removeCompletionEvidence(runId: string): void {
@@ -86,24 +75,14 @@ export class RunArtifactStore {
   /** Publishes verified bytes before returning their content-addressed ID. */
   publishBlob(bytes: Buffer): string {
     const digest = sha256(bytes);
-    const directory = this.blobDirectory();
-    const destination = join(directory, digest);
-    mkdirSync(directory, { recursive: true });
-
-    if (!existsSync(destination)) {
-      const stagedPath = `${destination}.${randomUUID()}.stage`;
-      writeFileSync(stagedPath, bytes, { flag: "wx" });
-      flushPath(stagedPath);
-
-      if (sha256(readFileSync(stagedPath)) !== digest) {
-        unlinkSync(stagedPath);
-        throw new Error("blob-verification-failed");
-      }
-
-      renameSync(stagedPath, destination);
-      flushPath(directory);
-    }
-
+    const destination = join(this.blobDirectory(), digest);
+    publishImmutableFile({
+      target: destination,
+      materialize: writeCandidate(bytes),
+      validate: candidate => {
+        validateBlobFile(candidate, digest);
+      },
+    });
     return `sha256:${digest}`;
   }
 
@@ -118,11 +97,7 @@ export class RunArtifactStore {
       return null;
     }
 
-    const bytes = readFileSync(path);
-    if (sha256(bytes) !== digest) {
-      throw new Error("blob-verification-failed");
-    }
-    return bytes;
+    return validateBlobFile(path, digest);
   }
 
   /**
@@ -190,6 +165,21 @@ export class RunArtifactStore {
     return join(this.#dataDir, "quarantine", "blobs");
   }
 
+  private validateEvidenceFile(path: string, runId: string): CompletionEvidence {
+    const evidence = completionEvidenceSchema.parse(
+      JSON.parse(readFileSync(path, "utf8")),
+    );
+    if (sha256(evidence.body) !== evidence.digest) {
+      throw new Error("bad-evidence");
+    }
+
+    const body = completionEvidenceBodySchema.parse(JSON.parse(evidence.body));
+    if (body.runId !== runId) {
+      throw new Error("bad-evidence");
+    }
+    return body;
+  }
+
   private settlementDirectory(): string {
     return join(this.#dataDir, "settlements");
   }
@@ -203,6 +193,14 @@ function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function validateBlobFile(path: string, expectedDigest: string): Buffer {
+  const bytes = readFileSync(path);
+  if (sha256(bytes) !== expectedDigest) {
+    throw new Error("blob-verification-failed");
+  }
+  return bytes;
+}
+
 function isBlobDigest(value: string): boolean {
   return BLOB_DIGEST_PATTERN.test(value);
 }
@@ -213,7 +211,12 @@ function isOrdinaryFile(path: string): boolean {
 }
 
 function flushPath(path: string): void {
-  const fileDescriptor = openSync(path, "r");
+  const isDirectory = lstatSync(path).isDirectory();
+  if (isDirectory && process.platform === "win32") {
+    return;
+  }
+
+  const fileDescriptor = openSync(path, isDirectory ? "r" : "r+");
   try {
     fsyncSync(fileDescriptor);
   } finally {

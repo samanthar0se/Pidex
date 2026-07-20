@@ -21,6 +21,7 @@ import {
   protocolMinor,
   protocolVersion,
   type ClientHello,
+  type DurabilityCoverage,
   type HostStatus,
   type RunRecord,
   type Interaction,
@@ -28,7 +29,15 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import { ensureCertificate } from "./certificate.js";
+import {
+  provisionPackagedHostCertificate,
+  type HostCertificateProvisioner,
+} from "./certificate.js";
+import {
+  type CoverageDiagnostic,
+  DurabilityCoverageMonitor,
+  type DurabilityRole,
+} from "./durability-coverage.js";
 import {
   PairingAuthority,
   PairingError,
@@ -39,31 +48,58 @@ import {
   WorkerLossError,
   WORKER_PROTOCOL_GENERATION,
 } from "./pi-worker.js";
+import { AuthorityGenerationStore } from "./authority-generation.js";
 import {
   AuthorityStore,
   type InitialCatalog,
   type RenameOutcome,
-  type SubmitCommand,
   type SubmitOutcome,
-  type SteerCommand,
-  type StopCommand,
 } from "./store.js";
 import {
   StorageProtection,
   type StorageProtectionStatus,
 } from "./storage-protection.js";
+import {
+  capabilityBasisKey,
+  isInteractionResolveMessage,
+  isRevokeMessage,
+  isRunQueueActionMessage,
+  isRunSteerMessage,
+  isRunStopMessage,
+  isRunSubmitMessage,
+  isScopeSetMessage,
+  isSessionAvailabilityMessage,
+  isSessionCreateMessage,
+  isSessionForkMessage,
+  isSessionRenameMessage,
+  isSessionSleepMessage,
+  isViewObserveMessage,
+  supportsCapabilityBasis,
+  type InteractionResolveMessage,
+  type RunQueueActionMessage,
+  type RunSteerMessage,
+  type RunStopMessage,
+  type RunSubmitMessage,
+  type ScopeSetMessage,
+  type SessionAvailabilityMessage,
+  type SessionCreateMessage,
+  type SessionForkMessage,
+  type SessionRenameMessage,
+  type SessionSleepMessage,
+  type ViewIdentity,
+  type ViewObserveMessage,
+} from "./control-messages.js";
 
 const DEFAULT_PORT = 7443;
 const DEFAULT_HOSTNAME = "localhost";
 const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
-const MAX_SESSION_NAME_LENGTH = 200;
-const MAX_RUN_PROMPT_LENGTH = 100_000;
 const MAX_INTERACTION_RESPONSE_BYTES = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
 const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
 const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
+const DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS = 2_000;
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -73,6 +109,7 @@ const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
+const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
@@ -83,106 +120,9 @@ interface PwaAsset {
   contentType: string;
 }
 
-interface DeviceRevokeMessage {
-  type: "device.revoke";
-  deviceId: string;
-}
-
-interface SessionCreateMessage {
-  type: "session.create";
-  commandId: string;
-  projectId?: string | null;
-  workspaceId?: string | null;
-}
-
-interface SessionForkMessage {
-  type: "session.fork";
-  commandId: string;
-  parentSessionId: string;
-  forkPointEntryId: string;
-  projectId?: string | null;
-  workspaceId?: string | null;
-}
-
-interface SessionRenameMessage {
-  type: "session.rename";
-  commandId: string;
-  sessionId: string;
-  name: string;
-  requiredCapability: "session.rename";
-  observedMetadataRevision: number;
-}
-
-interface SessionSleepMessage {
-  type: "session.sleep";
-  commandId: string;
-  sessionId: string;
-}
-interface SessionAvailabilityMessage {
-  type: "session.archive" | "session.restore";
-  commandId: string;
-  sessionId: string;
-  observedMetadataRevision: number;
-}
-
-interface CapabilityBasisRequirement {
-  id: string;
-  version: number;
-}
-
-interface ViewIdentity {
-  viewId: string;
-  draftRevision: number;
-}
-
-interface RunSubmitMessage extends SubmitCommand {
-  type: "run.submit" | "run.follow-up";
-  requiredCapabilityBasis?: CapabilityBasisRequirement[];
-  invokingView?: ViewIdentity;
-}
-
-interface ViewObserveMessage extends ViewIdentity {
-  type: "view.observe";
-  sessionId: string;
-}
-
-interface ScopeSetMessage {
-  type: "scope.set";
-  sessionIds: string[];
-  cursor?: string;
-  resourceRevisions?: Record<string, number>;
-  protocolVersion: string;
-}
-
-interface RunQueueActionMessage {
-  type: "run.release" | "run.cancel";
-  commandId: string;
-  runId: string;
-}
-
-interface RunSteerMessage extends SteerCommand {
-  type: "run.steer";
-  requiredCapability: "run.steer";
-}
-
-interface RunStopMessage extends StopCommand {
-  type: "run.stop";
-  requiredCapability: "run.stop";
-}
-
 interface RunPresentationContext {
   client: WebSocket;
   invokingView?: ViewIdentity;
-}
-
-interface InteractionResolveMessage {
-  type: "interaction.resolve";
-  commandId: string;
-  interactionId: string;
-  workerGeneration: number;
-  observedRevision: number;
-  dismiss?: boolean;
-  value?: unknown;
 }
 
 type ScopeResetReason = Extract<
@@ -238,6 +178,8 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
 
 export interface HostOptions {
   dataDir: string;
+  /** Overrides packaged certificate provisioning, for example during development. */
+  certificateProvisioner?: HostCertificateProvisioner;
   port?: number;
   adapters?: HostAdapters;
   hostname?: string;
@@ -259,6 +201,16 @@ export interface HostOptions {
   admissionHeadroomBytes?: number;
   /** Deterministic capacity seam; production uses the data volume. */
   availableStorageBytes?: () => number;
+  /** Directory containing the active installation release. */
+  installationDir?: string;
+  /** Directory containing Pi's durable checkpoints. */
+  piCheckpointDir?: string;
+  /** Time allowed to classify each durability storage role. */
+  durabilityAssessmentTimeoutMs?: number;
+  /** Time allowed for each operational coverage refresh. */
+  coverageRefreshTimeoutMs?: number;
+  /** Receives privacy-safe state transition diagnostics. */
+  onDiagnostic?: (event: CoverageDiagnostic) => void;
 }
 
 export interface StartedHost {
@@ -271,6 +223,13 @@ export interface StartedHost {
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
   storageProtection(): StorageProtectionStatus;
+  doctor(): Promise<{
+    check: "storage";
+    outcome: "healthy" | "degraded";
+    coverage: DurabilityCoverage;
+  }>;
+  exportSupport(): Promise<{ durability: DurabilityCoverage }>;
+  updateStorageRoots(roots: Partial<Record<DurabilityRole, string>>): void;
   close(): Promise<void>;
 }
 
@@ -287,11 +246,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       constraints: capability.constraints,
     }));
   const hostCapabilities = [...protocolCapabilities, ...runtimeCapabilities];
-  const store = new AuthorityStore(
-    join(options.dataDir, "authority.sqlite"),
+  const store = new AuthorityGenerationStore(
+    options.dataDir,
+    RELEASE_ID.replace("pidex@", ""),
     adapters,
-    options.initialCatalog,
-  );
+  ).openBridge(options.initialCatalog);
   const availableStorageBytes = options.availableStorageBytes ?? (() => {
     const volume = statfsSync(options.dataDir);
     return Number(volume.bavail) * Number(volume.bsize);
@@ -314,13 +273,61 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const certificate = ensureCertificate(
-    options.dataDir,
+  const provisionCertificate =
+    options.certificateProvisioner ?? provisionPackagedHostCertificate;
+  const certificate = await provisionCertificate({
+    dataDir: options.dataDir,
     hostname,
+    windows: adapters.windows,
+  });
+  const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
+  const coverage = new DurabilityCoverageMonitor(
     adapters.windows,
+    {
+      "host-data": options.dataDir,
+      "installation-release": options.installationDir ?? options.dataDir,
+      "pi-checkpoint": options.piCheckpointDir ?? options.dataDir,
+    },
+    () => adapters.clock.now(),
+    options.coverageRefreshTimeoutMs ??
+      options.durabilityAssessmentTimeoutMs ??
+      DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS,
+    options.onDiagnostic ?? (() => {}),
   );
-  const warnings = configureFirewall(adapters.windows, firewallPort);
+  const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => {
+    void refreshCoverage();
+  });
   const pairing = new PairingAuthority(adapters.clock, store);
+
+  function status(): HostStatus {
+    const durability = coverage.current();
+    return {
+      ...store.status(RELEASE_ID, firewallWarnings),
+      warnings: [
+        ...firewallWarnings,
+        ...createDurabilityWarnings(durability),
+      ],
+      durability,
+    };
+  }
+
+  async function refreshCoverage(): Promise<DurabilityCoverage> {
+    const refreshed = await coverage.refresh();
+    for (const client of admittedClients) {
+      if (
+        admittedCapabilityBasisByClient
+          .get(client)
+          ?.has(DURABILITY_COVERAGE_CAPABILITY)
+      ) {
+        sendServerMessage(client, {
+          type: "durability.coverage-changed",
+          coverage: refreshed,
+          warnings: status().warnings,
+        });
+      }
+    }
+    return refreshed;
+  }
 
   const server = createServer(
     {
@@ -417,7 +424,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         JSON.stringify({
           type: "delivery.resynchronize",
           reason: "outbound-queue-overflow",
-          lastCursor: store.status(RELEASE_ID, warnings).synchronization.cursor,
+          lastCursor: status().synchronization.cursor,
         } satisfies ServerMessage),
       );
       client.close(4009, "resynchronize:outbound-queue-overflow");
@@ -540,16 +547,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     });
     sendServerMessage(webSocket, {
       type: "host.hello",
-      hostId: store.status(RELEASE_ID, warnings).hostId,
+      hostId: status().hostId,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
   });
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
-    const status = store.status(RELEASE_ID, warnings);
-    if (hello.expectedHostId !== status.hostId) {
-      sendProtocolUpdateRequired(client, status.hostId, "host-mismatch");
+    const currentStatus = status();
+    if (hello.expectedHostId !== currentStatus.hostId) {
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "host-mismatch");
       return;
     }
 
@@ -557,7 +564,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       .filter(protocol => protocol.major === protocolMajor)
       .sort((a, b) => b.minor - a.minor)[0];
     if (!offered) {
-      sendProtocolUpdateRequired(client, status.hostId, "no-common-major");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "no-common-major");
       return;
     }
 
@@ -574,7 +581,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         !admittedCapabilities.some(capability => capability.id === requiredId),
     );
     if (missingRequiredCapability) {
-      sendProtocolUpdateRequired(client, status.hostId, "missing-capability");
+      sendProtocolUpdateRequired(client, currentStatus.hostId, "missing-capability");
       return;
     }
 
@@ -585,7 +592,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     );
     sendServerMessage(client, {
       type: "protocol.admitted",
-      hostId: status.hostId,
+      hostId: currentStatus.hostId,
       protocol: {
         major: protocolMajor,
         minor: Math.min(protocolMinor, offered.minor),
@@ -595,7 +602,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sendServerMessage(client, {
       type: "host.snapshot",
       protocolVersion,
-      status,
+      status: currentStatus,
       ...store.projection(),
     });
   }
@@ -615,7 +622,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
     scopedSessionIdsByClient.set(client, new Set(request.sessionIds));
     const projection = store.projection();
-    const status = store.status(RELEASE_ID, warnings);
+    const currentStatus = status();
     const allSessions = [
       ...projection.sessions,
       ...projection.archivedSessions,
@@ -647,7 +654,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       sendServerMessage(client, {
         type: "scope.current",
         scope: { kind: "host" },
-        cursor: status.synchronization.cursor,
+        cursor: currentStatus.synchronization.cursor,
       });
     } else {
       let reason: ScopeResetReason;
@@ -666,7 +673,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         reason,
         barrier: {
           scope: { kind: "host" },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
             allSessions.map(session => [
               session.sessionId,
@@ -698,7 +705,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(client, {
           type: "scope.current",
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
         });
         continue;
       }
@@ -710,7 +717,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             : "revision-mismatch",
         barrier: {
           scope: { kind: "session", sessionId },
-          cursor: status.synchronization.cursor,
+          cursor: currentStatus.synchronization.cursor,
           resourceRevisions: {
             metadata: session.metadataRevision,
             timeline: session.timelineRevision,
@@ -744,6 +751,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       : (options.port ?? DEFAULT_PORT);
 
   const canonicalOrigin = `https://${hostname}:${port}`;
+  void refreshCoverage();
   const fingerprint = createHash("sha256")
     .update(certificate.ca)
     .digest("hex");
@@ -1894,12 +1902,23 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       admitDiscretionaryWrite();
       return pairing.create(canonicalOrigin);
     },
-    status: () => store.status(RELEASE_ID, warnings),
+    status,
     storageProtection: () => storageProtection.status(),
+    doctor: async () => {
+      const refreshed = await refreshCoverage();
+      return {
+        check: "storage",
+        outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
+        coverage: refreshed,
+      };
+    },
+    exportSupport: async () => ({ durability: await refreshCoverage() }),
+    updateStorageRoots: roots => coverage.setRoots(roots),
     revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
+      stopVolumeObservation();
       stopAdvertisement();
       for (const timer of interactionDeadlineTimers.values()) {
         clearTimeout(timer);
@@ -1929,39 +1948,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   };
 }
 
-function isScopeSetMessage(value: unknown): value is ScopeSetMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  const hasValidSessionIds =
-    Array.isArray(item.sessionIds) &&
-    item.sessionIds.every(sessionId => typeof sessionId === "string");
-  const hasValidCursor =
-    item.cursor === undefined || typeof item.cursor === "string";
-  const hasValidResourceRevisions =
-    item.resourceRevisions === undefined ||
-    isNumericRecord(item.resourceRevisions);
-
-  return (
-    item.type === "scope.set" &&
-    typeof item.protocolVersion === "string" &&
-    hasValidSessionIds &&
-    hasValidCursor &&
-    hasValidResourceRevisions
-  );
-}
-
-function isNumericRecord(value: unknown): value is Record<string, number> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    Object.values(value).every(item => typeof item === "number")
-  );
-}
-
 function findObservedTimelineRevision(
   request: ScopeSetMessage,
   sessionId: string,
@@ -1989,233 +1975,6 @@ function replaceableChangeKey(message: ServerMessage): string | undefined {
   }
 
   return `session.renamed:${change.session.sessionId}`;
-}
-
-function isSessionCreateMessage(value: unknown): value is SessionCreateMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const hasValidProject =
-    !("projectId" in value) ||
-    value.projectId === undefined ||
-    value.projectId === null ||
-    typeof value.projectId === "string";
-  const hasValidWorkspace =
-    !("workspaceId" in value) ||
-    value.workspaceId === undefined ||
-    value.workspaceId === null ||
-    typeof value.workspaceId === "string";
-
-  return (
-    "type" in value &&
-    value.type === "session.create" &&
-    "commandId" in value &&
-    typeof value.commandId === "string" &&
-    hasValidProject &&
-    hasValidWorkspace
-  );
-}
-
-function isSessionForkMessage(value: unknown): value is SessionForkMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  const hasValidProject =
-    item.projectId === undefined ||
-    item.projectId === null ||
-    typeof item.projectId === "string";
-  const hasValidWorkspace =
-    item.workspaceId === undefined ||
-    item.workspaceId === null ||
-    typeof item.workspaceId === "string";
-
-  return (
-    item.type === "session.fork" &&
-    typeof item.commandId === "string" &&
-    typeof item.parentSessionId === "string" &&
-    typeof item.forkPointEntryId === "string" &&
-    hasValidProject &&
-    hasValidWorkspace
-  );
-}
-
-function isSessionRenameMessage(value: unknown): value is SessionRenameMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  return (
-    "type" in value &&
-    value.type === "session.rename" &&
-    "commandId" in value &&
-    typeof value.commandId === "string" &&
-    "sessionId" in value &&
-    typeof value.sessionId === "string" &&
-    "name" in value &&
-    typeof value.name === "string" &&
-    value.name.trim().length > 0 &&
-    value.name.length <= MAX_SESSION_NAME_LENGTH &&
-    "requiredCapability" in value &&
-    value.requiredCapability === "session.rename" &&
-    "observedMetadataRevision" in value &&
-    typeof value.observedMetadataRevision === "number" &&
-    Number.isSafeInteger(value.observedMetadataRevision) &&
-    value.observedMetadataRevision > 0
-  );
-}
-
-function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    (item.type === "run.submit" || item.type === "run.follow-up") &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    typeof item.prompt === "string" &&
-    item.prompt.trim().length > 0 &&
-    item.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
-    item.requiredCapability === item.type &&
-    (item.invokingView === undefined || isInvokingView(item.invokingView)) &&
-    (item.requiredCapabilityBasis === undefined ||
-      (Array.isArray(item.requiredCapabilityBasis) &&
-        item.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
-  );
-}
-
-function isInvokingView(value: unknown): value is ViewIdentity {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.viewId === "string" &&
-    item.viewId.length > 0 &&
-    item.viewId.length <= 200 &&
-    Number.isSafeInteger(item.draftRevision) &&
-    Number(item.draftRevision) >= 0
-  );
-}
-
-function isViewObserveMessage(value: unknown): value is ViewObserveMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "view.observe" &&
-    typeof item.sessionId === "string" &&
-    isInvokingView(item)
-  );
-}
-
-function isSessionSleepMessage(value: unknown): value is SessionSleepMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "session.sleep" &&
-    typeof item.commandId === "string" &&
-    item.commandId.length > 0 &&
-    typeof item.sessionId === "string"
-  );
-}
-
-function isSessionAvailabilityMessage(
-  value: unknown,
-): value is SessionAvailabilityMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    (item.type === "session.archive" || item.type === "session.restore") &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    Number.isSafeInteger(item.observedMetadataRevision) &&
-    Number(item.observedMetadataRevision) > 0
-  );
-}
-
-function isRunQueueActionMessage(value: unknown): value is RunQueueActionMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    (item.type === "run.release" || item.type === "run.cancel") &&
-    typeof item.commandId === "string" &&
-    typeof item.runId === "string"
-  );
-}
-
-function isRunSteerMessage(value: unknown): value is RunSteerMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "run.steer" &&
-    item.requiredCapability === "run.steer" &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    typeof item.runId === "string" &&
-    typeof item.workerGeneration === "string" &&
-    Number.isSafeInteger(item.observedTimelineRevision) &&
-    Number(item.observedTimelineRevision) > 0 &&
-    typeof item.text === "string" &&
-    item.text.trim().length > 0 &&
-    item.text.length <= MAX_RUN_PROMPT_LENGTH
-  );
-}
-
-function isRunStopMessage(value: unknown): value is RunStopMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "run.stop" &&
-    item.requiredCapability === "run.stop" &&
-    typeof item.commandId === "string" &&
-    typeof item.sessionId === "string" &&
-    typeof item.runId === "string" &&
-    typeof item.workerGeneration === "string" &&
-    item.observedState === "executing" &&
-    Number.isSafeInteger(item.observedTimelineRevision) &&
-    Number(item.observedTimelineRevision) > 0
-  );
-}
-
-function isInteractionResolveMessage(
-  value: unknown,
-): value is InteractionResolveMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return (
-    item.type === "interaction.resolve" &&
-    typeof item.commandId === "string" &&
-    typeof item.interactionId === "string" &&
-    Number.isSafeInteger(item.workerGeneration) &&
-    Number.isSafeInteger(item.observedRevision) &&
-    (item.dismiss === undefined || typeof item.dismiss === "boolean")
-  );
 }
 
 function isValidInteractionValue(
@@ -2249,30 +2008,6 @@ function interactionPayload(
     payload.defaultValue = request.defaultValue;
   }
   return payload;
-}
-
-function isCapabilityBasisRequirement(
-  value: unknown,
-): value is CapabilityBasisRequirement {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const item = value as Record<string, unknown>;
-  return typeof item.id === "string" && Number.isSafeInteger(item.version);
-}
-
-function capabilityBasisKey(requirement: CapabilityBasisRequirement): string {
-  return `${requirement.id}@${requirement.version}`;
-}
-
-function supportsCapabilityBasis(
-  admittedBasis: ReadonlySet<string> | undefined,
-  requiredBasis: readonly CapabilityBasisRequirement[] = [],
-): boolean {
-  return requiredBasis.every(
-    requirement => admittedBasis?.has(capabilityBasisKey(requirement)) === true,
-  );
 }
 
 function runOutcomeMessage(
@@ -2444,19 +2179,6 @@ function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
   return undefined;
 }
 
-function isRevokeMessage(value: unknown): value is DeviceRevokeMessage {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  return (
-    "type" in value &&
-    value.type === "device.revoke" &&
-    "deviceId" in value &&
-    typeof value.deviceId === "string"
-  );
-}
-
 function configureFirewall(
   windows: WindowsPlatformAdapter,
   port: number,
@@ -2484,6 +2206,26 @@ function configureFirewall(
   console.error(JSON.stringify(warning));
 
   return [warning];
+}
+
+function createDurabilityWarnings(
+  coverage: DurabilityCoverage,
+): HostStatus["warnings"] {
+  const warnings: HostStatus["warnings"] = [];
+  for (const role of coverage.roles) {
+    if (role.state === "covered") {
+      continue;
+    }
+    warnings.push({
+      severity: "medium",
+      code: "durability-coverage-degraded",
+      role: role.role,
+      state: role.state,
+      reason: role.reason,
+      detail: `Durability coverage for ${role.role} is ${role.state}.`,
+    });
+  }
+  return warnings;
 }
 
 function hasValidAuthorization(

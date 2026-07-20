@@ -140,6 +140,8 @@ export interface WindowsPlatformAdapter {
   unprotectForCurrentUser(envelope: Buffer): Buffer;
   restrictToCurrentUser(path: string): void;
   trustCurrentUserCertificate(path: string): void;
+  /** Removes only the Current User Root certificate with this SHA-256 fingerprint. */
+  removeCurrentUserCertificate(fingerprint: string): void;
   registerLogonTask(command: string, args: readonly string[]): void;
   privateInterfaces(): readonly PrivateInterface[];
   advertisePidex(advertisement: PidexAdvertisement): () => void;
@@ -152,6 +154,28 @@ export interface WindowsPlatformAdapter {
    * native implementation must not return a handle for an uncontained worker.
    */
   createContainedSessionWorker(sessionId: string): SessionJob;
+  /** Returns only coarse volume facts; callers must not publish the resolved path or device. */
+  classifyStorage(path: string): Promise<StorageVolumeFacts>;
+  /** Classifies a root for refreshed recovery-oriented coverage reporting. */
+  classifyStorageRoot(path: string): Promise<StorageClassification>;
+  /** Reports volume topology changes; the returned function removes the observer. */
+  observeVolumeChanges(listener: () => void): () => void;
+}
+
+export interface StorageVolumeFacts {
+  fileSystem?: string;
+  driveType?:
+    | "fixed"
+    | "removable"
+    | "remote"
+    | "optical"
+    | "ramdisk"
+    | "unknown";
+}
+
+export interface StorageClassification {
+  fileSystem: string;
+  driveType: "fixed" | "remote" | "removable" | "unknown";
 }
 
 export interface SessionJob {
@@ -329,6 +353,7 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       envelope.subarray(DETERMINISTIC_DPAPI_HEADER.length),
     restrictToCurrentUser() {},
     trustCurrentUserCertificate() {},
+    removeCurrentUserCertificate() {},
     registerLogonTask() {},
     privateInterfaces: () => [
       {
@@ -346,6 +371,12 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       terminate() {},
       close() {},
     }),
+    classifyStorage: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    classifyStorageRoot: async () => ({
+      fileSystem: "NTFS",
+      driveType: "fixed",
+    }),
+    observeVolumeChanges: () => () => {},
   };
 }
 
@@ -368,6 +399,9 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new Error("Pidex Windows native ACL bridge is not bundled");
     },
     trustCurrentUserCertificate() {
+      throw new Error("Pidex Windows certificate bridge is not bundled");
+    },
+    removeCurrentUserCertificate() {
       throw new Error("Pidex Windows certificate bridge is not bundled");
     },
     registerLogonTask() {
@@ -402,6 +436,17 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new SessionContainmentError(
         "Pidex Windows Session Job bridge is not bundled",
       );
+    },
+    async classifyStorage() {
+      throw new Error("Pidex Windows volume classification bridge is not bundled");
+    },
+    async classifyStorageRoot() {
+      throw new Error(
+        "Pidex Windows storage classification bridge is not bundled",
+      );
+    },
+    observeVolumeChanges() {
+      return () => {};
     },
   };
 }

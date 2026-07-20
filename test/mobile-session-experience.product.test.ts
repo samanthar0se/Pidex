@@ -38,4 +38,22 @@ test("supported mobile browsers and standalone PWAs expose the routable Session 
     lifecycleHandlers,
     /session\.(archive|restore)|run\.(submit|stop)/,
   );
+
+  const visibilityStart = application.indexOf(
+    'addEventListener("visibilitychange"',
+  );
+  const visibilityEnd = application.indexOf(
+    'addEventListener("pageshow"',
+    visibilityStart,
+  );
+  assert.notEqual(visibilityStart, -1);
+  assert.notEqual(visibilityEnd, -1);
+
+  const visibilityHandler = application.slice(
+    visibilityStart,
+    visibilityEnd,
+  );
+  assert.match(visibilityHandler, /sendScopeSet\(selectedSessionId\)/);
+  assert.match(visibilityHandler, /authenticateStoredDevice\(\)/);
+  assert.match(visibilityHandler, /closeControlSocket\(\)/);
 });

@@ -46,21 +46,13 @@ Remove the development rule when it is no longer needed:
 Remove-NetFirewallRule -DisplayName "Pidex 7443 (Private LAN)"
 ```
 
-## Trust the development CA
+## Trust the shared Development CA once
 
-Opening the port only resolves TCP timeouts. Copy the public
-`.pidex-data-dev/tls/pidex-ca.pem` file to the other Windows machine, verify
-that it came from the Host, and import it for that user. For example, from
-PowerShell on the other machine, transfer it over SSH with the source and
-destination on the same command line:
-
-```powershell
-$hostUser = "User"
-$hostAddress = "192.168.1.227"
-scp "${hostUser}@${hostAddress}:C:/git/Pidex/.pidex-data-dev/tls/pidex-ca.pem" "$HOME\Downloads\pidex-ca.pem"
-```
-
-Confirm that the transfer succeeded before importing the certificate:
+First run `npm run dev:ca:setup` on the Host workstation. Opening the firewall
+only resolves TCP timeouts; each LAN client must import the **public Development
+CA certificate** from the export location printed by setup. Verify its SHA-256
+fingerprint with the Host owner over a trusted channel, transfer that one public
+file, and import it for the LAN client's user:
 
 ```powershell
 Test-Path "$HOME\Downloads\pidex-ca.pem"
@@ -68,10 +60,22 @@ certutil -user -addstore Root "$HOME\Downloads\pidex-ca.pem"
 ```
 
 Restart the browser, open the printed `https://<LAN-IP>:7443/?pair=...` URL, and
-select **Pair Device**. Never transfer `pidex-ca-key.dpapi`, `host-key.dpapi`,
-the SQLite files, or the rest of `.pidex-data-dev/`. Remove the development CA
-from the other machine when it is no longer needed; do not replace trust with
-a disabled certificate check.
+select **Pair Device**. Never copy or transfer a Development CA private key,
+checkout data, a checkout-local leaf key, or a certificate from an obsolete
+checkout path. Do not transfer the rest of `.pidex-data-dev/` and do not disable
+certificate checks.
+
+Changing `PIDEX_HOSTNAME`, replacing or renewing a leaf, and deleting a checkout
+do not change the profile Development CA fingerprint and do not require trust
+again on the workstation or LAN clients. The next checkout startup issues its
+leaf from the same shared CA.
+
+`npm run dev:ca:reset` is the exceptional clean break. It affects every
+checkout and every previously trusted LAN client, makes a best-effort attempt
+to remove the exact Current User trusted root, and may request manual trust-store
+cleanup. Reset does not create a CA. Run `npm run dev:ca:setup` explicitly next,
+verify that its fingerprint changed, distribute the new public certificate,
+and replace the old trust entry on every client.
 
 Runtime data under `.pidex-data-dev/` contains Host-local state and certificate
 material and must not be committed.

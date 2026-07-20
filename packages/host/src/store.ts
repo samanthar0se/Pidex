@@ -3,7 +3,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import type { HostAdapters, PiTimelineEvent } from "../../adapters/src/index.js";
+import type {
+  HostAdapters,
+  PiTimelineEvent,
+  StorageFaultAdapter,
+} from "../../adapters/src/index.js";
 import {
   acceptedRunSchema,
   completedRunSchema,
@@ -29,147 +33,14 @@ import {
   type TimelineWindow,
   type WorkspaceSummary,
 } from "../../protocol/src/status.js";
+import { pendingDurabilityCoverage } from "./durability.js";
+import { initializeAuthoritySchema } from "./authority-schema.js";
 import { RunArtifactStore } from "./run-artifacts.js";
 
 export type { RunRecord, TimelineEntry } from "../../protocol/src/status.js";
 
 const BLOB_OBJECT_ID_PREFIX = "sha256:";
 const SYNCHRONIZATION_CHANGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
-
-const CREATE_AUTHORITY_SCHEMA = `
-  PRAGMA journal_mode=WAL;
-  PRAGMA synchronous=FULL;
-  CREATE TABLE IF NOT EXISTS host (
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-    host_id TEXT NOT NULL,
-    epoch TEXT NOT NULL,
-    sequence INTEGER NOT NULL,
-    readiness TEXT NOT NULL,
-    committed_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS devices (
-    device_id TEXT PRIMARY KEY,
-    public_key_jwk TEXT NOT NULL,
-    paired_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS revoked_devices (
-    device_id TEXT PRIMARY KEY,
-    paired_at INTEGER NOT NULL,
-    revoked_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS projects (
-    project_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS workspaces (
-    workspace_id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(project_id),
-    name TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    session_id TEXT PRIMARY KEY,
-    project_id TEXT REFERENCES projects(project_id),
-    workspace_id TEXT REFERENCES workspaces(workspace_id),
-    name TEXT NOT NULL DEFAULT 'Untitled Session',
-    retention TEXT NOT NULL CHECK(retention='available'),
-    availability TEXT NOT NULL DEFAULT 'available' CHECK(availability IN ('available','archived')),
-    residency TEXT NOT NULL CHECK(residency IN ('sleeping','resident')),
-    metadata_revision INTEGER NOT NULL,
-    timeline_revision INTEGER NOT NULL,
-    parent_session_id TEXT REFERENCES sessions(session_id),
-    fork_point_entry_id TEXT,
-    created_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS command_receipts (
-    device_id TEXT NOT NULL,
-    command_id TEXT NOT NULL,
-    envelope_digest TEXT NOT NULL,
-    outcome_json TEXT NOT NULL,
-    commit_cursor TEXT NOT NULL,
-    committed_at INTEGER NOT NULL,
-    PRIMARY KEY(device_id, command_id)
-  );
-  CREATE TABLE IF NOT EXISTS synchronization_changes (
-    sequence INTEGER PRIMARY KEY,
-    payload_json TEXT NOT NULL,
-    committed_at INTEGER
-  );
-  CREATE TABLE IF NOT EXISTS storage_orphans (
-    object_id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL CHECK(kind IN ('blob')),
-    first_proved_at INTEGER NOT NULL,
-    proof_generation TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('quarantined'))
-  );
-  CREATE TABLE IF NOT EXISTS retained_object_references (
-    owner_kind TEXT NOT NULL,
-    owner_id TEXT NOT NULL,
-    object_id TEXT NOT NULL,
-    protected INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY(owner_kind, owner_id, object_id)
-  );
-  CREATE TABLE IF NOT EXISTS runs (
-    run_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    session_order INTEGER NOT NULL,
-    prompt TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(
-      state IN (
-        'queued', 'executing', 'cancelling', 'held', 'completed',
-        'failed', 'cancelled', 'interrupted'
-      )
-    ),
-    created_at INTEGER NOT NULL,
-    completed_at INTEGER,
-    UNIQUE(session_id, session_order)
-  );
-  CREATE TABLE IF NOT EXISTS timeline_entries (
-    entry_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    entry_order INTEGER NOT NULL,
-    kind TEXT NOT NULL,
-    text TEXT NOT NULL,
-    checkpoint TEXT,
-    blob_id TEXT,
-    created_at INTEGER NOT NULL,
-    revision INTEGER NOT NULL DEFAULT 1,
-    finalized INTEGER NOT NULL DEFAULT 1,
-    tool_call_id TEXT,
-    UNIQUE(session_id, entry_order)
-  );
-  CREATE TABLE IF NOT EXISTS interactions (
-    interaction_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    run_id TEXT REFERENCES runs(run_id),
-    worker_generation INTEGER NOT NULL,
-    correlation_id TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK(kind IN ('select','confirm','input','editor')),
-    payload_json TEXT NOT NULL,
-    provenance TEXT,
-    state TEXT NOT NULL CHECK(state IN ('open','resolving','responded','dismissed','expired','withdrawn')),
-    revision INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,
-    deadline_at INTEGER,
-    terminal_cause TEXT,
-    responded_at INTEGER,
-    responding_device_label TEXT,
-    application_proven INTEGER,
-    UNIQUE(session_id, worker_generation, correlation_id)
-  );
-  CREATE TABLE IF NOT EXISTS steering (
-    command_id TEXT NOT NULL,
-    device_id TEXT NOT NULL,
-    run_id TEXT NOT NULL REFERENCES runs(run_id),
-    worker_generation TEXT NOT NULL,
-    text TEXT NOT NULL,
-    entry_id TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('accepted','applied','unapplied')),
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(device_id, command_id)
-  );
-`;
-
 export interface SubmitCommand {
   commandId: string;
   sessionId: string;
@@ -411,6 +282,16 @@ export interface InitialCatalog {
   workspaces?: WorkspaceSummary[];
 }
 
+export interface AuthorityGenerationMetadata {
+  generationId: string;
+  predecessorId: string | null;
+  activationIndex: number;
+  schemaVersion: number;
+  formatVersion: number;
+  releaseMin: string;
+  releaseMax: string;
+}
+
 type CursorBasis =
   | { compatible: true; sequence: number }
   | {
@@ -451,96 +332,15 @@ export interface MaintenanceResult {
 export class AuthorityStore {
   readonly #db: DatabaseSync;
   readonly #runArtifacts: RunArtifactStore;
+  readonly #storage: StorageFaultAdapter;
 
   constructor(path: string, adapters: HostAdapters, catalog: InitialCatalog = {}) {
     const dataDir = dirname(path);
     mkdirSync(dataDir, { recursive: true });
     this.#runArtifacts = new RunArtifactStore(dataDir);
+    this.#storage = adapters.storage;
     this.#db = new DatabaseSync(path);
-    this.#db.exec(CREATE_AUTHORITY_SCHEMA);
-    const sessionColumns = this.#db.prepare("PRAGMA table_info(sessions)").all();
-    if (!sessionColumns.some(column => column.name === "name")) {
-      this.#db.exec(
-        "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",
-      );
-    }
-    if (!sessionColumns.some(column => column.name === "availability")) {
-      this.#db.exec(
-        "ALTER TABLE sessions ADD COLUMN availability TEXT NOT NULL DEFAULT 'available'",
-      );
-    }
-    if (!sessionColumns.some(column => column.name === "parent_session_id")) {
-      this.#db.exec(
-        "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(session_id)",
-      );
-    }
-    if (!sessionColumns.some(column => column.name === "fork_point_entry_id")) {
-      this.#db.exec(
-        "ALTER TABLE sessions ADD COLUMN fork_point_entry_id TEXT",
-      );
-    }
-    const timelineColumns = this.#db
-      .prepare("PRAGMA table_info(timeline_entries)")
-      .all();
-    if (!timelineColumns.some(column => column.name === "blob_id")) {
-      this.#db.exec("ALTER TABLE timeline_entries ADD COLUMN blob_id TEXT");
-    }
-    if (!timelineColumns.some(column => column.name === "revision")) {
-      this.#db.exec(
-        "ALTER TABLE timeline_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
-      );
-    }
-    if (!timelineColumns.some(column => column.name === "finalized")) {
-      this.#db.exec(
-        "ALTER TABLE timeline_entries ADD COLUMN finalized INTEGER NOT NULL DEFAULT 1",
-      );
-    }
-    if (!timelineColumns.some(column => column.name === "tool_call_id")) {
-      this.#db.exec(
-        "ALTER TABLE timeline_entries ADD COLUMN tool_call_id TEXT",
-      );
-    }
-    const changeColumns = this.#db
-      .prepare("PRAGMA table_info(synchronization_changes)")
-      .all();
-    if (!changeColumns.some(column => column.name === "committed_at")) {
-      this.#db.exec(
-        "ALTER TABLE synchronization_changes ADD COLUMN committed_at INTEGER",
-      );
-    }
-    const runsTable = this.#db
-      .prepare(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'",
-      )
-      .get();
-    const runSql = String(runsTable?.sql ?? "");
-    if (runSql.includes("'accepted'")) {
-      this.#db.exec(`
-        ALTER TABLE runs RENAME TO runs_legacy;
-        CREATE TABLE runs (
-          run_id TEXT PRIMARY KEY,
-          session_id TEXT NOT NULL REFERENCES sessions(session_id),
-          session_order INTEGER NOT NULL,
-          prompt TEXT NOT NULL,
-          state TEXT NOT NULL CHECK(
-            state IN (
-              'queued', 'executing', 'cancelling', 'held', 'completed',
-              'failed', 'cancelled', 'interrupted'
-            )
-          ),
-          created_at INTEGER NOT NULL,
-          completed_at INTEGER,
-          UNIQUE(session_id, session_order)
-        );
-        INSERT INTO runs
-          SELECT run_id, session_id, session_order, prompt,
-                 CASE state WHEN 'accepted' THEN 'executing' ELSE state END,
-                 created_at, completed_at
-          FROM runs_legacy;
-        DROP TABLE runs_legacy;
-      `);
-    }
-
+    initializeAuthoritySchema(this.#db);
     const existingHost = this.#db
       .prepare("SELECT 1 FROM host WHERE singleton=1")
       .get();
@@ -560,6 +360,26 @@ export class AuthorityStore {
         .prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)")
         .run(workspace.workspaceId, workspace.projectId, workspace.name);
     }
+  }
+
+  /** Writes generation metadata for a new or copied Authority database. */
+  initializeGeneration(metadata: AuthorityGenerationMetadata): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO authority_generation (
+           singleton, generation_id, predecessor_id, activation_index,
+           schema_version, format_version, release_min, release_max
+         ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        metadata.generationId,
+        metadata.predecessorId,
+        metadata.activationIndex,
+        metadata.schemaVersion,
+        metadata.formatVersion,
+        metadata.releaseMin,
+        metadata.releaseMax,
+      );
   }
 
   projection(): {
@@ -1712,6 +1532,9 @@ export class AuthorityStore {
         run: terminalRun,
         timeline: this.timeline(acceptedRun.sessionId),
       };
+      // This is the final fault boundary: dependencies are already validated,
+      // while another connection still observes the accepted execution row.
+      this.#storage.beforeCommit();
       this.#db.exec("COMMIT");
       return settlement;
     } catch (error) {
@@ -2486,6 +2309,7 @@ export class AuthorityStore {
   status(
     releaseId: string,
     warnings: HostStatus["warnings"] = [],
+    durability: HostStatus["durability"] = pendingDurabilityCoverage(),
   ): HostStatus {
     const row = this.#db
       .prepare("SELECT host_id, epoch, sequence FROM host WHERE singleton=1")
@@ -2505,6 +2329,7 @@ export class AuthorityStore {
       releaseId,
       readiness: "ready",
       warnings,
+      durability,
       synchronization: {
         epoch: row.epoch,
         sequence: row.sequence,

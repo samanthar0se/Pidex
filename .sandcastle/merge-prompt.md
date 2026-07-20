@@ -15,12 +15,12 @@ For each branch:
 
 For each branch that was merged, close its issue using the following command:
 
-`node .sandcastle/issue-tracker.mjs close <ID>`
+`gh issue close <ID> --comment "Completed by Sandcastle"`
 
 Here are all the issues:
 
 {{ISSUES}}
 
-After all branches are merged and their issues are closed, make a single commit containing the issue status updates and summarizing the merged work.
+After all branches are merged, make a single commit summarizing the merge.
 
 Once you've merged everything you can, output <promise>COMPLETE</promise>.

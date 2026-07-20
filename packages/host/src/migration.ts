@@ -321,7 +321,12 @@ function sanitizePathSegment(value: string): string {
 }
 
 function flushPath(path: string): void {
-  const descriptor = openSync(path, "r");
+  const isDirectory = statSync(path).isDirectory();
+  if (isDirectory && process.platform === "win32") {
+    return;
+  }
+
+  const descriptor = openSync(path, isDirectory ? "r" : "r+");
   try {
     fsyncSync(descriptor);
   } finally {
