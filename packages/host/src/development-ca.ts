@@ -17,6 +17,18 @@ const STATE_FILE = "state.json";
 const STATE_VERSION = 1;
 const TEN_YEARS_DAYS = 3650;
 const RENEWAL_MARGIN_MS = 30 * 24 * 60 * 60 * 1000;
+const RESET_WARNING =
+  "Reset affects every checkout and every previously trusted LAN client. " +
+  "Run `npm run dev:ca:setup` and repeat one-time client trust.";
+const MANUAL_CLEANUP_MESSAGE =
+  "The exact Development CA trust entry could not be identified or removed. " +
+  "Remove the obsolete certificate from Current User Root manually, then run `npm run dev:ca:setup`.";
+
+export const DEVELOPMENT_CA_FILES = Object.freeze([
+  CERTIFICATE_FILE,
+  KEY_FILE,
+  STATE_FILE,
+] as const);
 
 interface DevelopmentCaPaths {
   directory: string;
@@ -37,6 +49,19 @@ export interface DevelopmentCaSetupResult {
   status: "created" | "unchanged";
   fingerprint: string;
   certificatePath: string;
+}
+
+export interface DevelopmentCaResetOptions {
+  /** Test/isolation seam. Production callers should use LocalAppData. */
+  profileRoot?: string;
+  removeCurrentUserCertificate(fingerprint: string): void;
+}
+
+export interface DevelopmentCaResetResult {
+  nextAction: "setup";
+  warning: string;
+  removedFingerprint?: string;
+  manualCleanup?: string;
 }
 
 export class DevelopmentCaPrerequisiteError extends Error {
@@ -90,6 +115,39 @@ export function setupDevelopmentCa(
     fingerprint: certificate.fingerprint256,
     certificatePath: paths.certificatePath,
   };
+}
+
+/** Deliberately breaks profile-wide development trust; it never creates state. */
+export function resetDevelopmentCa(
+  options: DevelopmentCaResetOptions,
+): DevelopmentCaResetResult {
+  const paths = getDevelopmentCaPaths(options.profileRoot);
+  let removedFingerprint: string | undefined;
+  let trustCleanupFailure: unknown;
+
+  try {
+    const fingerprint = readCertificate(paths.certificatePath).fingerprint256;
+    options.removeCurrentUserCertificate(fingerprint);
+    removedFingerprint = fingerprint;
+  } catch (error) {
+    trustCleanupFailure = error;
+  } finally {
+    // This dedicated directory contains only the known profile Development CA
+    // state. Reset never searches checkouts, other stores, or client machines.
+    rmSync(paths.directory, { recursive: true, force: true });
+  }
+
+  const result: DevelopmentCaResetResult = {
+    nextAction: "setup",
+    warning: RESET_WARNING,
+  };
+  if (removedFingerprint) {
+    result.removedFingerprint = removedFingerprint;
+  }
+  if (trustCleanupFailure) {
+    result.manualCleanup = MANUAL_CLEANUP_MESSAGE;
+  }
+  return result;
 }
 
 function getDevelopmentCaPaths(profileRoot?: string): DevelopmentCaPaths {

@@ -140,6 +140,8 @@ export interface WindowsPlatformAdapter {
   unprotectForCurrentUser(envelope: Buffer): Buffer;
   restrictToCurrentUser(path: string): void;
   trustCurrentUserCertificate(path: string): void;
+  /** Removes only the Current User Root certificate with this SHA-256 fingerprint. */
+  removeCurrentUserCertificate(fingerprint: string): void;
   registerLogonTask(command: string, args: readonly string[]): void;
   privateInterfaces(): readonly PrivateInterface[];
   advertisePidex(advertisement: PidexAdvertisement): () => void;
@@ -351,6 +353,7 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       envelope.subarray(DETERMINISTIC_DPAPI_HEADER.length),
     restrictToCurrentUser() {},
     trustCurrentUserCertificate() {},
+    removeCurrentUserCertificate() {},
     registerLogonTask() {},
     privateInterfaces: () => [
       {
@@ -396,6 +399,9 @@ function productWindowsAdapter(): WindowsPlatformAdapter {
       throw new Error("Pidex Windows native ACL bridge is not bundled");
     },
     trustCurrentUserCertificate() {
+      throw new Error("Pidex Windows certificate bridge is not bundled");
+    },
+    removeCurrentUserCertificate() {
       throw new Error("Pidex Windows certificate bridge is not bundled");
     },
     registerLogonTask() {
