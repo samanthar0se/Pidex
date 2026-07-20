@@ -2,7 +2,7 @@
 
 Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
 
-Pull in the issue using `node .sandcastle/issue-tracker.mjs view {{TASK_ID}}`. If it has a parent PRD, pull that in too.
+Pull in the issue using `gh issue view {{TASK_ID}} --comments`. If it has a parent PRD, pull that in too.
 
 Only work on the issue specified.
 
