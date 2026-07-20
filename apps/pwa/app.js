@@ -158,14 +158,21 @@ addEventListener("online", () => {
 });
 addEventListener("visibilitychange", () => {
   if (document.hidden) {
+    closeControlSocket();
+    state.currentScopes.clear();
     setCurrent(false, "Stale · return to reconcile");
     return;
   }
 
   if (socket?.readyState === WebSocket.OPEN) {
+    setCurrent(false, "Reconciling");
     const selectedSessionId = currentSessionId();
     sendScopeSet(selectedSessionId);
+    return;
   }
+
+  setCurrent(false, "Reconnecting");
+  authenticateStoredDevice();
 });
 addEventListener("pageshow", event => {
   // Safari may restore a standalone PWA from its page cache. Reconcile the
@@ -297,7 +304,7 @@ async function authenticateStoredDevice() {
 }
 
 function openControl(token) {
-  socket?.close();
+  closeControlSocket();
   state.currentScopes.clear();
   socket = new WebSocket(
     `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
@@ -316,6 +323,18 @@ function openControl(token) {
     }
     setCurrent(false, OFFLINE_STATUS);
   };
+}
+
+function closeControlSocket() {
+  const activeSocket = socket;
+  socket = undefined;
+  if (!activeSocket) {
+    return;
+  }
+
+  activeSocket.onmessage = null;
+  activeSocket.onclose = null;
+  activeSocket.close();
 }
 
 async function handleMessage(message) {
