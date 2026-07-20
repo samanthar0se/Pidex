@@ -221,7 +221,7 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
 
 export interface HostOptions {
   dataDir: string;
-  /** Development entry points may inject a lifecycle isolated from packaged identity. */
+  /** Overrides packaged certificate provisioning, for example during development. */
   certificateProvisioner?: HostCertificateProvisioner;
   port?: number;
   adapters?: HostAdapters;
@@ -299,9 +299,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const certificate = await (
-    options.certificateProvisioner ?? provisionPackagedHostCertificate
-  )({ dataDir: options.dataDir, hostname, windows: adapters.windows });
+  const provisionCertificate =
+    options.certificateProvisioner ?? provisionPackagedHostCertificate;
+  const certificate = await provisionCertificate({
+    dataDir: options.dataDir,
+    hostname,
+    windows: adapters.windows,
+  });
   const warnings = configureFirewall(adapters.windows, firewallPort);
   const pairing = new PairingAuthority(adapters.clock, store);
 

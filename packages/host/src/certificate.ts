@@ -15,15 +15,17 @@ export interface HostCertificateProvisioningRequest {
   windows: WindowsPlatformAdapter;
 }
 
-/** A startup boundary; development certificate state can live outside Host authority. */
+/** Supplies TLS certificate material during Host startup. */
 export type HostCertificateProvisioner = (
   request: HostCertificateProvisioningRequest,
 ) => HostCertificate | Promise<HostCertificate>;
 
-/** The packaged Host identity remains the default and retains its protected keys/trust. */
-export const provisionPackagedHostCertificate: HostCertificateProvisioner =
-  request =>
-    ensureCertificate(request.dataDir, request.hostname, request.windows);
+/** Provisions the durable, protected certificate used by the packaged Host. */
+export function provisionPackagedHostCertificate(
+  request: HostCertificateProvisioningRequest,
+): HostCertificate {
+  return ensureCertificate(request.dataDir, request.hostname, request.windows);
+}
 
 export function ensureCertificate(
   dataDir: string,
