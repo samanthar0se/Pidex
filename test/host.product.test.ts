@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { get } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { readStatus } from "../packages/cli/src/main.js";
+import {
+  ensureCertificate,
+  type HostCertificateProvisioningRequest,
+} from "../packages/host/src/certificate.js";
 import { startHost } from "../packages/host/src/host.js";
 import { type HostStatus } from "../packages/protocol/src/status.js";
 import { negotiateControl } from "./control-client.js";
@@ -92,5 +96,46 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
     }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("Host startup can use certificate material provisioned outside packaged TLS state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-certificate-seam-"));
+  const certificateDataDir = join(root, "certificate");
+  const hostDataDir = join(root, "host");
+  const adapters = adaptersFor("deterministic");
+  const provisioningRequests: HostCertificateProvisioningRequest[] = [];
+
+  try {
+    const certificate = ensureCertificate(
+      certificateDataDir,
+      "localhost",
+      adapters.windows,
+    );
+    const host = await startHost({
+      dataDir: hostDataDir,
+      port: 0,
+      adapters,
+      certificateProvisioner: async request => {
+        provisioningRequests.push(request);
+        return certificate;
+      },
+    });
+
+    try {
+      assert.match(await readPwaShell(host.origin), /Pidex Host/);
+      assert.deepEqual(provisioningRequests, [
+        {
+          dataDir: hostDataDir,
+          hostname: "localhost",
+          windows: adapters.windows,
+        },
+      ]);
+      await assert.rejects(access(join(hostDataDir, "tls")));
+    } finally {
+      await host.close();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

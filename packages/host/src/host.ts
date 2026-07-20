@@ -29,7 +29,10 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import { ensureCertificate } from "./certificate.js";
+import {
+  provisionPackagedHostCertificate,
+  type HostCertificateProvisioner,
+} from "./certificate.js";
 import {
   type CoverageDiagnostic,
   DurabilityCoverageMonitor,
@@ -175,6 +178,8 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
 
 export interface HostOptions {
   dataDir: string;
+  /** Overrides packaged certificate provisioning, for example during development. */
+  certificateProvisioner?: HostCertificateProvisioner;
   port?: number;
   adapters?: HostAdapters;
   hostname?: string;
@@ -268,11 +273,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const certificate = ensureCertificate(
-    options.dataDir,
+  const provisionCertificate =
+    options.certificateProvisioner ?? provisionPackagedHostCertificate;
+  const certificate = await provisionCertificate({
+    dataDir: options.dataDir,
     hostname,
-    adapters.windows,
-  );
+    windows: adapters.windows,
+  });
   const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
   const coverage = new DurabilityCoverageMonitor(
     adapters.windows,

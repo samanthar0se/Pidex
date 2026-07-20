@@ -45,6 +45,24 @@ interface TlsIdentity {
   digests: TlsMaterial<string>;
 }
 
+export interface HostCertificateProvisioningRequest {
+  dataDir: string;
+  hostname: string;
+  windows: WindowsPlatformAdapter;
+}
+
+/** Supplies TLS certificate material during Host startup. */
+export type HostCertificateProvisioner = (
+  request: HostCertificateProvisioningRequest,
+) => HostCertificate | Promise<HostCertificate>;
+
+/** Provisions the durable, protected certificate used by the packaged Host. */
+export function provisionPackagedHostCertificate(
+  request: HostCertificateProvisioningRequest,
+): HostCertificate {
+  return ensureCertificate(request.dataDir, request.hostname, request.windows);
+}
+
 /** Selects only a complete, cryptographically coherent retained TLS generation. */
 export function ensureCertificate(
   dataDir: string,

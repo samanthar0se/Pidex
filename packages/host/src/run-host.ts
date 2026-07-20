@@ -3,9 +3,13 @@ import {
   adaptersFor,
   type AdapterMode,
 } from "../../adapters/src/index.js";
+import type { HostCertificateProvisioner } from "./certificate.js";
 import { startHost } from "./host.js";
 
-export async function runHost(adapterMode: AdapterMode): Promise<void> {
+export async function runHost(
+  adapterMode: AdapterMode,
+  certificateProvisioner?: HostCertificateProvisioner,
+): Promise<void> {
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
   const port = Number(process.env.PIDEX_PORT ?? 7443);
   const hostname =
@@ -15,6 +19,7 @@ export async function runHost(adapterMode: AdapterMode): Promise<void> {
     port,
     hostname,
     adapters: adaptersFor(adapterMode),
+    certificateProvisioner,
   });
 
   console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
