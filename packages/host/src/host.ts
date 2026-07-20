@@ -28,7 +28,11 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import { defaultDevelopmentCaDirectory, ensureDevelopmentCertificate, setupDevelopmentCa } from "./certificate.js";
+import {
+  defaultDevelopmentCaDirectory,
+  ensureDevelopmentCertificate,
+  setupDevelopmentCa,
+} from "./certificate.js";
 import {
   PairingAuthority,
   PairingError,
@@ -300,17 +304,31 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const developmentCaDirectory = options.developmentCaDirectory ??
-    (adapters.windows.kind === "deterministic"
-      ? join(dirname(options.dataDir), `.pidex-test-ca-${basename(options.dataDir)}`)
-      : defaultDevelopmentCaDirectory());
-  // Deterministic product tests retain an explicit isolated fixture. Real startup
-  // never invokes setup and therefore cannot create or rotate the profile CA.
-  if (adapters.windows.kind === "deterministic" && !options.developmentCaDirectory) {
+  let developmentCaDirectory = options.developmentCaDirectory;
+  if (developmentCaDirectory === undefined || developmentCaDirectory === null) {
+    if (adapters.windows.kind === "deterministic") {
+      developmentCaDirectory = join(
+        dirname(options.dataDir),
+        `.pidex-test-ca-${basename(options.dataDir)}`,
+      );
+    } else {
+      developmentCaDirectory = defaultDevelopmentCaDirectory();
+    }
+  }
+
+  // Host tests create an isolated fixture. Product startup must not create or
+  // rotate the profile CA.
+  if (
+    adapters.windows.kind === "deterministic" &&
+    !options.developmentCaDirectory
+  ) {
     setupDevelopmentCa(developmentCaDirectory, adapters.windows);
   }
   const certificate = ensureDevelopmentCertificate(
-    developmentCaDirectory, options.dataDir, [hostname], new Date(),
+    developmentCaDirectory,
+    options.dataDir,
+    [hostname],
+    new Date(),
   );
   const warnings = configureFirewall(adapters.windows, firewallPort);
   const pairing = new PairingAuthority(adapters.clock, store);

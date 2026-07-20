@@ -1,12 +1,32 @@
 import { execFileSync } from "node:child_process";
-import { createHash, createPrivateKey, createPublicKey, X509Certificate } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  X509Certificate,
+} from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
 
 export const DEVELOPMENT_CA_REMEDIATION =
   "Development CA unusable. Startup did not replace it; run `npm run dev-ca:reset`, then `npm run dev-ca:setup`.";
+
+const DEVELOPMENT_CA_CERTIFICATE_NAME = "development-ca.pem";
+const DEVELOPMENT_CA_KEY_NAME = "development-ca-key.pem";
+const DEVELOPMENT_LEAF_CERTIFICATE_NAME = "development-leaf.pem";
+const DEVELOPMENT_LEAF_KEY_NAME = "development-leaf-key.pem";
+const DEVELOPMENT_CA_RESET_WARNING =
+  "Development CA reset affects every checkout and previously trusted LAN client. Run setup next; distribute only the public certificate.";
+const SERVER_AUTHENTICATION_KEY_USAGE = "1.3.6.1.5.5.7.3.1";
+const MILLISECONDS_PER_DAY = 86_400_000;
 
 export interface DevelopmentCaResult {
   status: "created" | "unchanged";
@@ -22,128 +42,431 @@ export interface DevelopmentCertificate {
   replaced: boolean;
 }
 
-type TrustAdapter = Pick<WindowsPlatformAdapter, "trustCurrentUserCertificate"> & {
-  removeCurrentUserCertificate?(certificatePath: string): void;
-};
+interface DevelopmentCaPaths {
+  certificate: string;
+  key: string;
+}
 
-const names = { certificate: "development-ca.pem", key: "development-ca-key.pem" };
+interface DevelopmentLeafPaths {
+  certificate: string;
+  key: string;
+  certificateRequest: string;
+  extensions: string;
+  serial: string;
+}
 
-export function defaultDevelopmentCaDirectory(environment = process.env): string {
+interface SubjectAlternativeName {
+  type: "DNS" | "IP";
+  value: string;
+}
+
+type TrustAdapter = Pick<
+  WindowsPlatformAdapter,
+  "trustCurrentUserCertificate" | "removeCurrentUserCertificate"
+>;
+
+export function defaultDevelopmentCaDirectory(
+  environment = process.env,
+): string {
   const localAppData = environment.LOCALAPPDATA;
-  if (!localAppData) throw new Error("LOCALAPPDATA is required for the Windows Development CA profile location");
+  if (!localAppData) {
+    throw new Error(
+      "LOCALAPPDATA is required for the Windows Development CA profile location",
+    );
+  }
   return join(localAppData, "Pidex", "development-ca");
 }
 
-export function setupDevelopmentCa(profileDir: string, windows: TrustAdapter): DevelopmentCaResult {
-  mkdirSync(profileDir, { recursive: true });
-  const paths = caPaths(profileDir);
-  const present = [paths.certificate, paths.key].map(existsSync);
+export function setupDevelopmentCa(
+  profileDirectory: string,
+  windows: TrustAdapter,
+): DevelopmentCaResult {
+  mkdirSync(profileDirectory, { recursive: true });
+  const paths = developmentCaPaths(profileDirectory);
+  const certificateExists = existsSync(paths.certificate);
+  const keyExists = existsSync(paths.key);
   let status: DevelopmentCaResult["status"] = "unchanged";
-  if (!present[0] && !present[1]) {
+
+  if (!certificateExists && !keyExists) {
     requireOpenSsl();
-    run(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "3650",
-      "-keyout", paths.key, "-out", paths.certificate, "-subj", "/CN=Pidex Development CA",
-      "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
-      "-addext", "keyUsage=critical,keyCertSign,cRLSign"]);
+    generateDevelopmentCa(paths);
     status = "created";
-  } else if (!present.every(Boolean)) {
-    throw unusable();
+  } else if (!certificateExists || !keyExists) {
+    throw developmentCaUnusableError();
   }
-  const ca = validateCa(paths);
+
+  const certificate = validateDevelopmentCa(paths);
   windows.trustCurrentUserCertificate(paths.certificate);
-  return { status, fingerprint: fingerprint(ca), certificatePath: paths.certificate };
+  return {
+    status,
+    fingerprint: certificateFingerprint(certificate),
+    certificatePath: paths.certificate,
+  };
 }
 
 export function ensureDevelopmentCertificate(
-  profileDir: string,
-  checkoutDataDir: string,
+  profileDirectory: string,
+  checkoutDataDirectory: string,
   requestedNames: readonly string[],
   now = new Date(),
 ): DevelopmentCertificate {
-  const paths = caPaths(profileDir);
-  let ca: X509Certificate;
-  try { ca = validateCa(paths, now); } catch { throw unusable(); }
-  const tlsDir = join(checkoutDataDir, "tls");
-  mkdirSync(tlsDir, { recursive: true });
-  const leafCert = join(tlsDir, "development-leaf.pem");
-  const leafKey = join(tlsDir, "development-leaf-key.pem");
-  const sans = normalizedSans(requestedNames);
-  if (leafReusable(leafCert, leafKey, ca, sans, now)) {
-    return result(false);
-  }
-  requireOpenSsl();
-  const csr = join(tlsDir, ".leaf.csr");
-  const ext = join(tlsDir, ".leaf.ext");
-  const serial = join(tlsDir, ".ca.srl");
+  const caPaths = developmentCaPaths(profileDirectory);
+  let caCertificate: X509Certificate;
   try {
-    run(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", leafKey, "-out", csr,
-      "-subj", `/CN=${sans[0]!.value}`]);
-    writeFileSync(ext, [
-      "basicConstraints=critical,CA:FALSE", "keyUsage=critical,digitalSignature,keyEncipherment",
-      "extendedKeyUsage=serverAuth", `subjectAltName=${sans.map(s => `${s.type}:${s.value}`).join(",")}`,
-    ].join("\n"));
-    run(["x509", "-req", "-in", csr, "-CA", paths.certificate, "-CAkey", paths.key,
-      "-CAcreateserial", "-CAserial", serial, "-out", leafCert, "-days", "825", "-sha256", "-extfile", ext]);
-  } finally { for (const path of [csr, ext, serial]) rmSync(path, { force: true }); }
-  const issuanceValidationTime = new Date(Math.max(now.getTime(), Date.now()));
-  if (!leafReusable(leafCert, leafKey, ca, sans, issuanceValidationTime, 0)) throw new Error("Generated Development leaf failed validation");
-  return result(true);
-
-  function result(replaced: boolean): DevelopmentCertificate {
-    return { key: readFileSync(leafKey), cert: readFileSync(leafCert), ca: ca.raw,
-      fingerprint: fingerprint(ca), replaced };
+    caCertificate = validateDevelopmentCa(caPaths, now);
+  } catch {
+    throw developmentCaUnusableError();
   }
+
+  const tlsDirectory = join(checkoutDataDirectory, "tls");
+  mkdirSync(tlsDirectory, { recursive: true });
+  const leafPaths = developmentLeafPaths(tlsDirectory);
+  const subjectAlternativeNames = normalizeSubjectAlternativeNames(
+    requestedNames,
+  );
+
+  if (
+    isDevelopmentLeafReusable(
+      leafPaths.certificate,
+      leafPaths.key,
+      caCertificate,
+      subjectAlternativeNames,
+      now,
+    )
+  ) {
+    return readDevelopmentCertificate(leafPaths, caCertificate, false);
+  }
+
+  requireOpenSsl();
+  generateDevelopmentLeaf(
+    caPaths,
+    leafPaths,
+    subjectAlternativeNames,
+  );
+
+  const issuanceValidationTime = new Date(
+    Math.max(now.getTime(), Date.now()),
+  );
+  if (
+    !isDevelopmentLeafReusable(
+      leafPaths.certificate,
+      leafPaths.key,
+      caCertificate,
+      subjectAlternativeNames,
+      issuanceValidationTime,
+      0,
+    )
+  ) {
+    throw new Error("Generated Development leaf failed validation");
+  }
+
+  return readDevelopmentCertificate(leafPaths, caCertificate, true);
 }
 
-export function resetDevelopmentCa(profileDir: string, windows: TrustAdapter): { warning: string; cleanup: "complete" | "best-effort" } {
-  const paths = caPaths(profileDir);
+export function resetDevelopmentCa(
+  profileDirectory: string,
+  windows: TrustAdapter,
+): {
+  warning: string;
+  cleanup: "complete" | "best-effort";
+} {
+  const paths = developmentCaPaths(profileDirectory);
   let cleanup: "complete" | "best-effort" = "complete";
+
   if (existsSync(paths.certificate)) {
-    try { windows.removeCurrentUserCertificate?.(paths.certificate); }
-    catch { cleanup = "best-effort"; }
+    try {
+      windows.removeCurrentUserCertificate?.(paths.certificate);
+    } catch {
+      cleanup = "best-effort";
+    }
   }
+
   rmSync(paths.certificate, { force: true });
   rmSync(paths.key, { force: true });
-  return { warning: "Development CA reset affects every checkout and previously trusted LAN client. Run setup next; distribute only the public certificate.", cleanup };
+  return { warning: DEVELOPMENT_CA_RESET_WARNING, cleanup };
 }
 
-function caPaths(dir: string) { return { certificate: join(dir, names.certificate), key: join(dir, names.key) }; }
-function validateCa(paths: ReturnType<typeof caPaths>, now = new Date()): X509Certificate {
-  if (!existsSync(paths.certificate) || !existsSync(paths.key)) throw unusable();
-  const cert = new X509Certificate(readFileSync(paths.certificate));
-  const keyBytes = readFileSync(paths.key);
-  createPrivateKey(keyBytes);
-  if (!cert.ca || !cert.checkIssued(cert) || !cert.verify(cert.publicKey) ||
-      createPublicKey(keyBytes).export({ type: "spki", format: "der" }).compare(cert.publicKey.export({ type: "spki", format: "der" })) !== 0 ||
-      now < new Date(cert.validFrom) || now >= new Date(cert.validTo)) throw unusable();
-  const text = run(["x509", "-in", paths.certificate, "-noout", "-text"], true);
-  if (!/Basic Constraints: critical[\s\S]*CA:TRUE, pathlen:0/.test(text) ||
-      !/Key Usage: critical[\s\S]*Certificate Sign/.test(text)) throw unusable();
-  return cert;
+function developmentCaPaths(directory: string): DevelopmentCaPaths {
+  return {
+    certificate: join(directory, DEVELOPMENT_CA_CERTIFICATE_NAME),
+    key: join(directory, DEVELOPMENT_CA_KEY_NAME),
+  };
 }
-type San = { type: "DNS" | "IP"; value: string };
-function normalizedSans(values: readonly string[]): San[] {
-  const all = [...values, "localhost", "127.0.0.1"];
-  const map = new Map<string, San>();
-  for (const value of all) { const san: San = { type: isIP(value) ? "IP" : "DNS", value }; map.set(`${san.type}:${value.toLowerCase()}`, san); }
-  return [...map.values()].sort((a, b) => `${a.type}:${a.value}`.localeCompare(`${b.type}:${b.value}`));
+
+function developmentLeafPaths(directory: string): DevelopmentLeafPaths {
+  return {
+    certificate: join(directory, DEVELOPMENT_LEAF_CERTIFICATE_NAME),
+    key: join(directory, DEVELOPMENT_LEAF_KEY_NAME),
+    certificateRequest: join(directory, ".leaf.csr"),
+    extensions: join(directory, ".leaf.ext"),
+    serial: join(directory, ".ca.srl"),
+  };
 }
-function leafReusable(certPath: string, keyPath: string, ca: X509Certificate, sans: San[], now: Date, marginDays = 30): boolean {
+
+function generateDevelopmentCa(paths: DevelopmentCaPaths): void {
+  runOpenSsl([
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-sha256",
+    "-days",
+    "3650",
+    "-keyout",
+    paths.key,
+    "-out",
+    paths.certificate,
+    "-subj",
+    "/CN=Pidex Development CA",
+    "-addext",
+    "basicConstraints=critical,CA:TRUE,pathlen:0",
+    "-addext",
+    "keyUsage=critical,keyCertSign,cRLSign",
+  ]);
+}
+
+function generateDevelopmentLeaf(
+  caPaths: DevelopmentCaPaths,
+  leafPaths: DevelopmentLeafPaths,
+  subjectAlternativeNames: readonly SubjectAlternativeName[],
+): void {
+  const commonName = subjectAlternativeNames.at(0);
+  if (!commonName) {
+    throw new Error("At least one Development certificate name is required");
+  }
+
   try {
-    if (!existsSync(certPath) || !existsSync(keyPath)) return false;
-    const cert = new X509Certificate(readFileSync(certPath));
-    const keyBytes = readFileSync(keyPath);
-    createPrivateKey(keyBytes);
-    const actual = (cert.subjectAltName?.split(", ") ?? []).map(v => v.replace("IP Address:", "IP:")).sort();
-    const expected = sans.map(s => `${s.type}:${s.value}`).sort();
-    return !cert.ca && cert.checkIssued(ca) && cert.verify(ca.publicKey) &&
-      createPublicKey(keyBytes).export({ type: "spki", format: "der" }).compare(cert.publicKey.export({ type: "spki", format: "der" })) === 0 &&
-      now >= new Date(cert.validFrom) && now.getTime() + marginDays * 86400000 < new Date(cert.validTo).getTime() &&
-      JSON.stringify(actual) === JSON.stringify(expected) &&
-      (cert.keyUsage === undefined || cert.keyUsage.includes("1.3.6.1.5.5.7.3.1"));
-  } catch { return false; }
+    runOpenSsl([
+      "req",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      leafPaths.key,
+      "-out",
+      leafPaths.certificateRequest,
+      "-subj",
+      `/CN=${commonName.value}`,
+    ]);
+    writeFileSync(
+      leafPaths.extensions,
+      [
+        "basicConstraints=critical,CA:FALSE",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth",
+        `subjectAltName=${subjectAlternativeNames
+          .map(name => `${name.type}:${name.value}`)
+          .join(",")}`,
+      ].join("\n"),
+    );
+    runOpenSsl([
+      "x509",
+      "-req",
+      "-in",
+      leafPaths.certificateRequest,
+      "-CA",
+      caPaths.certificate,
+      "-CAkey",
+      caPaths.key,
+      "-CAcreateserial",
+      "-CAserial",
+      leafPaths.serial,
+      "-out",
+      leafPaths.certificate,
+      "-days",
+      "825",
+      "-sha256",
+      "-extfile",
+      leafPaths.extensions,
+    ]);
+  } finally {
+    for (const path of [
+      leafPaths.certificateRequest,
+      leafPaths.extensions,
+      leafPaths.serial,
+    ]) {
+      rmSync(path, { force: true });
+    }
+  }
 }
-function fingerprint(cert: X509Certificate): string { return createHash("sha256").update(cert.raw).digest("hex").toUpperCase().match(/../g)!.join(":"); }
-function requireOpenSsl(): void { try { run(["version"], true); } catch { throw new Error("OpenSSL is required for Development CA setup and leaf issuance"); } }
-function run(args: string[], output = false): string { return execFileSync("openssl", args, { encoding: "utf8", stdio: output ? "pipe" : "ignore" }) ?? ""; }
-function unusable(): Error { return new Error(DEVELOPMENT_CA_REMEDIATION); }
+
+function validateDevelopmentCa(
+  paths: DevelopmentCaPaths,
+  now = new Date(),
+): X509Certificate {
+  if (!existsSync(paths.certificate) || !existsSync(paths.key)) {
+    throw developmentCaUnusableError();
+  }
+
+  const certificate = new X509Certificate(readFileSync(paths.certificate));
+  const privateKey = readFileSync(paths.key);
+  createPrivateKey(privateKey);
+
+  if (
+    !certificate.ca ||
+    !certificate.checkIssued(certificate) ||
+    !certificate.verify(certificate.publicKey)
+  ) {
+    throw developmentCaUnusableError();
+  }
+
+  const privateKeyPublicBytes = createPublicKey(privateKey).export({
+    type: "spki",
+    format: "der",
+  });
+  const certificatePublicBytes = certificate.publicKey.export({
+    type: "spki",
+    format: "der",
+  });
+  if (
+    privateKeyPublicBytes.compare(certificatePublicBytes) !== 0 ||
+    now < new Date(certificate.validFrom) ||
+    now >= new Date(certificate.validTo)
+  ) {
+    throw developmentCaUnusableError();
+  }
+
+  const certificateText = readOpenSslOutput([
+    "x509",
+    "-in",
+    paths.certificate,
+    "-noout",
+    "-text",
+  ]);
+  const hasRequiredBasicConstraints =
+    /Basic Constraints: critical[\s\S]*CA:TRUE, pathlen:0/.test(
+      certificateText,
+    );
+  const hasRequiredKeyUsage =
+    /Key Usage: critical[\s\S]*Certificate Sign/.test(certificateText);
+  if (!hasRequiredBasicConstraints || !hasRequiredKeyUsage) {
+    throw developmentCaUnusableError();
+  }
+
+  return certificate;
+}
+
+function normalizeSubjectAlternativeNames(
+  values: readonly string[],
+): SubjectAlternativeName[] {
+  const names = [...values, "localhost", "127.0.0.1"];
+  const uniqueNames = new Map<string, SubjectAlternativeName>();
+
+  for (const value of names) {
+    const name: SubjectAlternativeName = {
+      type: isIP(value) ? "IP" : "DNS",
+      value,
+    };
+    uniqueNames.set(`${name.type}:${value.toLowerCase()}`, name);
+  }
+
+  return [...uniqueNames.values()].sort((left, right) =>
+    `${left.type}:${left.value}`.localeCompare(`${right.type}:${right.value}`),
+  );
+}
+
+function isDevelopmentLeafReusable(
+  certificatePath: string,
+  keyPath: string,
+  caCertificate: X509Certificate,
+  subjectAlternativeNames: readonly SubjectAlternativeName[],
+  now: Date,
+  validityMarginDays = 30,
+): boolean {
+  try {
+    if (!existsSync(certificatePath) || !existsSync(keyPath)) {
+      return false;
+    }
+
+    const certificate = new X509Certificate(readFileSync(certificatePath));
+    const privateKey = readFileSync(keyPath);
+    createPrivateKey(privateKey);
+
+    const actualSubjectAlternativeNames = (
+      certificate.subjectAltName?.split(", ") ?? []
+    )
+      .map(value => value.replace("IP Address:", "IP:"))
+      .sort();
+    const expectedSubjectAlternativeNames = subjectAlternativeNames
+      .map(name => `${name.type}:${name.value}`)
+      .sort();
+    const privateKeyPublicBytes = createPublicKey(privateKey).export({
+      type: "spki",
+      format: "der",
+    });
+    const certificatePublicBytes = certificate.publicKey.export({
+      type: "spki",
+      format: "der",
+    });
+    const validBeyondMargin =
+      now.getTime() + validityMarginDays * MILLISECONDS_PER_DAY <
+      new Date(certificate.validTo).getTime();
+    const hasServerAuthenticationUsage =
+      certificate.keyUsage === undefined ||
+      certificate.keyUsage.includes(SERVER_AUTHENTICATION_KEY_USAGE);
+
+    return (
+      !certificate.ca &&
+      certificate.checkIssued(caCertificate) &&
+      certificate.verify(caCertificate.publicKey) &&
+      privateKeyPublicBytes.compare(certificatePublicBytes) === 0 &&
+      now >= new Date(certificate.validFrom) &&
+      validBeyondMargin &&
+      JSON.stringify(actualSubjectAlternativeNames) ===
+        JSON.stringify(expectedSubjectAlternativeNames) &&
+      hasServerAuthenticationUsage
+    );
+  } catch {
+    return false;
+  }
+}
+
+function readDevelopmentCertificate(
+  paths: DevelopmentLeafPaths,
+  caCertificate: X509Certificate,
+  replaced: boolean,
+): DevelopmentCertificate {
+  return {
+    key: readFileSync(paths.key),
+    cert: readFileSync(paths.certificate),
+    ca: caCertificate.raw,
+    fingerprint: certificateFingerprint(caCertificate),
+    replaced,
+  };
+}
+
+function certificateFingerprint(certificate: X509Certificate): string {
+  const digest = createHash("sha256")
+    .update(certificate.raw)
+    .digest("hex")
+    .toUpperCase();
+  return digest.replace(/(..)(?=.)/g, "$1:");
+}
+
+function requireOpenSsl(): void {
+  try {
+    readOpenSslOutput(["version"]);
+  } catch {
+    throw new Error(
+      "OpenSSL is required for Development CA setup and leaf issuance",
+    );
+  }
+}
+
+function runOpenSsl(opensslArguments: string[]): void {
+  execFileSync("openssl", opensslArguments, { stdio: "ignore" });
+}
+
+function readOpenSslOutput(opensslArguments: string[]): string {
+  return (
+    execFileSync("openssl", opensslArguments, {
+      encoding: "utf8",
+      stdio: "pipe",
+    }) ?? ""
+  );
+}
+
+function developmentCaUnusableError(): Error {
+  return new Error(DEVELOPMENT_CA_REMEDIATION);
+}

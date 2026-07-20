@@ -4,7 +4,10 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adaptersFor } from "../packages/adapters/src/index.js";
-import { ensureDevelopmentCertificate, setupDevelopmentCa } from "../packages/host/src/certificate.js";
+import {
+  ensureDevelopmentCertificate,
+  setupDevelopmentCa,
+} from "../packages/host/src/certificate.js";
 import { installForCurrentUser } from "../packages/launcher/src/installation.js";
 import {
   STARTUP_BACKOFF_MS,
