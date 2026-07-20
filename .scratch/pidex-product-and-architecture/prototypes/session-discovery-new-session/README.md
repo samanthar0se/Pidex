@@ -1,0 +1,19 @@
+# Session discovery and New Session prototype
+
+Three read-only variants answer one question: how should the Codex-like shell help someone find, select, and create a Session without obscuring Project and Workspace scope?
+
+- **A — Nested scope rail:** Projects contain Workspaces and their Sessions; New Session is a centered Composer with scope controls inside it.
+- **B — Search-first catalog:** Sessions form one recency list with scope breadcrumbs and persistent facets; New Session gives scope selection equal weight with the Composer.
+- **C — Workspace launch points:** the rail is a compact Project/Workspace tree with contextual create buttons; New Session inherits the launch scope and keeps it visible above the Composer.
+
+The floating bar switches variants with `←` and `→` or `?variant=A|B|C`. Its scenario menu covers populated discovery, search matches and no results, an empty catalog, archived discovery, New Session, draft failure, capability absence, command failures, uncertain transport, and stale offline state.
+
+Run from this worktree root:
+
+```bash
+node .scratch/pidex-product-and-architecture/prototypes/session-discovery-new-session/serve.mjs
+```
+
+Then open <http://localhost:4174/?variant=A&scenario=default>.
+
+This is a throwaway prototype. Session selection and all create actions are local simulations; they do not wake a Session or perform Host mutations.

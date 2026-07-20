@@ -1,0 +1,422 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Pidex Session discovery prototype</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --paper: #fbfbfa;
+        --rail: #f3f3f1;
+        --panel: #ffffff;
+        --ink: #20201d;
+        --muted: #77756f;
+        --faint: #a5a39d;
+        --line: #e4e3df;
+        --line-strong: #d4d2cc;
+        --selected: #e8e8e4;
+        --working: #39856b;
+        --response: #b76a24;
+        --danger: #b04438;
+        --info: #3d6f9f;
+        font: 13px/1.4 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; color: var(--ink); background: var(--paper); }
+      button, input, select, textarea { color: inherit; font: inherit; }
+      button { cursor: pointer; }
+      button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #5f8bb8; outline-offset: 2px; }
+      .app { display: grid; grid-template-columns: 292px minmax(0, 1fr); min-height: 100vh; }
+      .rail { display: flex; flex-direction: column; min-height: 0; padding: 13px 10px 88px; overflow: hidden; background: var(--rail); border-right: 1px solid var(--line); }
+      .brand-row { display: flex; align-items: center; gap: 9px; min-height: 36px; padding: 0 8px 8px; font-weight: 650; }
+      .brand-mark { display: grid; width: 22px; height: 22px; place-items: center; color: #fff; font-size: 11px; background: #20201d; border-radius: 7px; }
+      .rail-action, .rail-link, .tree-label, .facet { display: flex; width: 100%; align-items: center; gap: 8px; padding: 7px 9px; text-align: left; background: transparent; border: 0; border-radius: 7px; }
+      .rail-action:hover, .rail-link:hover, .tree-label:hover, .facet:hover { background: #e9e9e5; }
+      .rail-action strong { font-weight: 600; }
+      .rail-nav { display: grid; gap: 1px; padding-bottom: 8px; }
+      .rail-scroll { min-height: 0; overflow: auto; scrollbar-width: thin; }
+      .section-title { display: flex; align-items: center; justify-content: space-between; padding: 12px 9px 5px; color: var(--muted); font-size: 11px; font-weight: 650; letter-spacing: .02em; }
+      .section-title button { color: var(--muted); background: transparent; border: 0; border-radius: 5px; }
+      .project { margin-top: 4px; }
+      .project-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 3px; font-weight: 650; }
+      .project-head .chevron, .workspace-head .chevron { color: var(--faint); }
+      .workspace { margin: 2px 0 5px; }
+      .workspace-head { display: flex; align-items: center; gap: 6px; padding: 5px 9px 4px 20px; color: var(--muted); font-size: 11px; }
+      .workspace-head .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-row { position: relative; display: grid; width: 100%; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 7px; align-items: start; padding: 7px 8px; text-align: left; background: transparent; border: 0; border-radius: 7px; }
+      .session-row:hover { background: #e9e9e5; }
+      .session-row.selected { background: var(--selected); }
+      .session-row.unread .session-title { font-weight: 670; }
+      .session-row.indent { padding-left: 22px; }
+      .cue { width: 7px; height: 7px; margin-top: 5px; background: transparent; border: 1px solid transparent; border-radius: 50%; }
+      .cue.working { background: var(--working); }
+      .cue.response { background: var(--response); }
+      .cue.quiet.unread { background: var(--ink); }
+      .session-copy { min-width: 0; }
+      .session-title, .session-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-meta { margin-top: 1px; color: var(--muted); font-size: 11px; }
+      .session-time { color: var(--faint); font-size: 10px; }
+      .scope-label { color: var(--muted); }
+      .rail-search { position: relative; margin: 5px 5px 8px; }
+      .rail-search span { position: absolute; top: 7px; left: 9px; color: var(--faint); }
+      .rail-search input { width: 100%; height: 32px; padding: 6px 9px 6px 28px; background: #ebebe7; border: 1px solid transparent; border-radius: 7px; }
+      .rail-search input:focus { background: #fff; border-color: var(--line-strong); outline: 0; }
+      .facet-row { display: flex; gap: 5px; padding: 0 5px 7px; overflow: auto; }
+      .facet { width: auto; flex: 0 0 auto; padding: 4px 8px; color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 999px; }
+      .facet.selected { color: var(--ink); background: #fff; }
+      .rail-empty { padding: 28px 16px; color: var(--muted); text-align: center; }
+      .rail-empty strong { display: block; margin-bottom: 5px; color: var(--ink); font-weight: 600; }
+      .rail-footer { position: absolute; bottom: 0; left: 0; width: 292px; padding: 10px 12px; background: linear-gradient(transparent, var(--rail) 18%); }
+      .host-state { display: flex; align-items: center; justify-content: space-between; padding: 9px 8px 3px; border-top: 1px solid var(--line); }
+      .host-copy { display: grid; }
+      .host-copy small { color: var(--muted); }
+      .host-dot { width: 7px; height: 7px; margin-right: 6px; background: var(--working); border-radius: 50%; }
+      .offline .host-dot { background: var(--response); }
+      .main { position: relative; min-width: 0; min-height: 100vh; overflow: hidden; }
+      .view { display: flex; min-height: 100vh; flex-direction: column; }
+      .view-header { display: flex; min-height: 58px; align-items: center; gap: 10px; padding: 9px 20px; border-bottom: 1px solid var(--line); }
+      .view-title { min-width: 0; flex: 1; }
+      .view-title h1 { margin: 0; overflow: hidden; font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+      .view-title p { margin: 2px 0 0; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .icon-button, .quiet-button, .dark-button { display: inline-flex; min-height: 30px; align-items: center; justify-content: center; gap: 6px; padding: 5px 9px; background: transparent; border: 1px solid var(--line); border-radius: 7px; }
+      .icon-button { width: 30px; padding: 0; }
+      .quiet-button:hover, .icon-button:hover { background: #f0f0ed; }
+      .dark-button { color: #fff; background: #22221f; border-color: #22221f; }
+      .dark-button:disabled { cursor: default; opacity: .38; }
+      .offline-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 20px; color: #714b1e; background: #fff6e7; border-bottom: 1px solid #edd8b7; }
+      .offline-row small { color: #8b6b47; }
+      .timeline-preview { width: min(760px, calc(100% - 64px)); margin: auto; padding: 42px 0 180px; }
+      .timeline-preview .eyebrow { color: var(--muted); font-size: 11px; }
+      .timeline-preview h2 { margin: 7px 0 14px; font-size: 22px; letter-spacing: -.02em; }
+      .timeline-preview p { max-width: 680px; color: #42413d; font-size: 14px; line-height: 1.65; }
+      .tool-note { margin: 18px 0; padding: 12px 14px; color: var(--muted); background: #f5f5f2; border: 1px solid var(--line); border-radius: 8px; }
+      .composer-dock { position: absolute; right: 0; bottom: 0; left: 0; padding: 28px 32px 18px; background: linear-gradient(transparent, var(--paper) 30%); }
+      .composer { width: min(780px, 100%); margin: auto; padding: 10px; background: #fff; border: 1px solid var(--line-strong); border-radius: 13px; box-shadow: 0 6px 24px #0000000b; }
+      .composer textarea { width: 100%; min-height: 68px; padding: 4px 5px 9px; resize: none; background: transparent; border: 0; outline: 0; }
+      .composer-bottom { display: flex; align-items: center; gap: 6px; }
+      .composer-bottom .spacer { flex: 1; }
+      .context-chip { display: inline-flex; max-width: 190px; min-height: 28px; align-items: center; gap: 5px; padding: 4px 8px; overflow: hidden; color: var(--muted); background: #f5f5f2; border: 1px solid var(--line); border-radius: 7px; text-overflow: ellipsis; white-space: nowrap; }
+      button.context-chip:hover { color: var(--ink); background: #eeeeea; }
+      .new-view { display: flex; min-height: 100vh; flex-direction: column; }
+      .new-center { width: min(790px, calc(100% - 64px)); margin: auto; padding: 74px 0 130px; }
+      .new-center > h1 { margin: 0 0 25px; text-align: center; font-size: 27px; font-weight: 560; letter-spacing: -.035em; }
+      .new-note { margin: 12px auto 0; color: var(--muted); font-size: 11px; text-align: center; }
+      .scope-browser { display: grid; min-height: 360px; grid-template-columns: 240px minmax(0, 1fr); overflow: hidden; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px #0000000b; }
+      .scope-list { padding: 12px; background: #f5f5f2; border-right: 1px solid var(--line); }
+      .scope-list h2, .compose-panel h2 { margin: 4px 6px 12px; font-size: 12px; }
+      .scope-option { display: grid; width: 100%; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; padding: 8px; text-align: left; background: transparent; border: 0; border-radius: 7px; }
+      .scope-option.selected { background: #fff; box-shadow: 0 1px 5px #0000000a; }
+      .scope-option small { display: block; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+      .compose-panel { display: flex; flex-direction: column; padding: 18px; }
+      .compose-panel .composer { width: 100%; margin: auto 0 0; box-shadow: none; }
+      .scope-summary { display: grid; gap: 10px; padding: 8px; }
+      .scope-summary h3 { margin: 0; font-size: 20px; font-weight: 560; }
+      .scope-summary p { margin: 0; color: var(--muted); }
+      .inherit-banner { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding: 11px 13px; background: #f5f5f2; border: 1px solid var(--line); border-radius: 10px; }
+      .inherit-banner .scope-icon { display: grid; width: 30px; height: 30px; place-items: center; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+      .inherit-banner .scope-text { min-width: 0; flex: 1; }
+      .inherit-banner strong, .inherit-banner small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .inherit-banner small { color: var(--muted); }
+      .tree-label { padding: 6px 8px; font-weight: 620; }
+      .tree-label.workspace-label { padding-left: 23px; color: var(--muted); font-size: 11px; font-weight: 500; }
+      .tree-label .tree-add { margin-left: auto; color: var(--faint); opacity: 0; }
+      .tree-label:hover .tree-add { opacity: 1; }
+      .tree-session { padding-left: 34px; }
+      .outcome { display: flex; align-items: flex-start; gap: 9px; margin: 12px auto 0; padding: 10px 12px; background: #f2f6fa; border: 1px solid #cbdceb; border-radius: 9px; }
+      .outcome.error { color: #763329; background: #fff1ef; border-color: #edc6c0; }
+      .outcome.warning { color: #715026; background: #fff7e9; border-color: #ecd8b5; }
+      .outcome.success { color: #285f4c; background: #eff8f4; border-color: #bfddcf; }
+      .outcome strong { display: block; }
+      .outcome small { display: block; margin-top: 2px; color: inherit; opacity: .8; }
+      .draft-failure { padding: 6px 4px 0; color: var(--danger); font-size: 11px; }
+      .catalog-empty-main { display: grid; min-height: 100vh; place-items: center; padding: 60px; text-align: center; }
+      .catalog-empty-main h1 { margin: 0 0 8px; font-size: 22px; }
+      .catalog-empty-main p { max-width: 420px; margin: 0 0 20px; color: var(--muted); }
+      .prototype-controls { position: fixed; z-index: 50; bottom: 13px; left: 50%; display: flex; align-items: center; gap: 6px; padding: 7px; color: #fff; background: #20201ef2; border: 1px solid #ffffff20; border-radius: 12px; box-shadow: 0 10px 35px #0004; transform: translateX(-50%); }
+      .prototype-controls button, .prototype-controls select { min-height: 32px; color: #fff; background: #ffffff12; border: 1px solid #ffffff20; border-radius: 7px; }
+      .prototype-controls button { min-width: 32px; }
+      .prototype-controls select { max-width: 170px; padding: 0 7px; }
+      .prototype-label { min-width: 210px; padding: 0 7px; text-align: center; }
+      .prototype-label small { display: block; color: #bbb; }
+      .mobile-menu { display: none; }
+
+      @media (max-width: 760px) {
+        .app { grid-template-columns: 1fr; }
+        .rail { position: fixed; z-index: 30; inset: 0 12% 0 0; transform: translateX(-105%); transition: transform 150ms ease-out; box-shadow: 12px 0 35px #0002; }
+        body.drawer-open .rail { transform: translateX(0); }
+        .rail-footer { width: 88%; }
+        .mobile-menu { display: inline-flex; }
+        .view-header { padding-inline: 12px; }
+        .view-header .desktop-only { display: none; }
+        .timeline-preview { width: calc(100% - 34px); padding-top: 30px; }
+        .composer-dock { padding: 28px 12px 74px; }
+        .new-center { width: calc(100% - 24px); padding: 76px 0 150px; }
+        .new-center > h1 { font-size: 23px; }
+        .scope-browser { grid-template-columns: 1fr; }
+        .scope-list { border-right: 0; border-bottom: 1px solid var(--line); }
+        .context-chip.runtime-secondary { display: none; }
+        .prototype-controls { bottom: 8px; width: calc(100% - 16px); justify-content: center; }
+        .prototype-label { min-width: 0; flex: 1; }
+        .prototype-label small { display: none; }
+        .prototype-controls select { width: 112px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="app"></main>
+    <div class="prototype-controls" aria-label="Prototype controls">
+      <button id="previous" aria-label="Previous variant">←</button>
+      <div class="prototype-label" id="prototype-label"></div>
+      <button id="next" aria-label="Next variant">→</button>
+      <select id="scenario" aria-label="Representative scenario"></select>
+    </div>
+    <script>
+      const variants = {
+        A: { name: "Nested scope rail", note: "Hierarchy stays in discovery" },
+        B: { name: "Search-first catalog", note: "Scope travels with each result" },
+        C: { name: "Workspace launch points", note: "Creation inherits its launch scope" },
+      };
+
+      const scenarios = {
+        default: "Populated catalog",
+        search: "Search match",
+        "no-results": "Search · no results",
+        empty: "Empty catalog",
+        archived: "Archived discovery",
+        new: "New Session",
+        "draft-failure": "Draft save failure",
+        capabilities: "Runtime capabilities absent",
+        "create-rejected": "Creation rejected",
+        "run-rejected": "First Run rejected",
+        uncertain: "Transport uncertain",
+        offline: "Offline cached shell",
+      };
+
+      const sessions = [
+        { id: "reconnect", title: "Reconnect receipt race", project: "Pidex", workspace: "main", path: "C:\\git\\Pidex", attention: "working", read: false, meta: "Run 18 executing · 1 queued", time: "now" },
+        { id: "release", title: "Release pipeline review", project: "Pidex", workspace: "release-validation", path: "C:\\git\\Pidex-release", attention: "response", read: false, meta: "2 Interactions need response", time: "2m" },
+        { id: "corruption", title: "Index corruption diagnosis with a deliberately long title", project: "Pidex", workspace: "main", path: "C:\\git\\Pidex", attention: "response", read: true, meta: "Follow-up held after Interrupted Run", time: "8m" },
+        { id: "cache", title: "PWA cache boundaries", project: "Pidex", workspace: "main", path: "C:\\git\\Pidex", attention: "quiet", read: true, meta: "Completed · sleeping", time: "1h" },
+        { id: "empty-session", title: "Untitled Session", project: "Pidex", workspace: null, path: null, attention: "quiet", read: true, meta: "Empty · sleeping", time: "Tue" },
+        { id: "unscoped", title: "Explore API response shape", project: null, workspace: null, path: null, attention: "quiet", read: false, meta: "Completed", time: "Fri" },
+      ];
+
+      const archivedSessions = [
+        { id: "archived", title: "Legacy pairing spike", project: "Pidex", workspace: "main", path: "C:\\git\\Pidex", attention: "quiet", read: true, meta: "Archived · eligible to restore", time: "Jul 12" },
+      ];
+
+      const scenarioParams = {
+        default: {},
+        search: { q: "cache" },
+        "no-results": { q: "deployment wizard" },
+        empty: { catalog: "empty" },
+        archived: { catalog: "archived" },
+        new: { mode: "new" },
+        "draft-failure": { mode: "new", draft: "failure" },
+        capabilities: { mode: "new", capabilities: "absent" },
+        "create-rejected": { mode: "new", outcome: "create-rejected" },
+        "run-rejected": { mode: "new", outcome: "run-rejected" },
+        uncertain: { mode: "new", outcome: "uncertain" },
+        offline: { connection: "offline" },
+      };
+
+      function params() { return new URLSearchParams(location.search); }
+      function currentVariant() { const value = params().get("variant")?.toUpperCase(); return variants[value] ? value : "A"; }
+      function currentScenario() { const value = params().get("scenario"); return scenarios[value] ? value : "default"; }
+      function value(name) { return params().get(name) ?? scenarioParams[currentScenario()]?.[name] ?? null; }
+      function selectedId() { return params().get("session") || "reconnect"; }
+      function currentSessions() { return value("catalog") === "archived" ? archivedSessions : value("catalog") === "empty" ? [] : sessions; }
+      function isNew() { return value("mode") === "new"; }
+      function isOffline() { return value("connection") === "offline"; }
+
+      function setParams(changes, replace = false) {
+        const url = new URL(location.href);
+        Object.entries(changes).forEach(([key, value]) => value == null ? url.searchParams.delete(key) : url.searchParams.set(key, value));
+        history[replace ? "replaceState" : "pushState"]({}, "", url);
+        render();
+      }
+
+      function setScenario(key) {
+        const url = new URL(location.href);
+        ["q", "catalog", "mode", "draft", "capabilities", "outcome", "connection", "session"].forEach(name => url.searchParams.delete(name));
+        url.searchParams.set("scenario", key);
+        Object.entries(scenarioParams[key]).forEach(([name, value]) => url.searchParams.set(name, value));
+        history.pushState({}, "", url);
+        render();
+      }
+
+      function sessionMatches(session, query) {
+        return `${session.title} ${session.project || "unscoped"} ${session.workspace || "project sessions"} ${session.meta}`.toLowerCase().includes(query.toLowerCase());
+      }
+
+      function sessionRow(session, className = "") {
+        const selected = !isNew() && selectedId() === session.id;
+        return `<button class="session-row ${className} ${selected ? "selected" : ""} ${session.read ? "" : "unread"}" data-session="${session.id}">
+          <span class="cue ${session.attention} ${session.read ? "" : "unread"}"></span>
+          <span class="session-copy"><span class="session-title">${session.title}</span><span class="session-meta">${session.meta}</span></span>
+          <span class="session-time">${session.time}</span>
+        </button>`;
+      }
+
+      function groupedSessions(items) {
+        const groups = new Map();
+        items.forEach(session => {
+          const key = session.project ? `${session.project}::${session.workspace || "Project Sessions"}` : "Unscoped::Unscoped Sessions";
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(session);
+        });
+        return groups;
+      }
+
+      function commonNav(searchVisible = false) {
+        return `<div class="brand-row"><span class="brand-mark">P</span><span>Pidex</span></div>
+          <nav class="rail-nav">
+            <button class="rail-action" data-new><span>✎</span><strong>New Session</strong></button>
+            ${searchVisible ? "" : `<button class="rail-link" data-focus-search><span>⌕</span><span>Search</span></button>`}
+            <button class="rail-link" data-archived><span>◇</span><span>Archived</span></button>
+          </nav>`;
+      }
+
+      function searchBox() {
+        const query = value("q") || "";
+        return `<form class="rail-search" data-search-form><span>⌕</span><input name="q" value="${query}" placeholder="Search Sessions" aria-label="Search Sessions"></form>`;
+      }
+
+      function noResults(query) {
+        return `<div class="rail-empty"><strong>No Sessions found</strong><span>No title or scope matches “${query}”.</span></div>`;
+      }
+
+      function railA() {
+        const query = value("q") || "";
+        const items = currentSessions().filter(session => sessionMatches(session, query));
+        const groups = groupedSessions(items);
+        let catalog = "";
+        let currentProject = "";
+        for (const [key, scoped] of groups) {
+          const [project, workspace] = key.split("::");
+          if (project !== currentProject) {
+            catalog += `<div class="project-head" data-project="${project}"><span class="chevron">⌄</span><span>${project}</span></div>`;
+            currentProject = project;
+          }
+          catalog += `<div class="workspace"><div class="workspace-head"><span class="chevron">⌄</span><span class="path">${workspace}</span></div>${scoped.map(item => sessionRow(item, "indent")).join("")}</div>`;
+        }
+        return `<aside class="rail">${commonNav()}${searchBox()}<div class="section-title"><span>${value("catalog") === "archived" ? "Archived" : "Sessions"}</span><span>Recent activity</span></div><div class="rail-scroll">${items.length ? catalog : noResults(query)}</div>${railFooter()}</aside>`;
+      }
+
+      function railB() {
+        const query = value("q") || "";
+        const items = currentSessions().filter(session => sessionMatches(session, query));
+        return `<aside class="rail">${commonNav(true)}${searchBox()}<div class="facet-row"><button class="facet selected">All</button><button class="facet">Needs response</button><button class="facet">Working</button></div><div class="section-title"><span>${query ? "Results" : value("catalog") === "archived" ? "Archived" : "Recent"}</span><span>${items.length}</span></div><div class="rail-scroll">${items.length ? items.map(item => sessionRow({ ...item, meta: `${item.project ? `${item.project} / ${item.workspace || "Project Sessions"}` : "Unscoped"} · ${item.meta}` })).join("") : noResults(query)}</div>${railFooter()}</aside>`;
+      }
+
+      function railC() {
+        const query = value("q") || "";
+        const items = currentSessions().filter(session => sessionMatches(session, query));
+        const pidex = items.filter(item => item.project === "Pidex");
+        const unscoped = items.filter(item => !item.project);
+        const workspace = name => pidex.filter(item => item.workspace === name);
+        return `<aside class="rail">${commonNav()}${searchBox()}<div class="section-title"><span>Projects & Workspaces</span><span>⌕</span></div><div class="rail-scroll">${items.length ? `
+          <button class="tree-label"><span>⌄</span><span>Pidex</span><span class="tree-add" data-new data-scope="Pidex / Project Sessions">＋</span></button>
+          <button class="tree-label workspace-label"><span>⌄</span><span>main</span><span class="tree-add" data-new data-scope="Pidex / main">＋</span></button>${workspace("main").map(item => sessionRow(item, "tree-session")).join("")}
+          <button class="tree-label workspace-label"><span>⌄</span><span>release-validation</span><span class="tree-add" data-new data-scope="Pidex / release-validation">＋</span></button>${workspace("release-validation").map(item => sessionRow(item, "tree-session")).join("")}
+          ${pidex.filter(item => !item.workspace).length ? `<button class="tree-label workspace-label"><span>⌄</span><span>Project Sessions</span><span class="tree-add" data-new data-scope="Pidex / Project Sessions">＋</span></button>${pidex.filter(item => !item.workspace).map(item => sessionRow(item, "tree-session")).join("")}` : ""}
+          ${unscoped.length ? `<button class="tree-label"><span>⌄</span><span>Unscoped Sessions</span><span class="tree-add" data-new data-scope="Unscoped">＋</span></button>${unscoped.map(item => sessionRow(item, "tree-session")).join("")}` : ""}` : noResults(query)}</div>${railFooter()}</aside>`;
+      }
+
+      function railFooter() {
+        return `<footer class="rail-footer"><div class="host-state"><span style="display:flex;align-items:center"><span class="host-dot"></span><span class="host-copy"><strong>${isOffline() ? "Offline" : "Dev workstation"}</strong><small>${isOffline() ? "Last synchronized 8 minutes ago" : "Current · UD’s Device"}</small></span></span><button class="icon-button" title="Settings">⚙</button></div></footer>`;
+      }
+
+      function composer(scope, variant) {
+        const capabilitiesAbsent = value("capabilities") === "absent";
+        const draftFailure = value("draft") === "failure";
+        const draft = draftFailure ? "Trace why cached discovery loses the newest Session after reconnect." : "";
+        return `<div class="composer"><textarea aria-label="Composer Draft" placeholder="Ask Pi to work on something…">${draft}</textarea>
+          <div class="composer-bottom">
+            ${variant === "A" ? `<button class="context-chip" data-scope-picker title="Change Project and Workspace">⌘ ${scope}</button>` : ""}
+            ${capabilitiesAbsent ? "" : `<button class="context-chip runtime-secondary">GPT-5 · Auto</button>`}
+            <button class="context-chip runtime-secondary">＋ Add context</button>
+            <span class="spacer"></span>
+            <button class="quiet-button" data-outcome="created-empty">Create empty</button>
+            <button class="dark-button" data-outcome="accepted" ${isOffline() ? "disabled" : ""}>Create & Run ↑</button>
+          </div>${draftFailure ? `<div class="draft-failure">Draft is only in memory · saving on this Device failed</div>` : ""}</div>`;
+      }
+
+      function outcome() {
+        const outcomeValue = value("outcome");
+        const copy = {
+          "create-rejected": ["error", "Session was not created", "The Workspace is no longer available. Your Composer Draft remains on this Device."],
+          "run-rejected": ["warning", "Session created; first Run was rejected", "Open the empty Session to revise and submit its retained Composer Draft."],
+          uncertain: ["warning", "Confirmation is delayed", "Pidex cannot yet tell whether the Host accepted creation. Keep the draft and reconcile before retrying."],
+          "created-empty": ["success", "Empty Session created", "The durable Session is now selected. No Run was submitted."],
+          accepted: ["success", "Session created; first Run accepted", "The new Session is selected and authoritative execution is starting."],
+        }[outcomeValue];
+        return copy ? `<div class="outcome ${copy[0]}"><span>${copy[0] === "success" ? "✓" : "!"}</span><span><strong>${copy[1]}</strong><small>${copy[2]}</small></span></div>` : "";
+      }
+
+      function newView(variant) {
+        const inherited = params().get("scope") || "Pidex / main";
+        if (variant === "B") {
+          return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><div class="scope-browser"><aside class="scope-list"><h2>Choose a scope</h2><button class="scope-option selected"><span>▣</span><span><strong>Pidex / main</strong><small>C:\\git\\Pidex</small></span></button><button class="scope-option"><span>▣</span><span><strong>Pidex / release-validation</strong><small>C:\\git\\Pidex-release</small></span></button><button class="scope-option"><span>◇</span><span><strong>Pidex / Project Sessions</strong><small>No Workspace</small></span></button><button class="scope-option"><span>○</span><span><strong>Unscoped</strong><small>No Project or Workspace</small></span></button></aside><section class="compose-panel"><div class="scope-summary"><span class="scope-label">New Session in</span><h3>Pidex / main</h3><p>C:\\git\\Pidex</p></div>${composer("Pidex / main", variant)}${outcome()}</section></div><p class="new-note">Navigating away discards only this View; the Device-owned draft is retained.</p></div></section>`;
+        }
+        if (variant === "C") {
+          return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1><div class="inherit-banner"><span class="scope-icon">▣</span><span class="scope-text"><strong>${inherited}</strong><small>${inherited.includes("main") ? "C:\\git\\Pidex" : "Scope inherited from its launch point"}</small></span><button class="quiet-button" data-scope-picker>Change</button></div>${composer(inherited, variant)}${outcome()}<p class="new-note">This scope was inherited from the Project or Workspace where New Session was opened.</p></div></section>`;
+        }
+        return `<section class="new-view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>New Session</h1><p>Client-local View · no Host object yet</p></div></header>${offlineRow()}<div class="new-center"><h1>What should we work on?</h1>${composer("Pidex / main", variant)}${outcome()}<p class="new-note">Project, Workspace, runtime options, and Composer Draft belong to this blank View until creation succeeds.</p></div></section>`;
+      }
+
+      function offlineRow() {
+        return isOffline() ? `<div class="offline-row"><strong>Offline · cached discovery may be stale</strong><small>Host mutations unavailable · local draft editing remains available</small></div>` : "";
+      }
+
+      function sessionView() {
+        const session = [...sessions, ...archivedSessions].find(item => item.id === selectedId()) || sessions[0];
+        if (!currentSessions().length) return `<section class="catalog-empty-main"><div><h1>No Sessions yet</h1><p>Create a Session with Project and Workspace scope, or start unscoped. Nothing is created until you explicitly create or submit.</p><button class="dark-button" data-new>New Session</button></div></section>`;
+        return `<section class="view"><header class="view-header"><button class="icon-button mobile-menu" data-drawer>☰</button><div class="view-title"><h1>${session.title}</h1><p>${session.project ? `${session.project} / ${session.workspace || "Project Sessions"}${session.path ? ` · ${session.path}` : ""}` : "Unscoped Session"}</p></div><button class="quiet-button desktop-only">•••</button></header>${offlineRow()}<div class="timeline-preview"><div class="eyebrow">${session.meta}</div><h2>${session.id === "cache" ? "Cache coverage and reconciliation" : "Preserve receipt truth across reconnect"}</h2><p>${session.id === "cache" ? "This sleeping Session was selected without waking it. Its finalized Timeline remains available for review." : "I’m tracing the synchronization cursor through the Client projection and Host receipt boundary. Selecting this View changes only presentation; it does not wake, stop, sleep, archive, or otherwise mutate the Session."}</p><div class="tool-note">Session selection installed a routable View and requested current scope. Execution state is unchanged.</div></div><div class="composer-dock"><div class="composer"><textarea placeholder="Follow up…"></textarea><div class="composer-bottom"><button class="context-chip">${session.project ? `${session.project} / ${session.workspace || "Project"}` : "Unscoped"}</button><button class="context-chip runtime-secondary">GPT-5 · Auto</button><span class="spacer"></span><button class="dark-button" ${isOffline() ? "disabled" : ""}>${session.attention === "working" ? "Queue follow-up ↑" : "Run ↑"}</button></div></div></div></section>`;
+      }
+
+      function render() {
+        const variant = currentVariant();
+        document.body.classList.toggle("offline", isOffline());
+        document.body.classList.remove("drawer-open");
+        const rail = variant === "A" ? railA() : variant === "B" ? railB() : railC();
+        document.querySelector("#app").innerHTML = `<div class="app">${rail}<section class="main">${isNew() ? newView(variant) : sessionView()}</section></div>`;
+        document.querySelector("#prototype-label").innerHTML = `<strong>${variant} — ${variants[variant].name}</strong><small>${variants[variant].note}</small>`;
+        const scenario = document.querySelector("#scenario");
+        scenario.replaceChildren(...Object.entries(scenarios).map(([key, label]) => new Option(label, key, false, key === currentScenario())));
+        wire();
+      }
+
+      function wire() {
+        document.querySelectorAll("[data-session]").forEach(button => button.addEventListener("click", () => setParams({ mode: null, session: button.dataset.session, scenario: "default", outcome: null })));
+        document.querySelectorAll("[data-new]").forEach(button => button.addEventListener("click", event => { event.stopPropagation(); setParams({ mode: "new", scope: button.dataset.scope || "Pidex / main", scenario: "new", outcome: null }); }));
+        document.querySelectorAll("[data-archived]").forEach(button => button.addEventListener("click", () => setScenario("archived")));
+        document.querySelectorAll("[data-drawer]").forEach(button => button.addEventListener("click", () => document.body.classList.toggle("drawer-open")));
+        document.querySelectorAll("[data-focus-search]").forEach(button => button.addEventListener("click", () => document.querySelector(".rail-search input")?.focus()));
+        document.querySelector("[data-search-form]")?.addEventListener("submit", event => { event.preventDefault(); setParams({ q: new FormData(event.currentTarget).get("q"), scenario: "search" }); });
+        document.querySelectorAll("[data-outcome]").forEach(button => button.addEventListener("click", () => setParams({ outcome: button.dataset.outcome })));
+        document.querySelectorAll("[data-scope-picker]").forEach(button => button.addEventListener("click", () => setParams({ scope: params().get("scope") === "Unscoped" ? "Pidex / main" : "Unscoped" })));
+      }
+
+      function cycle(direction) {
+        const keys = Object.keys(variants);
+        const index = keys.indexOf(currentVariant());
+        setParams({ variant: keys[(index + direction + keys.length) % keys.length] });
+      }
+
+      document.querySelector("#previous").addEventListener("click", () => cycle(-1));
+      document.querySelector("#next").addEventListener("click", () => cycle(1));
+      document.querySelector("#scenario").addEventListener("change", event => setScenario(event.target.value));
+      document.addEventListener("keydown", event => {
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName) || event.target.isContentEditable) return;
+        if (event.key === "ArrowLeft") cycle(-1);
+        if (event.key === "ArrowRight") cycle(1);
+        if (event.key === "Escape") document.body.classList.remove("drawer-open");
+      });
+      addEventListener("popstate", render);
+      render();
+    </script>
+  </body>
+</html>
