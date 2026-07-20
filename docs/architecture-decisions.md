@@ -12,3 +12,9 @@
 - Setup commits a random 80-bit `pidex-<hex>.local` name and fixed port 47831 once. Updates consume this durable identity rather than deriving it from the computer or network name.
 - A Host-private CA signs the canonical leaf. Private keys are stored only as versioned current-user DPAPI envelopes under a user-only ACL; only the public CA enters Current User trust. Native Windows operations remain behind the platform adapter.
 - Launcher readiness is bounded at 15 seconds. Five delayed retries use 1/2/4/8/16 seconds, then publish a circuit-open cause to the local recovery surface. The same supervisor function is the explicit retry path; the daemon and LAN workers are never started while the circuit remains open.
+
+## Windows Development CA (issue 43)
+
+- Development checkouts share one CA under `%LOCALAPPDATA%\Pidex\Development CA`; only disposable server leaves remain in checkout data. Run `npm run dev:ca:setup` once before `npm run dev`. Setup is idempotent and exports only the public certificate path.
+- Startup never creates or repairs the Development CA. Use `npm run dev:ca:reset` followed by setup for missing, partial, corrupt, mismatched, or expired state; this deliberately changes trust for every checkout and LAN client.
+- Historical checkout-local CA material is not migrated. Remove old checkout TLS material, never copy a CA private key to a client, and trust only the profile CA's public certificate.
