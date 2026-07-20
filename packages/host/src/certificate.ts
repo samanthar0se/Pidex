@@ -9,6 +9,22 @@ export interface HostCertificate {
   ca: Buffer;
 }
 
+export interface HostCertificateProvisioningRequest {
+  dataDir: string;
+  hostname: string;
+  windows: WindowsPlatformAdapter;
+}
+
+/** A startup boundary; development certificate state can live outside Host authority. */
+export type HostCertificateProvisioner = (
+  request: HostCertificateProvisioningRequest,
+) => HostCertificate | Promise<HostCertificate>;
+
+/** The packaged Host identity remains the default and retains its protected keys/trust. */
+export const provisionPackagedHostCertificate: HostCertificateProvisioner =
+  request =>
+    ensureCertificate(request.dataDir, request.hostname, request.windows);
+
 export function ensureCertificate(
   dataDir: string,
   hostname: string,

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { adaptersFor } from "../../adapters/src/index.js";
+import { provisionPackagedHostCertificate } from "./certificate.js";
 import { startHost } from "./host.js";
 
 const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
@@ -10,6 +11,9 @@ const host = await startHost({
   dataDir,
   port,
   adapters: adaptersFor(mode),
+  // Packaged startup chooses its retained, protected identity explicitly. The
+  // development launcher can inject its independent profile/checkout lifecycle.
+  certificateProvisioner: provisionPackagedHostCertificate,
 });
 
 console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
