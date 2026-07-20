@@ -17,3 +17,11 @@ node .scratch/pidex-product-and-architecture/prototypes/session-discovery-new-se
 Then open <http://localhost:4174/?variant=A&scenario=default>.
 
 This is a throwaway prototype. Session selection and all create actions are local simulations; they do not wake a Session or perform Host mutations.
+
+## Captured comparisons
+
+| Variant | Discovery | New Session |
+| --- | --- | --- |
+| A — Nested scope rail | [Discovery](screenshots/A-discovery.png) | [New Session](screenshots/A-new-session.png) |
+| B — Search-first catalog | [Discovery](screenshots/B-discovery.png) | [New Session](screenshots/B-new-session.png) |
+| C — Workspace launch points | [Discovery](screenshots/C-discovery.png) | [New Session](screenshots/C-new-session.png) |
