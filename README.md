@@ -53,8 +53,8 @@ Development CA setup is an explicit, one-time operation for the current Windows
 profile and must run before the first Host startup. It installs only the public
 certificate in Current User Root and reports `created` for a new CA or
 `unchanged` when the existing CA was validated and reused. Record the displayed
-SHA-256 fingerprint and public certificate export location; the latter is the
-only certificate file to distribute to a LAN client.
+SHA-256 fingerprint. The public certificate at the displayed export location is
+the only certificate file to distribute to a LAN client.
 
 The development Host serves `https://localhost:7443`. Its disposable leaf and
 private key remain in `.pidex-data-dev/`, while the shared Development CA stays

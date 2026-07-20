@@ -61,8 +61,8 @@ certutil -user -addstore Root "$HOME\Downloads\pidex-ca.pem"
 
 Restart the browser, open the printed `https://<LAN-IP>:7443/?pair=...` URL, and
 select **Pair Device**. Never copy or transfer a Development CA private key,
-checkout data, a checkout-local leaf key, or an obsolete checkout certificate
-path. Do not transfer the rest of `.pidex-data-dev/` and do not disable
+checkout data, a checkout-local leaf key, or a certificate from an obsolete
+checkout path. Do not transfer the rest of `.pidex-data-dev/` and do not disable
 certificate checks.
 
 Changing `PIDEX_HOSTNAME`, replacing or renewing a leaf, and deleting a checkout
