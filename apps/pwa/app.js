@@ -40,6 +40,7 @@ const BUDGETED_CACHE_STORES = [
   CACHE_STORES.sessionProjections,
 ];
 const OFFLINE_STATUS = "Offline · cached state may be stale";
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000];
 const ACTIVE_INTERACTION_STATES = ["open", "resolving"];
 const ACTIVE_RUN_STATES = ["executing", "cancelling"];
 const FAILED_RUN_STATES = ["failed", "cancelled", "interrupted"];
@@ -102,6 +103,9 @@ if (!browserAssessment.supported) {
 const pairingSecret = new URL(location.href).searchParams.get("pair");
 let socket;
 let messageChain = Promise.resolve();
+let authenticationPromise;
+let reconnectTimer;
+let reconnectAttempt = 0;
 const mobileLayoutQuery = matchMedia("(max-width: 720px)");
 
 function setDrawerOpen(isOpen) {
@@ -151,16 +155,13 @@ document.addEventListener("click", event => {
   navigate(link.pathname);
 });
 addEventListener("popstate", route);
-addEventListener("offline", () => setCurrent(false, OFFLINE_STATUS));
-addEventListener("online", () => {
-  setCurrent(false, "Reconnecting");
-  authenticateStoredDevice();
-});
+addEventListener("offline", () => pauseReconnect(OFFLINE_STATUS));
+addEventListener("online", () => reconnectNow());
 addEventListener("visibilitychange", () => {
   if (document.hidden) {
     closeControlSocket();
     state.currentScopes.clear();
-    setCurrent(false, "Stale · return to reconcile");
+    pauseReconnect("Stale · return to reconcile");
     return;
   }
 
@@ -171,15 +172,13 @@ addEventListener("visibilitychange", () => {
     return;
   }
 
-  setCurrent(false, "Reconnecting");
-  authenticateStoredDevice();
+  reconnectNow();
 });
 addEventListener("pageshow", event => {
   // Safari may restore a standalone PWA from its page cache. Reconcile the
   // View without coupling its lifecycle to Session execution or ownership.
   if (event.persisted) {
-    setCurrent(false, "Reconnecting after suspension");
-    authenticateStoredDevice();
+    reconnectNow("Reconnecting after suspension");
   }
 });
 navigator.serviceWorker?.addEventListener(
@@ -194,9 +193,8 @@ function reconcilePushNotification(event) {
 
   // Notification hints are historical. Authenticate and synchronize before
   // rendering their target or enabling any control.
-  setCurrent(false, "Reconciling notification");
   history.replaceState({}, "", event.data.path || "/");
-  authenticateStoredDevice();
+  reconnectNow("Reconciling notification");
 }
 
 // Device-owned defaults are stored before permission is requested so lock-
@@ -274,6 +272,25 @@ async function pairDevice() {
 }
 
 async function authenticateStoredDevice() {
+  if (authenticationPromise) {
+    return authenticationPromise;
+  }
+  if (
+    socket?.readyState === WebSocket.CONNECTING ||
+    socket?.readyState === WebSocket.OPEN
+  ) {
+    return;
+  }
+
+  authenticationPromise = authenticateStoredDeviceOnce();
+  try {
+    await authenticationPromise;
+  } finally {
+    authenticationPromise = undefined;
+  }
+}
+
+async function authenticateStoredDeviceOnce() {
   const device = await loadDevice();
   if (!device) {
     setCurrent(false, "Pairing required");
@@ -300,28 +317,37 @@ async function authenticateStoredDevice() {
       false,
       String(error?.message).includes("revoked") ? "Revoked" : OFFLINE_STATUS,
     );
+    if (!String(error?.message).includes("revoked")) {
+      scheduleReconnect();
+    }
   }
 }
 
 function openControl(token) {
   closeControlSocket();
   state.currentScopes.clear();
-  socket = new WebSocket(
+  const controlSocket = new WebSocket(
     `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
   );
-  socket.onmessage = event => {
+  socket = controlSocket;
+  controlSocket.onmessage = event => {
     // Preserve wire order while IndexedDB transactions commit. A scope cannot
     // become current before its replacement projection is durable.
     messageChain = messageChain
       .then(() => handleMessage(JSON.parse(event.data)))
       .catch(() => setCurrent(false, OFFLINE_STATUS));
   };
-  socket.onclose = event => {
+  controlSocket.onclose = event => {
+    if (socket !== controlSocket) {
+      return;
+    }
+    socket = undefined;
     if (event.code === 4003 && event.reason === "device-revoked") {
       void cleanupRevokedDevice();
       return;
     }
     setCurrent(false, OFFLINE_STATUS);
+    scheduleReconnect();
   };
 }
 
@@ -335,6 +361,51 @@ function closeControlSocket() {
   activeSocket.onmessage = null;
   activeSocket.onclose = null;
   activeSocket.close();
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer || !navigator.onLine || document.hidden) {
+    return;
+  }
+
+  const delay = RECONNECT_DELAYS_MS[
+    Math.min(reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)
+  ];
+  reconnectAttempt += 1;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    if (!navigator.onLine || document.hidden) {
+      return;
+    }
+    setCurrent(false, "Reconnecting");
+    void authenticateStoredDevice();
+  }, delay);
+}
+
+function pauseReconnect(label) {
+  clearScheduledReconnect();
+  setCurrent(false, label);
+}
+
+function reconnectNow(label = "Reconnecting") {
+  clearScheduledReconnect();
+  reconnectAttempt = 0;
+  closeControlSocket();
+  state.currentScopes.clear();
+  setCurrent(false, label);
+  void authenticateStoredDevice();
+}
+
+function resetReconnect() {
+  clearScheduledReconnect();
+  reconnectAttempt = 0;
+}
+
+function clearScheduledReconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
 }
 
 async function handleMessage(message) {
@@ -1175,6 +1246,9 @@ function markScopeCurrent(scope) {
   state.currentScopes.add(scopeKey(scope));
   const current = requiredScopesCurrent(currentSessionId());
   const label = current ? "Current" : "Reconciling Session";
+  if (current) {
+    resetReconnect();
+  }
   setCurrent(current, label);
 }
 
@@ -1756,7 +1830,8 @@ async function cleanupRevokedDevice() {
 }
 
 async function clearAllDeviceData() {
-  socket?.close();
+  clearScheduledReconnect();
+  closeControlSocket();
   const registration = await navigator.serviceWorker?.ready.catch(() => null);
   await registration?.pushManager?.getSubscription()
     .then(subscription => subscription?.unsubscribe())

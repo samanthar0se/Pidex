@@ -45,6 +45,23 @@ function readPwaShell(origin: string): Promise<string> {
   });
 }
 
+function readPwaHeaders(
+  origin: string,
+  path: string,
+): Promise<Record<string, string | string[] | undefined>> {
+  return new Promise((resolve, reject) => {
+    const request = get(
+      new URL(path, origin),
+      { rejectUnauthorized: false },
+      response => {
+        response.resume();
+        resolve(response.headers);
+      },
+    );
+    request.on("error", reject);
+  });
+}
+
 test("HTTPS PWA and CLI observe durable authoritative Host status across restart", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-product-"));
 
@@ -61,6 +78,11 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
     try {
       const shell = await readPwaShell(initialHost.origin);
       assert.match(shell, /Pidex Host/);
+      const serviceWorkerHeaders = await readPwaHeaders(
+        initialHost.origin,
+        "/service-worker.js",
+      );
+      assert.equal(serviceWorkerHeaders["cache-control"], "no-cache");
 
       const [pwaStatus, cliStatus] = await Promise.all([
         readPwaStatus(initialHost.origin, authorization),

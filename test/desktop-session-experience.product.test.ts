@@ -26,6 +26,15 @@ test("desktop shell exposes the complete single-view Session workflow", async ()
   assert.match(application, /addEventListener\("popstate", route\)/);
   assert.match(application, /addEventListener\("offline"/);
   assert.match(application, /visibilitychange/);
+  assert.match(
+    application,
+    /controlSocket\.onclose = event => {[\s\S]*?scheduleReconnect\(\);\s+};/,
+  );
+  assert.match(application, /function scheduleReconnect\(\)/);
+  assert.match(
+    application,
+    /reconnectTimer = setTimeout\([\s\S]*?authenticateStoredDevice\(\);[\s\S]*?}, delay\)/,
+  );
   assert.match(application, /session\.fork/);
   assert.match(application, /session\.rename/);
   assert.match(application, /run\.release/);

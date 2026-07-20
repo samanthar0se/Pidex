@@ -118,6 +118,7 @@ const INTERNAL_WORKER_CAPABILITIES = new Set([
 interface PwaAsset {
   file: string;
   contentType: string;
+  cacheControl?: string;
 }
 
 interface RunPresentationContext {
@@ -157,6 +158,7 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
   "/service-worker.js": {
     file: "apps/pwa/service-worker.js",
     contentType: "text/javascript",
+    cacheControl: "no-cache",
   },
   "/manifest.webmanifest": {
     file: "apps/pwa/manifest.webmanifest",
@@ -368,7 +370,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         return;
       }
 
-      response.writeHead(200, { "content-type": asset.contentType });
+      response.writeHead(200, {
+        "content-type": asset.contentType,
+        ...(asset.cacheControl
+          ? { "cache-control": asset.cacheControl }
+          : {}),
+      });
       response.end(readFileSync(resolve(asset.file)));
     },
   );
