@@ -7,7 +7,10 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { readStatus } from "../packages/cli/src/main.js";
-import { ensureCertificate } from "../packages/host/src/certificate.js";
+import {
+  ensureCertificate,
+  type HostCertificateProvisioningRequest,
+} from "../packages/host/src/certificate.js";
 import { startHost } from "../packages/host/src/host.js";
 import { type HostStatus } from "../packages/protocol/src/status.js";
 import { negotiateControl } from "./control-client.js";
@@ -94,33 +97,37 @@ test("HTTPS PWA and CLI observe durable authoritative Host status across restart
 
 test("Host startup can use certificate material provisioned outside packaged TLS state", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-certificate-seam-"));
-  const packagedData = join(root, "packaged");
-  const developmentData = join(root, "development");
+  const certificateDataDir = join(root, "certificate");
+  const hostDataDir = join(root, "host");
   const adapters = adaptersFor("deterministic");
-  const certificate = ensureCertificate(
-    packagedData,
-    "localhost",
-    adapters.windows,
-  );
-  const requests: Array<{ dataDir: string; hostname: string }> = [];
+  const provisioningRequests: HostCertificateProvisioningRequest[] = [];
 
   try {
+    const certificate = ensureCertificate(
+      certificateDataDir,
+      "localhost",
+      adapters.windows,
+    );
     const host = await startHost({
-      dataDir: developmentData,
+      dataDir: hostDataDir,
       port: 0,
       adapters,
-      certificateProvisioner: request => {
-        requests.push({ dataDir: request.dataDir, hostname: request.hostname });
+      certificateProvisioner: async request => {
+        provisioningRequests.push(request);
         return certificate;
       },
     });
 
     try {
       assert.match(await readPwaShell(host.origin), /Pidex Host/);
-      assert.deepEqual(requests, [
-        { dataDir: developmentData, hostname: "localhost" },
+      assert.deepEqual(provisioningRequests, [
+        {
+          dataDir: hostDataDir,
+          hostname: "localhost",
+          windows: adapters.windows,
+        },
       ]);
-      await assert.rejects(access(join(developmentData, "tls")));
+      await assert.rejects(access(join(hostDataDir, "tls")));
     } finally {
       await host.close();
     }

@@ -11,8 +11,6 @@ const host = await startHost({
   dataDir,
   port,
   adapters: adaptersFor(mode),
-  // Packaged startup chooses its retained, protected identity explicitly. The
-  // development launcher can inject its independent profile/checkout lifecycle.
   certificateProvisioner: provisionPackagedHostCertificate,
 });
 
