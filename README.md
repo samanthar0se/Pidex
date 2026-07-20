@@ -45,14 +45,36 @@ set "PATH=C:\Program Files\Git\mingw64\bin;%PATH%"
 
 ```powershell
 npm ci
+npm run dev:ca:setup
 npm run dev
 ```
 
-The development Host serves `https://localhost:7443` using generated local
-certificate material in `.pidex-data-dev/`. Startup defaults to deterministic
-adapters, prints a one-time pairing URL, and prints certificate-trust guidance
-without changing the system trust store. Open the pairing URL and select
-**Pair Device**.
+Development CA setup is an explicit, one-time operation for the current Windows
+profile and must run before the first Host startup. It installs only the public
+certificate in Current User Root and reports `created` for a new CA or
+`unchanged` when the existing CA was validated and reused. Record the displayed
+SHA-256 fingerprint and public certificate export location; the latter is the
+only certificate file to distribute to a LAN client.
+
+The development Host serves `https://localhost:7443`. Its disposable leaf and
+private key remain in `.pidex-data-dev/`, while the shared Development CA stays
+under LocalAppData and survives checkout deletion. Startup never creates or
+repairs that CA. Open the printed pairing URL and select **Pair Device**.
+
+### One-time clean break from older checkouts
+
+Do not migrate, reuse, or search for an old CA. Remove historical checkout-local
+TLS material (normally the old checkout's `.pidex-data-dev/tls/` directory),
+then run `npm run dev:ca:setup` once. Never copy its old CA or private key into
+the profile location.
+
+Use `npm run dev:ca:reset` only when the shared Development CA is unusable or an
+intentional trust break is required. Reset affects every checkout and all LAN
+clients, attempts best-effort removal from Current User Root, and does not make
+a replacement. Run `npm run dev:ca:setup` afterward; expect a new fingerprint
+and repeat LAN-client trust. A missing OpenSSL executable is a prerequisite
+failure, not unusable CA state: install OpenSSL, verify `openssl version`, and
+rerun setup rather than resetting valid CA state.
 
 The deterministic adapter returns predictable Pi responses and avoids the
 unbundled native Windows bridge. Optional environment variables are
