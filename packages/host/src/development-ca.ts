@@ -16,9 +16,11 @@ const CERTIFICATE_FILE = "pidex-development-ca.pem";
 const KEY_FILE = "pidex-development-ca-key.pem";
 const STATE_FILE = "state.json";
 const STATE_VERSION = 1;
-const TEN_YEARS_DAYS = 3650;
-const RENEWAL_MARGIN_MS = 30 * 24 * 60 * 60 * 1000;
+const CA_LIFETIME_DAYS = 3650;
 const LEAF_LIFETIME_DAYS = 825;
+const RENEWAL_MARGIN_MS = 30 * 24 * 60 * 60 * 1000;
+
+type OpenSslRunner = (arguments_: readonly string[]) => void;
 
 interface DevelopmentCaPaths {
   directory: string;
@@ -27,12 +29,22 @@ interface DevelopmentCaPaths {
   statePath: string;
 }
 
+interface DevelopmentCertificatePaths {
+  directory: string;
+  certificatePath: string;
+  keyPath: string;
+  temporaryCertificatePath: string;
+  temporaryKeyPath: string;
+  requestPath: string;
+  extensionsPath: string;
+}
+
 export interface DevelopmentCaSetupOptions {
   /** Test/isolation seam. Production callers should use LocalAppData. */
   profileRoot?: string;
   now?: Date;
   trustCurrentUserCertificate(path: string): void;
-  runOpenSsl?: (arguments_: readonly string[]) => void;
+  runOpenSsl?: OpenSslRunner;
 }
 
 export interface DevelopmentCaSetupResult {
@@ -48,7 +60,7 @@ export interface DevelopmentCertificateOptions {
   aliases?: readonly string[];
   profileRoot?: string;
   now?: Date;
-  runOpenSsl?: (arguments_: readonly string[]) => void;
+  runOpenSsl?: OpenSslRunner;
 }
 
 export interface DevelopmentCertificate {
@@ -117,51 +129,73 @@ export function provisionDevelopmentCertificate(
   const caPaths = getDevelopmentCaPaths(options.profileRoot);
   validateExistingDevelopmentCa(caPaths, options.now);
 
-  const directory = join(options.dataDir, "development-tls");
-  const certificatePath = join(directory, "leaf.pem");
-  const keyPath = join(directory, "leaf-key.pem");
-  const names = typedNames([
+  const certificatePaths = getDevelopmentCertificatePaths(options.dataDir);
+  const subjectAlternativeNames = normalizeSubjectAlternativeNames([
     options.hostname,
     "localhost",
     "127.0.0.1",
     "::1",
     ...(options.aliases ?? []),
   ]);
-  mkdirSync(directory, { recursive: true });
+  mkdirSync(certificatePaths.directory, { recursive: true });
 
-  if (!leafIsReusable(
-    certificatePath,
-    keyPath,
-    caPaths.certificatePath,
-    names,
-    options.now ?? new Date(),
-  )) {
-    issueLeaf(options, caPaths, directory, certificatePath, keyPath, names);
+  if (
+    !developmentCertificateIsReusable(
+      certificatePaths.certificatePath,
+      certificatePaths.keyPath,
+      caPaths.certificatePath,
+      subjectAlternativeNames,
+      options.now ?? new Date(),
+    )
+  ) {
+    issueDevelopmentCertificate(
+      options,
+      caPaths,
+      certificatePaths,
+      subjectAlternativeNames,
+    );
   }
 
   return {
-    key: readFileSync(keyPath),
-    cert: readFileSync(certificatePath),
+    key: readFileSync(certificatePaths.keyPath),
+    cert: readFileSync(certificatePaths.certificatePath),
     ca: readFileSync(caPaths.certificatePath),
   };
 }
 
-interface TypedName { type: "DNS" | "IP"; value: string }
+interface SubjectAlternativeName {
+  type: "DNS" | "IP";
+  value: string;
+}
 
-function typedNames(values: readonly string[]): TypedName[] {
-  const result = new Map<string, TypedName>();
-  for (const raw of values) {
-    const value = raw.trim();
+function normalizeSubjectAlternativeNames(
+  values: readonly string[],
+): SubjectAlternativeName[] {
+  const namesByKey = new Map<string, SubjectAlternativeName>();
+  for (const untrimmedValue of values) {
+    const value = untrimmedValue.trim();
     if (!value || /[\n\r,]/.test(value)) {
-      throw new Error(`Invalid development certificate alias: ${raw}`);
+      throw new Error(
+        `Invalid development certificate alias: ${untrimmedValue}`,
+      );
     }
+
     const type = isIP(value) ? "IP" : "DNS";
-    const normalized = type === "DNS" ? value.toLowerCase() : normalizeIp(value);
-    result.set(`${type}:${normalized}`, { type, value: normalized });
+    const normalizedValue =
+      type === "DNS" ? value.toLowerCase() : normalizeIp(value);
+    const name: SubjectAlternativeName = { type, value: normalizedValue };
+    namesByKey.set(subjectAlternativeNameKey(name), name);
   }
-  return [...result.values()].sort((a, b) =>
-    `${a.type}:${a.value}`.localeCompare(`${b.type}:${b.value}`),
+
+  return [...namesByKey.values()].sort((left, right) =>
+    subjectAlternativeNameKey(left).localeCompare(
+      subjectAlternativeNameKey(right),
+    ),
   );
+}
+
+function subjectAlternativeNameKey(name: SubjectAlternativeName): string {
+  return `${name.type}:${name.value}`;
 }
 
 function normalizeIp(value: string): string {
@@ -171,87 +205,190 @@ function normalizeIp(value: string): string {
   return value;
 }
 
-function issueLeaf(
+function issueDevelopmentCertificate(
   options: DevelopmentCertificateOptions,
   ca: DevelopmentCaPaths,
-  directory: string,
-  certificatePath: string,
-  keyPath: string,
-  names: readonly TypedName[],
+  paths: DevelopmentCertificatePaths,
+  subjectAlternativeNames: readonly SubjectAlternativeName[],
 ): void {
-  const temporaryKey = join(directory, ".leaf-key.pem");
-  const request = join(directory, ".leaf.csr");
-  const temporaryCertificate = join(directory, ".leaf.pem");
-  const extensions = join(directory, ".leaf.ext");
   try {
-    writeFileSync(extensions, [
-      "basicConstraints=critical,CA:FALSE",
-      "keyUsage=critical,digitalSignature,keyEncipherment",
-      "extendedKeyUsage=serverAuth",
-      `subjectAltName=${names.map(name => `${name.type}:${name.value}`).join(",")}`,
-      "subjectKeyIdentifier=hash",
-      "authorityKeyIdentifier=keyid,issuer",
-      "",
-    ].join("\n"));
+    writeFileSync(
+      paths.extensionsPath,
+      [
+        "basicConstraints=critical,CA:FALSE",
+        "keyUsage=critical,digitalSignature,keyEncipherment",
+        "extendedKeyUsage=serverAuth",
+        `subjectAltName=${subjectAlternativeNames.map(subjectAlternativeNameKey).join(",")}`,
+        "subjectKeyIdentifier=hash",
+        "authorityKeyIdentifier=keyid,issuer",
+        "",
+      ].join("\n"),
+    );
     runOpenSsl(options.runOpenSsl, [
-      "req", "-new", "-newkey", "rsa:2048", "-nodes",
-      "-keyout", temporaryKey, "-out", request,
-      "-subj", `/CN=${options.hostname}`,
+      "req",
+      "-new",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-keyout",
+      paths.temporaryKeyPath,
+      "-out",
+      paths.requestPath,
+      "-subj",
+      `/CN=${options.hostname}`,
     ]);
     runOpenSsl(options.runOpenSsl, [
-      "x509", "-req", "-in", request,
-      "-CA", ca.certificatePath, "-CAkey", ca.keyPath,
-      "-set_serial", `0x${randomBytes(16).toString("hex")}`,
-      "-out", temporaryCertificate, "-days", String(LEAF_LIFETIME_DAYS),
-      "-sha256", "-extfile", extensions,
+      "x509",
+      "-req",
+      "-in",
+      paths.requestPath,
+      "-CA",
+      ca.certificatePath,
+      "-CAkey",
+      ca.keyPath,
+      "-set_serial",
+      `0x${randomBytes(16).toString("hex")}`,
+      "-out",
+      paths.temporaryCertificatePath,
+      "-days",
+      String(LEAF_LIFETIME_DAYS),
+      "-sha256",
+      "-extfile",
+      paths.extensionsPath,
     ]);
-    if (!leafIsReusable(
-      temporaryCertificate, temporaryKey, ca.certificatePath, names,
-      options.now ?? new Date(), 0,
-    )) throw new Error("Generated development leaf failed validation");
-    renameSync(temporaryKey, keyPath);
-    renameSync(temporaryCertificate, certificatePath);
+    if (
+      !developmentCertificateIsReusable(
+        paths.temporaryCertificatePath,
+        paths.temporaryKeyPath,
+        ca.certificatePath,
+        subjectAlternativeNames,
+        options.now ?? new Date(),
+        0,
+      )
+    ) {
+      throw new Error("Generated development leaf failed validation");
+    }
+    renameSync(paths.temporaryKeyPath, paths.keyPath);
+    renameSync(paths.temporaryCertificatePath, paths.certificatePath);
   } finally {
-    for (const path of [temporaryKey, request, temporaryCertificate, extensions]) {
+    const temporaryPaths = [
+      paths.temporaryKeyPath,
+      paths.requestPath,
+      paths.temporaryCertificatePath,
+      paths.extensionsPath,
+    ];
+    for (const path of temporaryPaths) {
       rmSync(path, { force: true });
     }
   }
 }
 
-function leafIsReusable(
+function developmentCertificateIsReusable(
   certificatePath: string,
   keyPath: string,
   caPath: string,
-  names: readonly TypedName[],
+  expectedSubjectAlternativeNames: readonly SubjectAlternativeName[],
   now: Date,
   renewalMargin = RENEWAL_MARGIN_MS,
 ): boolean {
-  if (!existsSync(certificatePath) || !existsSync(keyPath)) return false;
+  if (!existsSync(certificatePath) || !existsSync(keyPath)) {
+    return false;
+  }
+
   try {
     const certificate = readCertificate(certificatePath);
     const ca = readCertificate(caPath);
-    if (!certificate.checkPrivateKey(createPrivateKey(readFileSync(keyPath)))) return false;
-    if (!certificate.checkIssued(ca) || !certificate.verify(ca.publicKey)) return false;
-    if (now.getTime() < Date.parse(certificate.validFrom) ||
-        now.getTime() + renewalMargin >= Date.parse(certificate.validTo)) return false;
-    const actual = parseSubjectAltName(certificate.subjectAltName);
-    if (JSON.stringify(actual) !== JSON.stringify(names)) return false;
-    const text = execFileSync("openssl", ["x509", "-in", certificatePath, "-noout", "-text"], { encoding: "utf8" });
-    return /Basic Constraints: critical[\s\S]*?CA:FALSE/.test(text) &&
-      /Key Usage: critical[\s\S]*?Digital Signature, Key Encipherment/.test(text) &&
-      /Extended Key Usage:[\s\S]*?TLS Web Server Authentication/.test(text);
+    const privateKey = createPrivateKey(readFileSync(keyPath));
+    if (!certificate.checkPrivateKey(privateKey)) {
+      return false;
+    }
+    if (!certificate.checkIssued(ca) || !certificate.verify(ca.publicKey)) {
+      return false;
+    }
+
+    const notBefore = Date.parse(certificate.validFrom);
+    const notAfter = Date.parse(certificate.validTo);
+    if (
+      now.getTime() < notBefore ||
+      now.getTime() + renewalMargin >= notAfter
+    ) {
+      return false;
+    }
+
+    const actualSubjectAlternativeNames = parseSubjectAlternativeNames(
+      certificate.subjectAltName,
+    );
+    if (
+      !subjectAlternativeNamesMatch(
+        actualSubjectAlternativeNames,
+        expectedSubjectAlternativeNames,
+      )
+    ) {
+      return false;
+    }
+
+    const certificateText = readCertificateText(certificatePath);
+    const hasRequiredBasicConstraints =
+      /Basic Constraints: critical[\s\S]*?CA:FALSE/.test(certificateText);
+    const hasRequiredKeyUsage =
+      /Key Usage: critical[\s\S]*?Digital Signature, Key Encipherment/.test(
+        certificateText,
+      );
+    const hasRequiredExtendedKeyUsage =
+      /Extended Key Usage:[\s\S]*?TLS Web Server Authentication/.test(
+        certificateText,
+      );
+    return (
+      hasRequiredBasicConstraints &&
+      hasRequiredKeyUsage &&
+      hasRequiredExtendedKeyUsage
+    );
   } catch {
     return false;
   }
 }
 
-function parseSubjectAltName(value: string | undefined): TypedName[] {
-  if (!value) return [];
-  return value.split(/,\s*/).map(part => {
-    if (part.startsWith("DNS:")) return { type: "DNS" as const, value: part.slice(4).toLowerCase() };
-    if (part.startsWith("IP Address:")) return { type: "IP" as const, value: normalizeIp(part.slice(11)) };
+function subjectAlternativeNamesMatch(
+  actual: readonly SubjectAlternativeName[],
+  expected: readonly SubjectAlternativeName[],
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every(
+      (name, index) =>
+        name.type === expected[index]?.type &&
+        name.value === expected[index]?.value,
+    )
+  );
+}
+
+function parseSubjectAlternativeNames(
+  value: string | undefined,
+): SubjectAlternativeName[] {
+  if (!value) {
+    return [];
+  }
+
+  const names = value.split(/,\s*/).map(part => {
+    if (part.startsWith("DNS:")) {
+      return {
+        type: "DNS" as const,
+        value: part.slice(4).toLowerCase(),
+      };
+    }
+    if (part.startsWith("IP Address:")) {
+      return {
+        type: "IP" as const,
+        value: normalizeIp(part.slice(11)),
+      };
+    }
     throw new Error("Unsupported SAN type");
-  }).sort((a, b) => `${a.type}:${a.value}`.localeCompare(`${b.type}:${b.value}`));
+  });
+  return names.sort((left, right) =>
+    subjectAlternativeNameKey(left).localeCompare(
+      subjectAlternativeNameKey(right),
+    ),
+  );
 }
 
 function getDevelopmentCaPaths(profileRoot?: string): DevelopmentCaPaths {
@@ -261,6 +398,21 @@ function getDevelopmentCaPaths(profileRoot?: string): DevelopmentCaPaths {
     certificatePath: join(directory, CERTIFICATE_FILE),
     keyPath: join(directory, KEY_FILE),
     statePath: join(directory, STATE_FILE),
+  };
+}
+
+function getDevelopmentCertificatePaths(
+  dataDir: string,
+): DevelopmentCertificatePaths {
+  const directory = join(dataDir, "development-tls");
+  return {
+    directory,
+    certificatePath: join(directory, "leaf.pem"),
+    keyPath: join(directory, "leaf-key.pem"),
+    temporaryCertificatePath: join(directory, ".leaf.pem"),
+    temporaryKeyPath: join(directory, ".leaf-key.pem"),
+    requestPath: join(directory, ".leaf.csr"),
+    extensionsPath: join(directory, ".leaf.ext"),
   };
 }
 
@@ -285,7 +437,7 @@ function createDevelopmentCa(
       "-out",
       temporaryCertificate,
       "-days",
-      String(TEN_YEARS_DAYS),
+      String(CA_LIFETIME_DAYS),
       "-sha256",
       "-subj",
       "/CN=Pidex Development CA",
@@ -373,17 +525,15 @@ function validatePair(
       throw new Error("certificate is expired, not yet valid, or near expiry");
     }
     // Node exposes CA but not criticality/path length/key usage consistently.
-    const text = execFileSync(
-      "openssl",
-      ["x509", "-in", certificatePath, "-noout", "-text"],
-      { encoding: "utf8" },
-    );
+    const certificateText = readCertificateText(certificatePath);
     const hasRequiredBasicConstraints =
       /X509v3 Basic Constraints: critical[\s\S]*?CA:TRUE, pathlen:0/.test(
-        text,
+        certificateText,
       );
     const hasRequiredKeyUsage =
-      /X509v3 Key Usage: critical[\s\S]*?Certificate Sign/.test(text);
+      /X509v3 Key Usage: critical[\s\S]*?Certificate Sign/.test(
+        certificateText,
+      );
     if (!hasRequiredBasicConstraints || !hasRequiredKeyUsage) {
       throw new Error("required CA constraints are absent");
     }
@@ -402,7 +552,15 @@ function readCertificate(path: string): X509Certificate {
   return new X509Certificate(readFileSync(path));
 }
 
-function verifyOpenSsl(runner?: (arguments_: readonly string[]) => void): void {
+function readCertificateText(path: string): string {
+  return execFileSync(
+    "openssl",
+    ["x509", "-in", path, "-noout", "-text"],
+    { encoding: "utf8" },
+  );
+}
+
+function verifyOpenSsl(runner?: OpenSslRunner): void {
   try {
     runOpenSsl(runner, ["version"]);
   } catch (error) {
@@ -411,7 +569,7 @@ function verifyOpenSsl(runner?: (arguments_: readonly string[]) => void): void {
 }
 
 function runOpenSsl(
-  runner: ((arguments_: readonly string[]) => void) | undefined,
+  runner: OpenSslRunner | undefined,
   arguments_: readonly string[],
 ): void {
   if (runner) {

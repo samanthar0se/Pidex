@@ -11,11 +11,12 @@ const host = await startHost({
   dataDir,
   port,
   adapters: adaptersFor(mode),
-  certificateProvisioner: request => provisionDevelopmentCertificate({
-    dataDir: request.dataDir,
-    hostname: request.hostname,
-    profileRoot: process.env.PIDEX_DEVELOPMENT_PROFILE_ROOT,
-  }),
+  certificateProvisioner: request =>
+    provisionDevelopmentCertificate({
+      dataDir: request.dataDir,
+      hostname: request.hostname,
+      profileRoot: process.env.PIDEX_DEVELOPMENT_PROFILE_ROOT,
+    }),
 });
 
 console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
