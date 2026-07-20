@@ -338,7 +338,7 @@
         });
         let catalog = scoped.length ? `<div class="section-title"><span>Projects</span><span>Recent activity</span></div>` : "";
         for (const [project, projectSessions] of projects) {
-          catalog += `<button class="tree-label"><span>⌄</span><span>${project}</span><span class="tree-add" data-new data-scope="${project} / Project Sessions" title="New Session in ${project}">＋</span></button>${projectSessions.map(item => sessionRow({ ...item, meta: `${item.workspace || "Project scope"} · ${item.meta}` }, "tree-session")).join("")}`;
+          catalog += `<button class="tree-label"><span>⌄</span><span>${project}</span><span class="tree-add" data-new data-scope="${project} / Project Sessions" title="New Session in ${project}">＋</span></button>${projectSessions.map(item => sessionRow(item, "tree-session")).join("")}`;
         }
         if (unscoped.length) catalog += `<div class="section-title"><span>Chats</span><button data-new data-scope="Unscoped" title="New unscoped Session">＋</button></div>${unscoped.map(item => sessionRow(item)).join("")}`;
         return `<aside class="rail">${commonNav()}${searchBox()}<div class="rail-scroll">${items.length ? catalog : noResults(query)}</div>${railFooter()}</aside>`;
