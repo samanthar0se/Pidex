@@ -140,6 +140,8 @@ export interface WindowsPlatformAdapter {
   unprotectForCurrentUser(envelope: Buffer): Buffer;
   restrictToCurrentUser(path: string): void;
   trustCurrentUserCertificate(path: string): void;
+  /** Removes the exact public certificate from Current User Root when present. */
+  removeCurrentUserCertificate?(path: string): void;
   registerLogonTask(command: string, args: readonly string[]): void;
   privateInterfaces(): readonly PrivateInterface[];
   advertisePidex(advertisement: PidexAdvertisement): () => void;

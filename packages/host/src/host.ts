@@ -2,7 +2,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync, statfsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer } from "node:https";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   adaptersFor,
@@ -28,7 +28,7 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import { ensureCertificate } from "./certificate.js";
+import { defaultDevelopmentCaDirectory, ensureDevelopmentCertificate, setupDevelopmentCa } from "./certificate.js";
 import {
   PairingAuthority,
   PairingError,
@@ -222,6 +222,8 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
 
 export interface HostOptions {
   dataDir: string;
+  /** Isolated override for tests; production defaults only to LocalAppData. */
+  developmentCaDirectory?: string;
   port?: number;
   adapters?: HostAdapters;
   hostname?: string;
@@ -298,10 +300,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
   const firewallPort =
     options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const certificate = ensureCertificate(
-    options.dataDir,
-    hostname,
-    adapters.windows,
+  const developmentCaDirectory = options.developmentCaDirectory ??
+    (adapters.windows.kind === "deterministic"
+      ? join(dirname(options.dataDir), `.pidex-test-ca-${basename(options.dataDir)}`)
+      : defaultDevelopmentCaDirectory());
+  // Deterministic product tests retain an explicit isolated fixture. Real startup
+  // never invokes setup and therefore cannot create or rotate the profile CA.
+  if (adapters.windows.kind === "deterministic" && !options.developmentCaDirectory) {
+    setupDevelopmentCa(developmentCaDirectory, adapters.windows);
+  }
+  const certificate = ensureDevelopmentCertificate(
+    developmentCaDirectory, options.dataDir, [hostname], new Date(),
   );
   const warnings = configureFirewall(adapters.windows, firewallPort);
   const pairing = new PairingAuthority(adapters.clock, store);

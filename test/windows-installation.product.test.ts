@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { adaptersFor } from "../packages/adapters/src/index.js";
-import { ensureCertificate } from "../packages/host/src/certificate.js";
+import { ensureDevelopmentCertificate, setupDevelopmentCa } from "../packages/host/src/certificate.js";
 import { installForCurrentUser } from "../packages/launcher/src/installation.js";
 import {
   STARTUP_BACKOFF_MS,
@@ -36,14 +36,13 @@ test("per-user updates preserve installation identity and configure certificate 
     const second = installForCurrentUser({ ...options, releaseId: "1.0.1" });
     assert.deepEqual(second, first);
     assert.match(first.hostname, /^pidex-[a-f0-9]{20}\.local$/);
-    ensureCertificate(root, first.hostname, windows);
+    setupDevelopmentCa(join(root, "profile-ca"), windows);
+    ensureDevelopmentCertificate(join(root, "profile-ca"), root, [first.hostname]);
     assert.ok(calls.some(call => call.startsWith("task:")));
     assert.ok(calls.some(call => call.startsWith("trust:")));
     assert.deepEqual((await readdir(join(root, "tls"))).sort(), [
-      "host-key.dpapi",
-      "host.pem",
-      "pidex-ca-key.dpapi",
-      "pidex-ca.pem",
+      "development-leaf-key.pem",
+      "development-leaf.pem",
     ]);
   } finally {
     await rm(root, { recursive: true, force: true });

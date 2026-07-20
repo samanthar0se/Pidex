@@ -8,6 +8,7 @@ const mode =
 const port = Number(process.env.PIDEX_PORT ?? 7443);
 const host = await startHost({
   dataDir,
+  developmentCaDirectory: process.env.PIDEX_DEVELOPMENT_CA_DIR,
   port,
   adapters: adaptersFor(mode),
 });
