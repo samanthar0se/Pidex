@@ -1,4 +1,7 @@
 import type { WindowsPlatformError } from "./errors.js";
+import type {
+  CertificateIntegration, FirewallIntegration, IntegrationInspection, TaskIntegration,
+} from "./integrations.js";
 
 export interface ManagedWindowsResource<TFault = WindowsPlatformError> {
   readonly lateFault: Promise<TFault>;
@@ -7,12 +10,12 @@ export interface ManagedWindowsResource<TFault = WindowsPlatformError> {
 
 /** Contracts are asynchronous even where a Windows API completes immediately. */
 export interface InstallationPort {
-  inspectCertificate(input: unknown): Promise<unknown>;
-  installCertificate(input: unknown): Promise<void>;
-  removeCertificate(input: unknown): Promise<void>;
-  inspectTask(input: unknown): Promise<unknown>;
-  registerTask(input: unknown): Promise<void>;
-  removeTask(input: unknown): Promise<void>;
+  inspectCertificate(input: CertificateIntegration): Promise<IntegrationInspection>;
+  ensureCertificate(input: CertificateIntegration): Promise<{ changed: boolean; inspection: IntegrationInspection }>;
+  removeCertificate(input: CertificateIntegration): Promise<void>;
+  inspectTask(input: TaskIntegration): Promise<IntegrationInspection>;
+  ensureTask(input: TaskIntegration): Promise<{ changed: boolean; inspection: IntegrationInspection }>;
+  removeTask(input: TaskIntegration): Promise<void>;
 }
 
 export interface NetworkPort {
@@ -22,9 +25,9 @@ export interface NetworkPort {
 }
 
 export interface FirewallPort {
-  inspectRule(input: unknown): Promise<unknown>;
-  ensureRule(input: unknown): Promise<void>;
-  removeRule(input: unknown): Promise<void>;
+  inspectCanonicalRule(input: FirewallIntegration): Promise<IntegrationInspection>;
+  ensureCanonicalRule(input: FirewallIntegration): Promise<{ changed: boolean; inspection: IntegrationInspection }>;
+  removeCanonicalRule(input: FirewallIntegration): Promise<void>;
 }
 
 export interface ProcessPort {
