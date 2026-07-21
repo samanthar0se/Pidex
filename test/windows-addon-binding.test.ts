@@ -20,12 +20,7 @@ test("the Windows binding validates the manifest-selected addon before exposing 
     loadModule: path => {
       loads += 1;
       assert.equal(path, manifest.artifacts.addon.path);
-      return {
-        descriptor: addonDescriptor(),
-        selfTest: async () => undefined,
-        inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
-        writeDiagnosticEvent: async () => true,
-      };
+      return addonModule();
     },
   });
 
@@ -52,9 +47,7 @@ test("storage and diagnostics ports classify coarse facts without widening diagn
   const binding = await loadWindowsAddon(fixture(), {
     runtime: { platform: "win32", architecture: "x64", nodeApi: 10 },
     readFile: async () => bytes,
-    loadModule: () => ({
-      descriptor: addonDescriptor(),
-      selfTest: async () => undefined,
+    loadModule: () => addonModule({
       inspectStoragePath: async (path: string) => {
         calls.push(path);
         if (path.includes("unavailable")) throw new Error("private native detail");
@@ -98,12 +91,7 @@ test("the Windows binding rejects an addon artifact that changes while it is loa
         reads += 1;
         return reads === 1 ? bytes : Buffer.from("replacement addon");
       },
-      loadModule: () => ({
-        descriptor: addonDescriptor(),
-        selfTest: async () => undefined,
-        inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
-        writeDiagnosticEvent: async () => true,
-      }),
+      loadModule: () => addonModule(),
     }),
     /changed while loading/i,
   );
@@ -116,11 +104,7 @@ test("the Windows binding rejects native exports that are absent from the descri
     loadWindowsAddon(manifest, {
       runtime: { platform: "win32", architecture: "x64", nodeApi: 10 },
       readFile: async () => bytes,
-      loadModule: () => ({
-        descriptor: addonDescriptor(),
-        selfTest: async () => undefined,
-        inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
-        writeDiagnosticEvent: async () => true,
+      loadModule: () => addonModule({
         undeclared: () => undefined,
       }),
     }),
@@ -134,14 +118,17 @@ test("the Windows binding rejects incompatible addon identity and maps stable na
   const dependencies = {
     runtime: { platform: "win32", architecture: "x64", nodeApi: 10 },
     readFile: async () => bytes,
-    loadModule: () => ({ descriptor, selfTest: async () => undefined, inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }), writeDiagnosticEvent: async () => true }),
+    loadModule: () => addonModule({ descriptor }),
   };
   await assert.rejects(loadWindowsAddon(manifest, dependencies), /releaseId mismatch/);
 
   descriptor.releaseId = "r1";
   const binding = await loadWindowsAddon(manifest, {
     ...dependencies,
-    loadModule: () => ({ descriptor, inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }), writeDiagnosticEvent: async () => true, selfTest: async () => Promise.reject({ operation: "self-test", category: "unavailable", domain: "win32", code: 21, retryable: true, detail: "coarse failure" }) }),
+    loadModule: () => addonModule({
+      descriptor,
+      selfTest: async () => Promise.reject({ operation: "self-test", category: "unavailable", domain: "win32", code: 21, retryable: true, detail: "coarse failure" }),
+    }),
   });
   await assert.rejects(binding.selfTest(), error => {
     assert.ok(error instanceof WindowsPlatformError);
@@ -163,6 +150,16 @@ function addonDescriptor(overrides: { releaseId?: string } = {}) {
     schemaGeneration: 1,
     releaseId: "r1",
     exports: ["selfTest", "inspectStoragePath", "writeDiagnosticEvent"],
+    ...overrides,
+  };
+}
+
+function addonModule(overrides: Record<string, unknown> = {}) {
+  return {
+    descriptor: addonDescriptor(),
+    selfTest: async () => undefined,
+    inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    writeDiagnosticEvent: async () => true,
     ...overrides,
   };
 }

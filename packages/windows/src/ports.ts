@@ -1,4 +1,7 @@
 import type { WindowsPlatformError } from "./errors.js";
+import type { StoragePathInspection } from "./storage.js";
+
+export type { StorageDriveType, StoragePathInspection } from "./storage.js";
 
 export interface ManagedWindowsResource<TFault = WindowsPlatformError> {
   readonly lateFault: Promise<TFault>;
@@ -34,13 +37,6 @@ export interface ProcessPort {
 export interface StoragePort {
   inspectPath(input: { path: string }): Promise<StoragePathInspection>;
   observeTopology(): Promise<ManagedWindowsResource>;
-}
-
-export type StorageDriveType = "fixed" | "removable" | "remote" | "optical" | "ramdisk" | "unknown";
-export interface StoragePathInspection {
-  coverage: "covered" | "outside-boundary" | "indeterminate";
-  fileSystem?: string;
-  driveType: StorageDriveType;
 }
 
 export interface DiagnosticsPort {

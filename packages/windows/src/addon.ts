@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFile as readFileFromDisk } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { win32 } from "node:path";
 import { z } from "zod";
 import type { ResolvedLaunchManifest } from "../../launch-manifest/src/index.js";
+import { createDiagnosticsPort } from "./diagnostics.js";
 import { mapWindowsNativeError } from "./errors.js";
-import type { DiagnosticsPort, StorageDriveType, StoragePathInspection, StoragePort } from "./ports.js";
+import type { DiagnosticsPort, StoragePort } from "./ports.js";
+import { createStoragePathInspector } from "./storage.js";
 
 const descriptorSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -74,42 +75,8 @@ export async function loadWindowsAddon(
         throw mapWindowsNativeError(error, "selfTest");
       }
     },
-    storage: {
-      async inspectPath(input): Promise<StoragePathInspection> {
-        if (!win32.isAbsolute(input.path)) throw new Error("Storage path must be absolute");
-        try {
-          const value = await (addon.inspectStoragePath as (path: string) => unknown)(input.path);
-          return classifyStorageFacts(value);
-        } catch (error) {
-          return { coverage: "indeterminate", driveType: "unknown" };
-        }
-      },
-    },
-    diagnostics: {
-      async writeEvent(input): Promise<boolean> {
-        try {
-          return (await (addon.writeDiagnosticEvent as (event: unknown) => unknown)(input)) === true;
-        } catch {
-          // Event Log is a best-effort projection. Structured Pidex diagnostics
-          // remain authoritative and must not inherit this failure.
-          return false;
-        }
-      },
-    },
-  };
-}
-
-function classifyStorageFacts(value: unknown): StoragePathInspection {
-  const facts = z.strictObject({
-    fileSystem: z.string().min(1).max(64),
-    driveType: z.enum(["fixed", "removable", "remote", "optical", "ramdisk", "unknown"]),
-  }).parse(value);
-  const fileSystem = facts.fileSystem.toUpperCase();
-  const driveType: StorageDriveType = facts.driveType;
-  return {
-    coverage: fileSystem === "NTFS" && driveType === "fixed" ? "covered" : "outside-boundary",
-    fileSystem,
-    driveType,
+    storage: createStoragePathInspector(addon.inspectStoragePath as (path: string) => unknown),
+    diagnostics: createDiagnosticsPort(addon.writeDiagnosticEvent as (event: unknown) => unknown),
   };
 }
 

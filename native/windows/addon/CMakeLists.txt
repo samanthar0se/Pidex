@@ -5,7 +5,12 @@ if(NOT DEFINED PIDEX_RELEASE_ID)
   message(FATAL_ERROR "PIDEX_RELEASE_ID must identify the selected closure")
 endif()
 
-add_library(pidex_windows MODULE src/addon.cpp)
+add_library(pidex_windows MODULE
+  src/addon.cpp
+  src/diagnostics.cpp
+  src/node_api_helpers.cpp
+  src/storage.cpp
+)
 target_include_directories(pidex_windows PRIVATE "${PIDEX_NODE_INCLUDE_DIR}")
 target_compile_features(pidex_windows PRIVATE cxx_std_20)
 target_compile_definitions(pidex_windows PRIVATE
