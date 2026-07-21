@@ -45,7 +45,9 @@ export class ExactPiChild {
   readonly binding: Readonly<ExactPiChildBinding>;
   readonly #modelRuntime?: ModelRuntime;
   readonly #model?: Model<string>;
-  #used = false;
+  #session?: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  #running = false;
+  #disposed = false;
 
   private constructor(
     binding: ExactPiChildBinding,
@@ -73,34 +75,47 @@ export class ExactPiChild {
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
   ): Promise<ExactPiRunResult> {
-    if (this.#used) throw new Error("pi-child-generation-already-executed");
-    this.#used = true;
+    if (this.#disposed) throw new Error("pi-child-generation-disposed");
+    if (this.#running) throw new Error("pi-child-generation-busy");
+    this.#running = true;
 
-    const session = await this.#createSession();
-    let text = "";
-    const unsubscribe = session.subscribe(event => {
-      const timelineEvent = translateTimelineEvent(event);
-      if (!timelineEvent) return;
-
-      if (timelineEvent.type === "assistant.delta") {
-        text += timelineEvent.text;
-      }
-      onTimelineEvent?.(timelineEvent);
-    });
-
+    let unsubscribe: (() => void) | undefined;
     try {
+      const session = await this.#getSession();
+      let text = "";
+      unsubscribe = session.subscribe(event => {
+        const timelineEvent = translateTimelineEvent(event);
+        if (!timelineEvent) return;
+
+        if (timelineEvent.type === "assistant.delta") {
+          text += timelineEvent.text;
+        }
+        onTimelineEvent?.(timelineEvent);
+      });
+
       await session.prompt(prompt);
       const checkpoint = createHash("sha256")
         .update(JSON.stringify(session.messages))
         .digest("hex");
       return { text, checkpoint };
     } finally {
-      unsubscribe();
-      session.dispose();
+      unsubscribe?.();
+      this.#running = false;
     }
   }
 
-  async #createSession() {
+  async dispose(): Promise<void> {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    const session = this.#session;
+    if (!session) return;
+    if (this.#running) await session.abort();
+    session.dispose();
+    this.#session = undefined;
+  }
+
+  async #getSession() {
+    if (this.#session) return this.#session;
     const { cwd, agentDir } = this.binding;
     const settingsManager = SettingsManager.create(cwd, agentDir);
     const resourceLoader = new DefaultResourceLoader({
@@ -126,7 +141,8 @@ export class ExactPiChild {
       sessionManager: SessionManager.inMemory(cwd),
       noTools: "all",
     });
-    return session;
+    this.#session = session;
+    return this.#session;
   }
 }
 

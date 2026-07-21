@@ -74,6 +74,32 @@ const interactionResponseSchema = z.union([
     value: z.union([textSchema, z.boolean()]),
   }),
 ]);
+const presentationTextSchema = z.string().max(16_384);
+const presentationEffectSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("notification"),
+    level: z.enum(["info", "warning", "error"]),
+    text: presentationTextSchema,
+  }),
+  z.strictObject({
+    type: z.literal("status"),
+    key: identifierSchema,
+    text: presentationTextSchema.nullable(),
+  }),
+  z.strictObject({
+    type: z.literal("widget"),
+    key: identifierSchema,
+    text: presentationTextSchema.nullable(),
+  }),
+  z.strictObject({
+    type: z.literal("title"),
+    text: presentationTextSchema.nullable(),
+  }),
+  z.strictObject({
+    type: z.literal("editor-text"),
+    text: presentationTextSchema,
+  }),
+]);
 
 export const workerFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({
@@ -102,6 +128,11 @@ export const workerFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("fact"),
     ...correlationFields,
     fact: factSchema,
+  }),
+  z.strictObject({
+    ...envelopeFields,
+    type: z.literal("presentation"),
+    effect: presentationEffectSchema,
   }),
   z.strictObject({
     ...envelopeFields,

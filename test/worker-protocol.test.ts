@@ -38,35 +38,38 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
       correlationId: "run-1",
       fact: { type: "assistant.delta", text: "ok" },
     }),
-    createFrame("steer", 4, {
+    createFrame("presentation", 4, {
+      effect: { type: "status", key: "build", text: "running" },
+    }),
+    createFrame("steer", 5, {
       correlationId: "run-1",
       text: "test too",
     }),
-    createFrame("stop", 5, { correlationId: "run-1", reason: "user" }),
-    createFrame("interaction.request", 6, {
+    createFrame("stop", 6, { correlationId: "run-1", reason: "user" }),
+    createFrame("interaction.request", 7, {
       correlationId: "interaction-1",
       runCorrelationId: "run-1",
       interaction: { kind: "confirm", message: "continue?" },
     }),
-    createFrame("interaction.response", 7, {
+    createFrame("interaction.response", 8, {
       correlationId: "interaction-1",
       response: { dismissed: false, value: true },
     }),
-    createFrame("interaction.applied", 8, {
+    createFrame("interaction.applied", 9, {
       correlationId: "interaction-1",
     }),
-    createFrame("heartbeat", 9, { monotonicMs: 100 }),
-    createFrame("checkpoint", 10, {
+    createFrame("heartbeat", 10, { monotonicMs: 100 }),
+    createFrame("checkpoint", 11, {
       correlationId: "run-1",
       checkpointId: "checkpoint-1",
       state: "published",
     }),
-    createFrame("outcome", 11, {
+    createFrame("outcome", 12, {
       correlationId: "run-1",
       outcome: "completed",
       checkpointId: "checkpoint-1",
     }),
-    createFrame("fault", 12, {
+    createFrame("fault", 13, {
       scope: "run",
       correlationId: "run-1",
       code: "model-failed",

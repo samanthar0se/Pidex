@@ -79,7 +79,13 @@ test("one exact Pi generation loads only its synthetic profile/cwd and translate
       "synthetic answer",
     );
     assert.equal(faux.state.callCount, 1);
-    await assert.rejects(child.execute("second Run"), /already-executed/);
+
+    faux.setResponses([fauxAssistantMessage("second answer")]);
+    const secondResult = await child.execute("second Run");
+    assert.equal(secondResult.text, "second answer");
+    assert.equal(faux.state.callCount, 2);
+    await child.dispose();
+    await assert.rejects(child.execute("after dispose"), /generation-disposed/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
