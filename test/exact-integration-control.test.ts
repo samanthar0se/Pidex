@@ -3,20 +3,30 @@ import test from "node:test";
 import {
   ExactIntegrationControl,
   type ExactIntegrationPolicyOwner,
+  type ExactIntegrationTarget,
 } from "../packages/host/src/exact-integration-control.js";
 
 function owner(calls: string[]): ExactIntegrationPolicyOwner {
+  const inspect = (target: ExactIntegrationTarget, state: string) => async () => {
+    calls.push(`inspect:${target}`);
+    return { state };
+  };
+  const repair = (target: ExactIntegrationTarget) => async () => {
+    calls.push(`repair:${target}`);
+    return { changed: true };
+  };
+
   return {
     createPairing: async () => ({ secret: "PAIRING-SECRET", expiresAt: 123 }),
     revokeDevice: async deviceId => { calls.push(`revoke:${deviceId}`); },
-    inspectOrigin: async () => { calls.push("inspect:origin"); return { state: "matches" }; },
-    repairOrigin: async () => { calls.push("repair:origin"); return { changed: true }; },
-    inspectCertificate: async () => { calls.push("inspect:certificate"); return { state: "drift" }; },
-    repairCertificate: async () => { calls.push("repair:certificate"); return { changed: true }; },
-    inspectPrivateNetwork: async () => { calls.push("inspect:private-network"); return { state: "matches" }; },
-    repairPrivateNetwork: async () => { calls.push("repair:private-network"); return { changed: true }; },
-    inspectFirewall: async () => { calls.push("inspect:firewall"); return { state: "drift" }; },
-    repairFirewall: async () => { calls.push("repair:firewall"); return { changed: true }; },
+    inspectOrigin: inspect("origin", "matches"),
+    repairOrigin: repair("origin"),
+    inspectCertificate: inspect("certificate", "drift"),
+    repairCertificate: repair("certificate"),
+    inspectPrivateNetwork: inspect("private-network", "matches"),
+    repairPrivateNetwork: repair("private-network"),
+    inspectFirewall: inspect("firewall", "drift"),
+    repairFirewall: repair("firewall"),
   };
 }
 

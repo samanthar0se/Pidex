@@ -36,6 +36,30 @@ export interface PairingSecretOutput {
   writeSecret(secret: string): Promise<void>;
 }
 
+interface ExactIntegrationOperations {
+  inspect(owner: ExactIntegrationPolicyOwner): Promise<IntegrationInspectionResult>;
+  repair(owner: ExactIntegrationPolicyOwner): Promise<IntegrationRepairResult>;
+}
+
+const operationsByTarget: Record<ExactIntegrationTarget, ExactIntegrationOperations> = {
+  origin: {
+    inspect: owner => owner.inspectOrigin(),
+    repair: owner => owner.repairOrigin(),
+  },
+  certificate: {
+    inspect: owner => owner.inspectCertificate(),
+    repair: owner => owner.repairCertificate(),
+  },
+  "private-network": {
+    inspect: owner => owner.inspectPrivateNetwork(),
+    repair: owner => owner.repairPrivateNetwork(),
+  },
+  firewall: {
+    inspect: owner => owner.inspectFirewall(),
+    repair: owner => owner.repairFirewall(),
+  },
+};
+
 /** Routes each operation directly to the selected instance's exact policy owner. */
 export class ExactIntegrationControl {
   constructor(private readonly selected: ExactIntegrationOwnerState) {}
@@ -57,21 +81,11 @@ export class ExactIntegrationControl {
   }
 
   inspect(target: ExactIntegrationTarget): Promise<IntegrationInspectionResult> {
-    switch (target) {
-      case "origin": return this.selected.owner.inspectOrigin();
-      case "certificate": return this.selected.owner.inspectCertificate();
-      case "private-network": return this.selected.owner.inspectPrivateNetwork();
-      case "firewall": return this.selected.owner.inspectFirewall();
-    }
+    return operationsByTarget[target].inspect(this.selected.owner);
   }
 
   repair(target: ExactIntegrationTarget): Promise<IntegrationRepairResult> {
-    switch (target) {
-      case "origin": return this.selected.owner.repairOrigin();
-      case "certificate": return this.selected.owner.repairCertificate();
-      case "private-network": return this.selected.owner.repairPrivateNetwork();
-      case "firewall": return this.selected.owner.repairFirewall();
-    }
+    return operationsByTarget[target].repair(this.selected.owner);
   }
 
   private requireLiveAuthority(): void {
