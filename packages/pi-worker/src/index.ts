@@ -235,6 +235,11 @@ export class ExactPiWorkerEndpoint {
         agentDir: this.#options.agentDir,
       });
       this.#send("ready", {
+        readiness: {
+          release: "ready",
+          session: "ready",
+          provider: "unchecked",
+        },
         capabilities: [
           { id: "run.execute", version: 1 },
           { id: "input.text", version: 1, constraints: { maximumBytes: 100_000 } },

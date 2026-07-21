@@ -118,6 +118,11 @@ export const workerFrameSchema = z.discriminatedUnion("type", [
     ...envelopeFields,
     type: z.literal("ready"),
     capabilities: z.array(capabilitySchema).min(1).max(100),
+    readiness: z.strictObject({
+      release: z.enum(["ready", "failed"]),
+      session: z.enum(["ready", "failed"]),
+      provider: z.enum(["unchecked", "ready", "blocked"]),
+    }),
   }),
   z.strictObject({
     ...envelopeFields,

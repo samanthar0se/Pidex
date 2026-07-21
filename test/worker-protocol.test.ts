@@ -35,6 +35,11 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
     }),
     createFrame("ready", 1, {
       capabilities: [{ id: "run.execute", version: 1 }],
+      readiness: {
+        release: "ready",
+        session: "ready",
+        provider: "unchecked",
+      },
     }),
     createFrame("execute", 2, { correlationId: "run-1", prompt: "build" }),
     createFrame("fact", 3, {

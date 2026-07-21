@@ -108,6 +108,14 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
   assert.deepEqual(frames.map(frame => (frame as { type: string }).type), [
     "ready", "fact", "checkpoint", "outcome",
   ]);
+  assert.deepEqual(
+    (frames[0] as { readiness: unknown }).readiness,
+    {
+      release: "ready",
+      session: "ready",
+      provider: "unchecked",
+    },
+  );
   assert.equal((frames[3] as { checkpointId: string }).checkpointId, "checkpoint-3");
   await endpoint.close();
   host.destroy();
