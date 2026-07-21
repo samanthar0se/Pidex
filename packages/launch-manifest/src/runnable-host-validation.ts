@@ -46,7 +46,7 @@ export function publishRunnableHostValidation(input: RunnableHostValidationInput
     if (!record) continue;
     if (record.candidate !== parsed.candidate) failures.push(`${gate}:candidate-mismatch`);
     if (record.status !== "passed") failures.push(`${gate}:${record.status}`);
-    if (gate !== "traceability" && record.authoritativeAttempt !== 1) failures.push(`${gate}:non-authoritative-attempt`);
+    if (record.authoritativeAttempt !== 1) failures.push(`${gate}:non-authoritative-attempt`);
   }
   for (const scaffold of scaffoldNames) {
     if (parsed.retiredScaffolds[scaffold] !== "unreachable") failures.push(`${scaffold}:reachable`);

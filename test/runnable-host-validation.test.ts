@@ -21,7 +21,7 @@ function passingInput(): RunnableHostValidationInput {
       ],
     },
     evidence: [
-      { gate: "traceability" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("a") },
+      { gate: "traceability" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("a"), authoritativeAttempt: 1 },
       { gate: "windows-vm" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("b"), authoritativeAttempt: 1 },
       { gate: "primary-hyper-v" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("c"), authoritativeAttempt: 1 },
     ],
@@ -57,5 +57,17 @@ test("publishes only the exact bounded runnable Host scaffold-replacement claim"
       retiredScaffolds: { ...passingInput().retiredScaffolds, lanCli: "reachable" as const },
     }),
     /lanCli:reachable/,
+  );
+});
+
+test("every blocking evidence tier identifies the authoritative first attempt", () => {
+  assert.throws(
+    () => publishRunnableHostValidation({
+      ...passingInput(),
+      evidence: passingInput().evidence.map(item =>
+        item.gate === "traceability" ? { ...item, authoritativeAttempt: 2 } : item
+      ),
+    }),
+    /traceability:non-authoritative-attempt/,
   );
 });
