@@ -3,7 +3,10 @@ import { readFile as readFileFromDisk } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { z } from "zod";
 import type { ResolvedLaunchManifest } from "../../launch-manifest/src/index.js";
+import { createDiagnosticsPort } from "./diagnostics.js";
 import { mapWindowsNativeError } from "./errors.js";
+import type { DiagnosticsPort, StoragePort } from "./ports.js";
+import { createStoragePathInspector } from "./storage.js";
 
 const descriptorSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -24,6 +27,8 @@ interface RawAddon {
 
 export interface WindowsAddonBinding {
   selfTest(): Promise<void>;
+  readonly storage: Pick<StoragePort, "inspectPath">;
+  readonly diagnostics: DiagnosticsPort;
 }
 
 export interface AddonRuntimeIdentity {
@@ -39,7 +44,7 @@ export interface NativeModuleLoader {
 }
 
 const require = createRequire(import.meta.url);
-const expectedExports = ["selfTest"];
+const expectedExports = ["selfTest", "inspectStoragePath", "writeDiagnosticEvent"];
 
 export async function loadWindowsAddon(
   manifest: ResolvedLaunchManifest,
@@ -70,6 +75,8 @@ export async function loadWindowsAddon(
         throw mapWindowsNativeError(error, "selfTest");
       }
     },
+    storage: createStoragePathInspector(addon.inspectStoragePath as (path: string) => unknown),
+    diagnostics: createDiagnosticsPort(addon.writeDiagnosticEvent as (event: unknown) => unknown),
   };
 }
 
@@ -112,7 +119,7 @@ function validateAddon(addon: RawAddon, manifest: ResolvedLaunchManifest): void 
   const hasExpectedDescriptor = descriptor.exports.length === expectedExports.length
     && descriptor.exports.every((name, index) => name === expectedExports[index]);
   const hasExpectedNativeExports = nativeExports.length === expectedExports.length
-    && nativeExports.every((name, index) => name === expectedExports[index]);
+    && expectedExports.every(name => nativeExports.includes(name));
   if (!hasExpectedDescriptor || !hasExpectedNativeExports || typeof addon.selfTest !== "function") {
     throw new Error("Windows addon exports mismatch");
   }

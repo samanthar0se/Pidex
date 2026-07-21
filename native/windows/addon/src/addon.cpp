@@ -1,35 +1,15 @@
 #include <node_api.h>
 
-namespace {
+#include "diagnostics.hpp"
+#include "node_api_helpers.hpp"
+#include "storage.hpp"
 
-void check(const napi_status status) {
-  if (status != napi_ok) napi_fatal_error("pidex_windows", NAPI_AUTO_LENGTH, "Node-API initialization failed", NAPI_AUTO_LENGTH);
-}
-
-napi_value text(napi_env env, const char* value) {
-  napi_value result{};
-  check(napi_create_string_utf8(env, value, NAPI_AUTO_LENGTH, &result));
-  return result;
-}
-
-void property(napi_env env, napi_value object, const char* name, napi_value value) {
-  check(napi_set_named_property(env, object, name, value));
-}
-
-void integer_property(napi_env env, napi_value object, const char* name, const int value) {
-  napi_value result{};
-  check(napi_create_int32(env, value, &result));
-  property(env, object, name, result);
-}
+namespace pidex::windows::addon {
 
 napi_value self_test(napi_env env, napi_callback_info) {
-  napi_deferred deferred{};
-  napi_value promise{};
-  check(napi_create_promise(env, &deferred, &promise));
   napi_value undefined{};
   check(napi_get_undefined(env, &undefined));
-  check(napi_resolve_deferred(env, deferred, undefined));
-  return promise;
+  return resolved_promise(env, undefined);
 }
 
 napi_value initialize(napi_env env, napi_value exports) {
@@ -44,17 +24,25 @@ napi_value initialize(napi_env env, napi_value exports) {
   property(env, descriptor, "releaseId", text(env, PIDEX_RELEASE_ID));
 
   napi_value names{};
-  check(napi_create_array_with_length(env, 1, &names));
+  check(napi_create_array_with_length(env, 3, &names));
   check(napi_set_element(env, names, 0, text(env, "selfTest")));
+  check(napi_set_element(env, names, 1, text(env, "inspectStoragePath")));
+  check(napi_set_element(env, names, 2, text(env, "writeDiagnosticEvent")));
   property(env, descriptor, "exports", names);
   property(env, exports, "descriptor", descriptor);
 
   napi_value function{};
   check(napi_create_function(env, "selfTest", NAPI_AUTO_LENGTH, self_test, nullptr, &function));
   property(env, exports, "selfTest", function);
+  check(napi_create_function(env, "inspectStoragePath", NAPI_AUTO_LENGTH,
+                             inspect_storage_path, nullptr, &function));
+  property(env, exports, "inspectStoragePath", function);
+  check(napi_create_function(env, "writeDiagnosticEvent", NAPI_AUTO_LENGTH,
+                             write_diagnostic_event, nullptr, &function));
+  property(env, exports, "writeDiagnosticEvent", function);
   return exports;
 }
 
-}  // namespace
+}  // namespace pidex::windows::addon
 
-NAPI_MODULE(pidex_windows, initialize)
+NAPI_MODULE(pidex_windows, pidex::windows::addon::initialize)

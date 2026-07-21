@@ -1,7 +1,13 @@
 import type { WindowsPlatformError } from "./errors.js";
 import type {
-  CertificateIntegration, FirewallIntegration, IntegrationInspection, TaskIntegration,
+  CertificateIntegration,
+  FirewallIntegration,
+  IntegrationInspection,
+  TaskIntegration,
 } from "./integrations.js";
+import type { StoragePathInspection } from "./storage.js";
+
+export type { StorageDriveType, StoragePathInspection } from "./storage.js";
 
 export interface ManagedWindowsResource<TFault = WindowsPlatformError> {
   readonly lateFault: Promise<TFault>;
@@ -57,10 +63,10 @@ export interface ProcessPort {
 }
 
 export interface StoragePort {
-  inspectPath(input: { path: string }): Promise<unknown>;
+  inspectPath(input: { path: string }): Promise<StoragePathInspection>;
   observeTopology(): Promise<ManagedWindowsResource>;
 }
 
 export interface DiagnosticsPort {
-  writeEvent(input: unknown): Promise<boolean>;
+  writeEvent(input: { code: string; severity: "information" | "warning" | "error" }): Promise<boolean>;
 }

@@ -179,18 +179,36 @@ test("the per-instance pipe reports a failed impersonation revert before token e
 });
 
 test("the Windows addon has one raw Node-API entry point without V8 or libuv", async () => {
-  const [workspaceCmake, addonCmake, addonSource] = await Promise.all([
+  const [workspaceCmake, addonCmake, addonSource, helperSource] = await Promise.all([
     readNativeFile("CMakeLists.txt"),
     readNativeFile("addon/CMakeLists.txt"),
     readNativeFile("addon/src/addon.cpp"),
+    readNativeFile("addon/src/node_api_helpers.cpp"),
   ]);
 
   assert.match(workspaceCmake, /add_subdirectory\(addon\)/);
   assert.match(addonCmake, /OUTPUT_NAME "pidex_windows"/);
   assert.match(addonCmake, /SUFFIX "\.node"/);
   assert.match(addonSource, /NAPI_MODULE/);
-  assert.match(addonSource, /napi_create_promise/);
-  assert.doesNotMatch(addonSource, /\bv8\b|uv\.h|node-addon-api/i);
+  assert.match(helperSource, /napi_create_promise/);
+  assert.doesNotMatch(addonSource + helperSource, /\bv8\b|uv\.h|node-addon-api/i);
+});
+
+test("storage topology follows Windows volume facts and Event Log diagnostics remain coarse", async () => {
+  const [storageSource, diagnosticsSource] = await Promise.all([
+    readNativeFile("addon/src/storage.cpp"),
+    readNativeFile("addon/src/diagnostics.cpp"),
+  ]);
+
+  assert.match(storageSource, /GetVolumePathNameW/);
+  assert.match(storageSource, /GetVolumeInformationW/);
+  assert.match(storageSource, /GetDriveTypeW/);
+  assert.match(storageSource, /DRIVE_FIXED/);
+  assert.match(storageSource, /DRIVE_REMOTE/);
+  assert.match(diagnosticsSource, /RegisterEventSourceW\(nullptr, L"Pidex"\)/);
+  assert.match(diagnosticsSource, /ReportEventW/);
+  assert.match(diagnosticsSource, /DeregisterEventSource/);
+  assert.doesNotMatch(diagnosticsSource, /FormatMessage|event.*path|event.*detail/i);
 });
 
 test("Private-interface observation and DNS-SD registration have separate native modules", async () => {
