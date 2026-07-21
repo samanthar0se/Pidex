@@ -34,16 +34,35 @@ function passingScenario(
   };
 }
 
+type ScenarioName = ElevatedWindowsVmScenario["name"];
+
+interface CompleteScenarioSetOptions {
+  artifactSha256: string | Record<ScenarioName, string>;
+  overrides?: Partial<Record<ScenarioName, ElevatedWindowsVmScenario>>;
+  recordCall?: (call: string) => void;
+}
+
+function completeScenarioSet({
+  artifactSha256,
+  overrides = {},
+  recordCall,
+}: CompleteScenarioSetOptions): ElevatedWindowsVmScenario[] {
+  const scenarioNames = Object.keys(requiredChecks) as ScenarioName[];
+  return scenarioNames.map(name => {
+    const digest = typeof artifactSha256 === "string" ? artifactSha256 : artifactSha256[name];
+    return overrides[name] ?? passingScenario(name, digest, recordCall);
+  });
+}
+
 test("elevated Windows VM evidence binds both exact lanes and always cleans each scenario", async () => {
   const calls: string[] = [];
   const recordCall = (call: string): void => {
     calls.push(call);
   };
-  const campaign = new ElevatedWindowsVmCampaign(candidate, [
-    passingScenario("native-capabilities", "a".repeat(64), recordCall),
-    passingScenario("two-checkout-source-lifecycle", "a".repeat(64), recordCall),
-    passingScenario("launcher-cli-maintenance-states", "a".repeat(64), recordCall),
-  ]);
+  const campaign = new ElevatedWindowsVmCampaign(candidate, completeScenarioSet({
+    artifactSha256: "a".repeat(64),
+    recordCall,
+  }));
 
   const evidence = await campaign.run({
     vm: { os: "Windows 11", architecture: "x64", elevated: true, disposable: true },
@@ -68,29 +87,28 @@ test("elevated Windows VM evidence binds both exact lanes and always cleans each
 });
 
 test("failed scenarios remain authoritative and cleanup failures make evidence incomplete", async () => {
-  const campaign = new ElevatedWindowsVmCampaign(candidate, [
-    {
-      name: "native-capabilities",
-      async run() { throw new Error("Job assignment failed"); },
-      async cleanup() { throw new Error("handle remained open"); },
+  const campaign = new ElevatedWindowsVmCampaign(candidate, completeScenarioSet({
+    artifactSha256: "b".repeat(64),
+    overrides: {
+      "native-capabilities": {
+        name: "native-capabilities",
+        async run() { throw new Error("Job assignment failed"); },
+        async cleanup() { throw new Error("handle remained open"); },
+      },
     },
-    {
-      name: "two-checkout-source-lifecycle",
-      async run() { return { artifactSha256: "b".repeat(64), passedChecks: requiredChecks["two-checkout-source-lifecycle"] }; },
-      async cleanup() {},
-    },
-    passingScenario("launcher-cli-maintenance-states", "b".repeat(64)),
-  ]);
+  }));
   const input = {
     vm: { os: "Windows 11" as const, architecture: "x64" as const, elevated: true, disposable: true },
     attemptedAt: "2026-07-21T12:00:00.000Z",
   };
   const failed = await campaign.run(input);
-  const diagnosticRetry = await new ElevatedWindowsVmCampaign(candidate, [
-    passingScenario("native-capabilities", "c".repeat(64)),
-    passingScenario("two-checkout-source-lifecycle", "d".repeat(64)),
-    passingScenario("launcher-cli-maintenance-states", "e".repeat(64)),
-  ]).run(input);
+  const diagnosticRetry = await new ElevatedWindowsVmCampaign(candidate, completeScenarioSet({
+    artifactSha256: {
+      "native-capabilities": "c".repeat(64),
+      "two-checkout-source-lifecycle": "d".repeat(64),
+      "launcher-cli-maintenance-states": "e".repeat(64),
+    },
+  })).run(input);
   const attempts = new FirstAttemptEvidence();
 
   attempts.record(failed);
@@ -105,22 +123,27 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
 });
 
 test("launcher, CLI, and maintenance evidence requires every supported Host state and contract", async () => {
-  const campaign = new ElevatedWindowsVmCampaign(candidate, [
-    passingScenario("native-capabilities", "a".repeat(64)),
-    passingScenario("two-checkout-source-lifecycle", "b".repeat(64)),
-    {
-      name: "launcher-cli-maintenance-states",
-      async run() {
-        return {
-          artifactSha256: "c".repeat(64),
-          passedChecks: requiredChecks["launcher-cli-maintenance-states"].filter(
-            check => check !== "durable-receipts-and-conservative-reconciliation",
-          ),
-        };
-      },
-      async cleanup() {},
+  const campaign = new ElevatedWindowsVmCampaign(candidate, completeScenarioSet({
+    artifactSha256: {
+      "native-capabilities": "a".repeat(64),
+      "two-checkout-source-lifecycle": "b".repeat(64),
+      "launcher-cli-maintenance-states": "c".repeat(64),
     },
-  ]);
+    overrides: {
+      "launcher-cli-maintenance-states": {
+        name: "launcher-cli-maintenance-states",
+        async run() {
+          return {
+            artifactSha256: "c".repeat(64),
+            passedChecks: requiredChecks["launcher-cli-maintenance-states"].filter(
+              check => check !== "durable-receipts-and-conservative-reconciliation",
+            ),
+          };
+        },
+        async cleanup() {},
+      },
+    },
+  }));
 
   const evidence = await campaign.run({
     vm: { os: "Windows 11", architecture: "x64", elevated: true, disposable: true },

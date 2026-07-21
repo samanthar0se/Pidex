@@ -24,8 +24,40 @@ export interface ElevatedWindowsVmIdentity {
   disposable: boolean;
 }
 
+export const requiredChecks = {
+  "native-capabilities": [
+    "exact-closure-and-addon-load-rejection",
+    "capability-drift-transitions-and-late-faults",
+    "job-containment-and-breakaway-attacks",
+    "local-pipe-authentication-and-attacks",
+    "complete-handle-cleanup",
+  ],
+  "two-checkout-source-lifecycle": [
+    "prepare-start-update-rollback",
+    "unprepare-and-reprepare",
+    "fixed-origin-collision-rejection",
+    "unconditional-fixture-cleanup",
+  ],
+  "launcher-cli-maintenance-states": [
+    "ready-state",
+    "degraded-state",
+    "stopped-state",
+    "circuit-state",
+    "recovery-only-state",
+    "incompatible-state",
+    "interrupted-operation-state",
+    "update-state",
+    "rollback-state",
+    "stopped-only-key-repair-state",
+    "every-launcher-cli-lifecycle-repair-update-backup-and-maintenance-family",
+    "durable-receipts-and-conservative-reconciliation",
+    "stable-exits-secret-channels-and-output-separation",
+    "redacted-logs-diagnostics-and-support-artifacts",
+  ],
+} as const;
+
 export interface ElevatedWindowsVmScenario {
-  name: "native-capabilities" | "two-checkout-source-lifecycle" | "launcher-cli-maintenance-states";
+  name: keyof typeof requiredChecks;
   run(context: ElevatedWindowsVmContext): Promise<{
     artifactSha256: string;
     passedChecks?: readonly string[];
@@ -114,38 +146,6 @@ export class ElevatedWindowsVmCampaign {
   }
 }
 
-export const requiredChecks = {
-  "native-capabilities": [
-    "exact-closure-and-addon-load-rejection",
-    "capability-drift-transitions-and-late-faults",
-    "job-containment-and-breakaway-attacks",
-    "local-pipe-authentication-and-attacks",
-    "complete-handle-cleanup",
-  ],
-  "two-checkout-source-lifecycle": [
-    "prepare-start-update-rollback",
-    "unprepare-and-reprepare",
-    "fixed-origin-collision-rejection",
-    "unconditional-fixture-cleanup",
-  ],
-  "launcher-cli-maintenance-states": [
-    "ready-state",
-    "degraded-state",
-    "stopped-state",
-    "circuit-state",
-    "recovery-only-state",
-    "incompatible-state",
-    "interrupted-operation-state",
-    "update-state",
-    "rollback-state",
-    "stopped-only-key-repair-state",
-    "every-launcher-cli-lifecycle-repair-update-backup-and-maintenance-family",
-    "durable-receipts-and-conservative-reconciliation",
-    "stable-exits-secret-channels-and-output-separation",
-    "redacted-logs-diagnostics-and-support-artifacts",
-  ],
-} as const satisfies Record<ElevatedWindowsVmScenario["name"], readonly string[]>;
-
 export { FirstAttemptEvidence } from "./first-attempt-evidence.js";
 
 function validateCampaign(candidate: WindowsNativeCandidate, scenarios: readonly ElevatedWindowsVmScenario[]): void {
@@ -153,11 +153,7 @@ function validateCampaign(candidate: WindowsNativeCandidate, scenarios: readonly
   const lanes = candidate.nodeLanes.map(lane => lane.lane);
   if (lanes.length !== 2 || lanes[0] !== "primary" || lanes[1] !== "secondary") throw new Error("campaign requires exact primary and secondary Node lanes");
   const names = scenarios.map(scenario => scenario.name);
-  const requiredScenarios: readonly ElevatedWindowsVmScenario["name"][] = [
-    "native-capabilities",
-    "two-checkout-source-lifecycle",
-    "launcher-cli-maintenance-states",
-  ];
+  const requiredScenarios = Object.keys(requiredChecks) as ElevatedWindowsVmScenario["name"][];
   if (names.length !== requiredScenarios.length || requiredScenarios.some(name => !names.includes(name))) {
     throw new Error("campaign requires native capabilities, two-checkout source lifecycle, and launcher/CLI/maintenance state scenarios");
   }
