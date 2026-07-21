@@ -7,10 +7,16 @@ import {
   selectCurrentTimeline,
   selectDiscoveryGroups,
   selectDraft,
+  type NewSessionProgress,
+  type NewSessionState,
   type SessionFact,
 } from "./client-store.js";
 
 function applyPath(path: string) {
+  if (path === "/new") {
+    void store.getState().openNewSession();
+    return;
+  }
   if (path === "/archived") store.setState({ discoveryMode: "archived" });
   const match = path.match(/^\/sessions\/([^/]+)$/);
   if (match) void store.getState().openSession(decodeURIComponent(match[1]), "none");
@@ -32,6 +38,7 @@ export function App() {
   const draft = useStore(store, selectDraft);
   const groups = useStore(store, selectDiscoveryGroups);
   const state = useStore(store);
+  const newSession = state.newSession;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerToggle = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -51,7 +58,7 @@ export function App() {
     <button className="drawer-backdrop" aria-label="Close Session drawer" onClick={closeDrawer}/>
     <aside aria-label="Session drawer" onKeyDown={event => { if (event.key === "Escape") closeDrawer(); }}>
       <div className="brand"><strong>PIDEX</strong><button className="close-drawer" aria-label="Close Session drawer" onClick={closeDrawer}><X/></button></div>
-      <button className="new-session"><Plus size={16}/> New Session</button>
+      <button className="new-session-button" onClick={() => { void store.getState().openNewSession(); closeDrawer(); }}><Plus size={16}/> New Session</button>
       <label className="search"><Search size={15}/><input aria-label="Search Sessions" placeholder="Search Sessions" value={state.searchQuery} onChange={event => store.getState().setSearchQuery(event.target.value)}/></label>
       <nav aria-label={state.discoveryMode === "archived" ? "Archived Sessions" : "Sessions"}>
         {groups.map(group => {
@@ -77,12 +84,63 @@ export function App() {
       <button className="archived" aria-pressed={state.discoveryMode === "archived"} onClick={() => store.getState().setDiscoveryMode(state.discoveryMode === "archived" ? "available" : "archived")}><Archive size={16}/>{state.discoveryMode === "archived" ? "Back to Sessions" : "Archived"}</button>
     </aside>
     <main>
-      <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu/></button><div><h1>{session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{session && (state.isSessionCurrent ? "Current" : "Reconciling current Host data")}</small></div></header>
-      <section className="timeline" aria-label="Session Timeline">
-        {!session && <div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div>}
-        {timeline.map(entry => <article key={entry.entryId} data-kind={entry.kind}><small>{entry.kind}</small>{entry.text}</article>)}
-      </section>
-      {session && <footer><textarea aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"/><button>Run</button></footer>}
+      <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu/></button><div><h1>{newSession ? "New Session" : session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{newSession ? "Nothing is created until you submit" : session && (state.isSessionCurrent ? "Current" : "Reconciling current Host data")}</small></div></header>
+      {newSession && <NewSessionView newSession={newSession}/>}
+      {!newSession && <>
+        <section className="timeline" aria-label="Session Timeline">
+          {!session && <div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div>}
+          {timeline.map(entry => <article key={entry.entryId} data-kind={entry.kind}><small>{entry.kind}</small>{entry.text}</article>)}
+        </section>
+        {session && <footer><textarea aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"/><button>Run</button></footer>}
+      </>}
     </main>
   </div>;
+}
+
+function describeProgress(progress: NewSessionProgress) {
+  switch (progress.phase) {
+    case "editing":
+      return { reason: progress.reason };
+    case "creating":
+    case "submitting-run":
+      return {};
+    case "creation-failed":
+      return { reason: progress.result.reason, uncertain: progress.result.kind === "uncertain" };
+    case "session-created":
+      return { sessionCreated: "Session created." };
+    case "run-finished":
+      switch (progress.result.kind) {
+        case "accepted":
+          return { sessionCreated: "Session created; initial Run accepted." };
+        case "rejected":
+          return { reason: progress.result.reason, sessionCreated: "Session created; initial Run rejected." };
+        case "uncertain":
+          return {
+            reason: progress.result.reason,
+            uncertain: true,
+            sessionCreated: "Session created; initial Run acceptance is uncertain.",
+          };
+      }
+  }
+}
+
+function NewSessionView({ newSession }: { newSession: NewSessionState }) {
+  const editable = newSession.progress.phase === "editing";
+  const description = describeProgress(newSession.progress);
+  const submit = () => void store.getState().submitNewSession();
+  return <section className="new-session" aria-label="New Session">
+    <div className="scope-controls">
+      <label>Project <input disabled={!editable} value={newSession.projectId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: event.target.value || undefined, workspaceId: undefined })}/></label>
+      <label>Workspace <input disabled={!editable} value={newSession.workspaceId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: newSession.projectId, workspaceId: event.target.value || undefined })}/></label>
+      {(["Runtime", "Model", "Mode"] as const).map(choice => <label key={choice}>{choice}<select disabled title={`${choice} choices were not advertised by the Host`}><option>Host default — no choices advertised</option></select></label>)}
+    </div>
+    <label className="new-composer">First prompt
+      <textarea autoFocus aria-label="First prompt" value={newSession.draft} disabled={!editable}
+        onChange={event => void store.getState().setNewSessionDraft(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}/>
+    </label>
+    {description.reason && <p className="creation-outcome" role="alert">{description.uncertain ? "Outcome uncertain; do not retry. " : ""}{description.reason}</p>}
+    {description.sessionCreated && <p>{description.sessionCreated}</p>}
+    <div className="new-actions"><button disabled={!editable} onClick={() => void store.getState().submitNewSession(true)}>Create empty Session</button><button disabled={!editable} onClick={submit}>Create &amp; Run</button></div>
+  </section>;
 }

@@ -20,11 +20,32 @@ export interface DiscoveryProjection {
 }
 export interface DiscoveryGroup { id: string; name: string; sessions: SessionFact[]; }
 
+export interface NewSessionScope { projectId?: string; workspaceId?: string }
+export type CommandResult =
+  | { kind: "accepted" }
+  | { kind: "rejected"; reason: string }
+  | { kind: "uncertain"; reason: string };
+export type SessionCreateResult = CommandResult & { session?: SessionFact };
+type FailedCommandResult = Exclude<CommandResult, { kind: "accepted" }>;
+export type NewSessionProgress =
+  | { phase: "editing"; reason?: string }
+  | { phase: "creating" }
+  | { phase: "creation-failed"; result: FailedCommandResult }
+  | { phase: "session-created"; sessionId: string }
+  | { phase: "submitting-run"; sessionId: string }
+  | { phase: "run-finished"; sessionId: string; result: CommandResult };
+export interface NewSessionState extends NewSessionScope {
+  draft: string;
+  progress: NewSessionProgress;
+}
+
 export interface ClientAdapters {
   host: {
     readCatalog?(): Promise<DiscoveryProjection>;
     readSession(sessionId: string): Promise<SessionProjection>;
     restoreSession?(session: SessionFact): Promise<void>;
+    createSession?(command: { commandId: string } & NewSessionScope): Promise<SessionCreateResult>;
+    submitRun?(command: { commandId: string; sessionId: string; prompt: string }): Promise<CommandResult>;
   };
   drafts: { read(sessionId: string): Promise<string>; write(sessionId: string, value: string): Promise<void>; };
   preferences?: {
@@ -36,6 +57,7 @@ export interface ClientAdapters {
     push?(path: string): void;
     subscribe?(listener: (path: string) => void): () => void;
   };
+  commandIds?: () => string;
 }
 
 export interface ClientState {
@@ -51,8 +73,13 @@ export interface ClientState {
   searchQuery: string;
   discoveryMode: "available" | "archived";
   isSessionCurrent: boolean;
+  newSession?: NewSessionState;
   loadDiscovery(): Promise<void>;
   openSession(sessionId: string, history?: "push" | "replace" | "none"): Promise<void>;
+  openNewSession(scope?: NewSessionScope): Promise<void>;
+  setNewSessionScope(scope: NewSessionScope): Promise<void>;
+  setNewSessionDraft(value: string): Promise<void>;
+  submitNewSession(createEmpty?: boolean): Promise<void>;
   setDraft(value: string): Promise<void>;
   setSearchQuery(query: string): void;
   setDiscoveryMode(mode: "available" | "archived"): void;
@@ -63,6 +90,7 @@ export interface ClientState {
 export type ClientStore = StoreApi<ClientState>;
 
 export function createClientStore(adapters: ClientAdapters): ClientStore {
+  const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
   return createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
     timelines: {}, drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
@@ -80,8 +108,62 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         expandedProjectIds: expanded,
       });
     },
+    async openNewSession(scope = {}) {
+      const draft = await adapters.drafts.read("new-session");
+      set({ selectedSessionId: undefined, newSession: { ...scope, draft, progress: { phase: "editing" } } });
+      adapters.routing.replace("/new");
+    },
+    async setNewSessionScope(scope) {
+      const current = get().newSession;
+      if (!current || current.progress.phase !== "editing") return;
+      set({ newSession: { ...current, ...scope } });
+    },
+    async setNewSessionDraft(value) {
+      const current = get().newSession;
+      if (!current || current.progress.phase !== "editing") return;
+      set({ newSession: { ...current, draft: value } });
+      await adapters.drafts.write("new-session", value);
+    },
+    async submitNewSession(createEmpty = false) {
+      const initial = get().newSession;
+      if (!initial || initial.progress.phase !== "editing" || !adapters.host.createSession) return;
+      const prompt = initial.draft;
+      if (!createEmpty && !prompt.trim()) {
+        set({ newSession: { ...initial, progress: {
+          phase: "editing", reason: "Enter a prompt or create an empty Session",
+        } } });
+        return;
+      }
+      set({ newSession: { ...initial, progress: { phase: "creating" } } });
+      const created = await adapters.host.createSession({
+        commandId: commandId(), projectId: initial.projectId, workspaceId: initial.workspaceId,
+      });
+      if (created.kind !== "accepted" || !created.session) {
+        const reason = created.kind === "accepted" ? "Host accepted creation without a Session projection" : created.reason;
+        const kind = created.kind === "uncertain" ? "uncertain" : "rejected";
+        set({ newSession: { ...initial, progress: {
+          phase: "creation-failed", result: { kind, reason },
+        } } });
+        return;
+      }
+      const sessionId = created.session.sessionId;
+      const durable = { ...initial, progress: { phase: "session-created" as const, sessionId } };
+      set(state => ({
+        sessions: { ...state.sessions, [sessionId]: created.session! },
+        newSession: durable,
+      }));
+      if (createEmpty) {
+        adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
+        return;
+      }
+      if (!adapters.host.submitRun) return;
+      set({ newSession: { ...durable, progress: { phase: "submitting-run", sessionId } } });
+      const submitted = await adapters.host.submitRun({ commandId: commandId(), sessionId, prompt });
+      set({ newSession: { ...durable, progress: { phase: "run-finished", sessionId, result: submitted } } });
+      if (submitted.kind === "accepted") adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
+    },
     async openSession(sessionId, navigation = "replace") {
-      set({ selectedSessionId: sessionId, isSessionCurrent: false });
+      set({ selectedSessionId: sessionId, isSessionCurrent: false, newSession: undefined });
       const path = `/sessions/${encodeURIComponent(sessionId)}`;
       if (navigation === "push") (adapters.routing.push ?? adapters.routing.replace)(path);
       else if (navigation === "replace") adapters.routing.replace(path);
@@ -101,7 +183,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     },
     setSearchQuery(searchQuery) { set({ searchQuery }); },
     setDiscoveryMode(discoveryMode) {
-      set({ discoveryMode });
+      set({ discoveryMode, newSession: undefined });
       (adapters.routing.push ?? adapters.routing.replace)(discoveryMode === "archived" ? "/archived" : "/");
     },
     async toggleProject(projectId) {
