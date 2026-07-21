@@ -21,16 +21,7 @@ test("the Windows binding validates the manifest-selected addon before exposing 
       loads += 1;
       assert.equal(path, manifest.artifacts.addon.path);
       return {
-        descriptor: {
-          schemaVersion: 1,
-          architecture: "x64",
-          nodeApi: 10,
-          abi: "napi-10",
-          addonGeneration: 1,
-          schemaGeneration: 1,
-          releaseId: "r1",
-          exports: ["selfTest"],
-        },
+        descriptor: addonDescriptor(),
         selfTest: async () => undefined,
       };
     },
@@ -54,12 +45,46 @@ test("the Windows binding validates the manifest-selected addon before exposing 
   );
 });
 
+test("the Windows binding rejects an addon artifact that changes while it is loading", async () => {
+  const manifest = fixture();
+  let reads = 0;
+
+  await assert.rejects(
+    loadWindowsAddon(manifest, {
+      runtime: { platform: "win32", architecture: "x64", nodeApi: 10 },
+      readFile: async () => {
+        reads += 1;
+        return reads === 1 ? bytes : Buffer.from("replacement addon");
+      },
+      loadModule: () => ({
+        descriptor: addonDescriptor(),
+        selfTest: async () => undefined,
+      }),
+    }),
+    /changed while loading/i,
+  );
+});
+
+test("the Windows binding rejects native exports that are absent from the descriptor", async () => {
+  const manifest = fixture();
+
+  await assert.rejects(
+    loadWindowsAddon(manifest, {
+      runtime: { platform: "win32", architecture: "x64", nodeApi: 10 },
+      readFile: async () => bytes,
+      loadModule: () => ({
+        descriptor: addonDescriptor(),
+        selfTest: async () => undefined,
+        undeclared: () => undefined,
+      }),
+    }),
+    /exports mismatch/i,
+  );
+});
+
 test("the Windows binding rejects incompatible addon identity and maps stable native errors", async () => {
   const manifest = fixture();
-  const descriptor = {
-    schemaVersion: 1 as const, architecture: "x64", nodeApi: 10, abi: "napi-10",
-    addonGeneration: 1, schemaGeneration: 1, releaseId: "wrong-release", exports: ["selfTest"],
-  };
+  const descriptor = addonDescriptor({ releaseId: "wrong-release" });
   const dependencies = {
     runtime: { platform: "win32", architecture: "x64", nodeApi: 10 },
     readFile: async () => bytes,
@@ -81,6 +106,20 @@ test("the Windows binding rejects incompatible addon identity and maps stable na
     return true;
   });
 });
+
+function addonDescriptor(overrides: { releaseId?: string } = {}) {
+  return {
+    schemaVersion: 1,
+    architecture: "x64",
+    nodeApi: 10,
+    abi: "napi-10",
+    addonGeneration: 1,
+    schemaGeneration: 1,
+    releaseId: "r1",
+    exports: ["selfTest"],
+    ...overrides,
+  };
+}
 
 function fixture() {
   const roles = Object.fromEntries(
