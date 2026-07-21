@@ -126,7 +126,7 @@ test("source update publishes first and submits only its content identity to the
   }]);
 });
 
-test("emitted CLI dispatches status and every mutation through local control in human and JSON modes", async () => {
+test("runCli dispatches JSON status and a detached backup through local control", async () => {
   const calls: Array<{ method: string; payload: unknown }> = [];
   const output: string[] = [];
   const transport: LocalControlTransport = { async request(method, payload) {
