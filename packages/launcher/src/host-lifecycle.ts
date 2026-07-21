@@ -3,12 +3,13 @@ import { relative, resolve, sep } from "node:path";
 
 export const DEFAULT_DRAIN_TIMEOUT_MS = 15 * 60_000;
 export const WINDOWS_SHUTDOWN_BUDGET_MS = 10_000;
+export const FORCE_LIFECYCLE_CONFIRMATION = "FORCE STOP PIDEX";
 export const PURGE_CONFIRMATION = "PURGE PIDEX AND MANAGED BACKUPS";
 const DRAIN_POLL_INTERVAL_MS = 100;
 
 export class HostLifecycleError extends Error {
   constructor(
-    readonly code: "drain-timeout" | "purge-not-confirmed",
+    readonly code: "drain-timeout" | "force-not-confirmed" | "purge-not-confirmed",
     message: string = code,
   ) {
     super(message);
@@ -22,8 +23,12 @@ export interface LifecycleHooks {
   /** Includes queued, held, executing, cancelling, interactions, and lifecycle work. */
   remainingWork(): Promise<readonly string[]> | readonly string[];
   reportRemainingWork(work: readonly string[]): Promise<void> | void;
-  /** Commits ordinary Stop outcomes before this resolves. */
-  stopAffectedSessions(): Promise<void> | void;
+  /**
+   * Reconciles forced interruption conservatively before this resolves. Work
+   * without durable terminal proof must remain Interrupted, never clean Stop
+   * or Cancelled.
+   */
+  forceStopAffectedSessions(): Promise<void> | void;
   flushAndStopWorkers(): Promise<void> | void;
   restart?(): Promise<void> | void;
   removeStartupRegistration?(): Promise<void> | void;
@@ -44,6 +49,7 @@ export interface PlannedLifecycleOptions {
   operation: "stop" | "restart" | "uninstall" | "purge";
   hooks: LifecycleHooks;
   force?: boolean;
+  forceConfirmation?: string;
   timeoutMs?: number;
   uninstall?: UninstallLayout;
   purgeConfirmation?: string;
@@ -54,6 +60,15 @@ export interface PlannedLifecycleOptions {
 export async function coordinatePlannedLifecycle(
   options: PlannedLifecycleOptions,
 ): Promise<void> {
+  if (
+    options.force &&
+    options.forceConfirmation !== FORCE_LIFECYCLE_CONFIRMATION
+  ) {
+    throw new HostLifecycleError(
+      "force-not-confirmed",
+      `Forced lifecycle may interrupt uncertain work; type ${FORCE_LIFECYCLE_CONFIRMATION}.`,
+    );
+  }
   if (
     options.operation === "purge" &&
     (options.purgeConfirmation !== PURGE_CONFIRMATION ||
@@ -81,7 +96,7 @@ export async function coordinatePlannedLifecycle(
   await hooks.rejectMutations();
   try {
     if (options.force) {
-      await hooks.stopAffectedSessions();
+      await hooks.forceStopAffectedSessions();
     }
 
     while (true) {
