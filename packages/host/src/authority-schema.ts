@@ -51,6 +51,9 @@ const CREATE_AUTHORITY_SCHEMA = `
     residency TEXT NOT NULL CHECK(residency IN ('sleeping','resident')),
     metadata_revision INTEGER NOT NULL,
     timeline_revision INTEGER NOT NULL,
+    read_through_timeline_revision INTEGER NOT NULL,
+    read_state_revision INTEGER NOT NULL CHECK(read_state_revision > 0),
+    latest_unread_milestone_timeline_revision INTEGER,
     parent_session_id TEXT REFERENCES sessions(session_id),
     fork_point_entry_id TEXT,
     created_at INTEGER NOT NULL
@@ -165,6 +168,18 @@ const CREATE_CURRENT_RUNS_TABLE = `
 `;
 
 const SESSION_COLUMN_MIGRATIONS = new Map([
+  [
+    "read_through_timeline_revision",
+    "ALTER TABLE sessions ADD COLUMN read_through_timeline_revision INTEGER",
+  ],
+  [
+    "read_state_revision",
+    "ALTER TABLE sessions ADD COLUMN read_state_revision INTEGER",
+  ],
+  [
+    "latest_unread_milestone_timeline_revision",
+    "ALTER TABLE sessions ADD COLUMN latest_unread_milestone_timeline_revision INTEGER",
+  ],
   [
     "name",
     "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",

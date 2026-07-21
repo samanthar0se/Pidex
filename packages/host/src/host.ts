@@ -1084,16 +1084,30 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       });
       return;
     }
-
-    // Authority transitions are introduced by issue #129. The protocol seam
-    // still returns an authoritative rejection rather than fabricating state.
-    sendServerMessage(client, {
-      type: "command.outcome",
-      commandId: command.commandId,
-      outcome: "rejected",
-      error: "unknown-session",
-      reconciliationCursor: status().synchronization.cursor,
-    });
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      const result = store.markSessionRead(deviceId, command, adapters.clock.now());
+      const accepted = result.kind === "accepted" || result.kind === "replayed";
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: accepted ? "accepted" : "rejected",
+        ...(result.kind === "rejected" ? { error: result.error } : { effect: result.effect }),
+        ...(result.digest ? { receipt: { digest: result.digest, commitCursor: result.cursor } } : {}),
+        ...(result.kind === "rejected" ? { reconciliationCursor: result.cursor } : {}),
+        ...(result.kind !== "rejected" || "readState" in result ? { readState: result.readState } : {}),
+      });
+      if (result.kind === "accepted" && result.effect === "advanced") {
+        const changeSet: ServerMessage = {
+          type: "host.change-set", cursor: result.cursor,
+          changes: [{ type: "session.read-state-changed", sessionId: command.sessionId, readState: result.readState }],
+        };
+        for (const socket of admittedClients) sendServerMessage(socket, changeSet);
+      }
+    } catch {
+      sendServerMessage(client, { type: "command.outcome", commandId: command.commandId, outcome: "rejected", error: "commit-failed" });
+    }
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
