@@ -59,7 +59,26 @@ export interface FirewallPort {
 }
 
 export interface ProcessPort {
-  spawnContained(input: unknown): Promise<ManagedWindowsResource>;
+  spawnContained(input: ContainedProcessRequest): Promise<ManagedProcess>;
+}
+
+export interface ContainedProcessRequest {
+  readonly executable: string;
+  readonly cwd: string;
+  readonly argv: readonly string[];
+  readonly environment: Readonly<Record<string, string>>;
+  readonly bootstrapHandle: number;
+  readonly endpoint: string;
+  readonly identity: {
+    readonly instanceId: string;
+    readonly releaseId: string;
+    readonly protocolGeneration: number;
+    readonly role: "daemon" | "worker" | "maintenance" | "tool";
+  };
+}
+
+export interface ManagedProcess extends ManagedWindowsResource {
+  readonly processId: number;
 }
 
 export interface StoragePort {

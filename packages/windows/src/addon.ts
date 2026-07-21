@@ -5,8 +5,11 @@ import { z } from "zod";
 import type { ResolvedLaunchManifest } from "../../launch-manifest/src/index.js";
 import { createDiagnosticsPort } from "./diagnostics.js";
 import { mapWindowsNativeError } from "./errors.js";
-import type { DiagnosticsPort, StoragePort } from "./ports.js";
-import { createStoragePathInspector } from "./storage.js";
+import { createWindowsIntegrationPorts, type RawWindowsIntegrations } from "./integrations.js";
+import { createNetworkPort, type NativeNetworkBinding } from "./network.js";
+import type { DiagnosticsPort, FirewallPort, InstallationPort, NetworkPort, ProcessPort, StoragePort } from "./ports.js";
+import { createProcessPort, type NativeProcessBinding } from "./process.js";
+import { createStoragePort } from "./storage.js";
 
 const descriptorSchema = z.strictObject({
   schemaVersion: z.literal(1),
@@ -27,7 +30,11 @@ interface RawAddon {
 
 export interface WindowsAddonBinding {
   selfTest(): Promise<void>;
-  readonly storage: Pick<StoragePort, "inspectPath">;
+  readonly installation: InstallationPort;
+  readonly network: NetworkPort;
+  readonly firewall: FirewallPort;
+  readonly process: ProcessPort;
+  readonly storage: StoragePort;
   readonly diagnostics: DiagnosticsPort;
 }
 
@@ -44,7 +51,13 @@ export interface NativeModuleLoader {
 }
 
 const require = createRequire(import.meta.url);
-const expectedExports = ["selfTest", "inspectStoragePath", "writeDiagnosticEvent"];
+const expectedExports = [
+  "selfTest", "inspectCertificate", "installCertificate", "removeCertificate",
+  "inspectTask", "registerTask", "removeTask", "inspectFirewallRule",
+  "ensureFirewallRule", "removeFirewallRule", "snapshotInterfaces",
+  "observeInterfaces", "openAdvertisement", "spawnContained",
+  "inspectStoragePath", "observeStorageTopology", "writeDiagnosticEvent",
+];
 
 export async function loadWindowsAddon(
   manifest: ResolvedLaunchManifest,
@@ -67,6 +80,7 @@ export async function loadWindowsAddon(
   validateHash(await readFile(path), expectedHash, "Windows addon changed while loading");
   validateAddon(addon, manifest);
 
+  const integrations = createWindowsIntegrationPorts(addon as unknown as RawWindowsIntegrations);
   return {
     async selfTest(): Promise<void> {
       try {
@@ -75,7 +89,14 @@ export async function loadWindowsAddon(
         throw mapWindowsNativeError(error, "selfTest");
       }
     },
-    storage: createStoragePathInspector(addon.inspectStoragePath as (path: string) => unknown),
+    installation: integrations.installation,
+    network: createNetworkPort(addon as unknown as NativeNetworkBinding),
+    firewall: integrations.firewall,
+    process: createProcessPort(addon as unknown as NativeProcessBinding),
+    storage: createStoragePort(
+      addon.inspectStoragePath as (path: string) => unknown,
+      addon.observeStorageTopology as () => Promise<{ close(): Promise<void>; lateFault?: Promise<unknown> }>,
+    ),
     diagnostics: createDiagnosticsPort(addon.writeDiagnosticEvent as (event: unknown) => unknown),
   };
 }

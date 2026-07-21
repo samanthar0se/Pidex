@@ -149,7 +149,7 @@ function addonDescriptor(overrides: { releaseId?: string } = {}) {
     addonGeneration: 1,
     schemaGeneration: 1,
     releaseId: "r1",
-    exports: ["selfTest", "inspectStoragePath", "writeDiagnosticEvent"],
+    exports: addonExports,
     ...overrides,
   };
 }
@@ -159,10 +159,32 @@ function addonModule(overrides: Record<string, unknown> = {}) {
     descriptor: addonDescriptor(),
     selfTest: async () => undefined,
     inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
+    observeStorageTopology: async () => ({ close: async () => undefined }),
     writeDiagnosticEvent: async () => true,
+    inspectCertificate: async () => ({ state: "absent", reasons: [] }),
+    installCertificate: async () => undefined,
+    removeCertificate: async () => undefined,
+    inspectTask: async () => ({ state: "absent", reasons: [] }),
+    registerTask: async () => undefined,
+    removeTask: async () => undefined,
+    inspectFirewallRule: async () => ({ state: "absent", reasons: [] }),
+    ensureFirewallRule: async () => undefined,
+    removeFirewallRule: async () => undefined,
+    snapshotInterfaces: async () => [],
+    observeInterfaces: async () => ({ close: async () => undefined }),
+    openAdvertisement: async () => ({ close: async () => undefined }),
+    spawnContained: async () => ({ processId: 1, close: async () => undefined }),
     ...overrides,
   };
 }
+
+const addonExports = [
+  "selfTest", "inspectCertificate", "installCertificate", "removeCertificate",
+  "inspectTask", "registerTask", "removeTask", "inspectFirewallRule",
+  "ensureFirewallRule", "removeFirewallRule", "snapshotInterfaces",
+  "observeInterfaces", "openAdvertisement", "spawnContained",
+  "inspectStoragePath", "observeStorageTopology", "writeDiagnosticEvent",
+];
 
 function fixture() {
   const roles = Object.fromEntries(
