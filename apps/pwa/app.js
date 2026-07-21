@@ -4,6 +4,9 @@ import {
   reconcileSessionReadState,
   sessionReadStateResourceId,
 } from "./read-state.mjs";
+import { accessibleSessionStatus } from "./accessible-session-status.mjs";
+import { discoverSessions } from "./session-discovery.mjs";
+import { VisibleTailMarkRead } from "./visible-tail-mark-read.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 
@@ -114,6 +117,8 @@ let messageChain = Promise.resolve();
 let authenticationPromise;
 let reconnectTimer;
 let reconnectAttempt = 0;
+let tailObserver;
+const visibleTailMarkRead = new VisibleTailMarkRead(() => crypto.randomUUID());
 const mobileLayoutQuery = matchMedia("(max-width: 720px)");
 
 function setDrawerOpen(isOpen) {
@@ -238,6 +243,12 @@ addEventListener("keydown", event => {
 
 $("#new-session").onclick = () => $("#new-session-view").showModal();
 $("#session-search").oninput = renderSidebar;
+$("#unread-only").onchange = () => {
+  const results = $("#unread-results");
+  results.setAttribute("aria-live", "polite");
+  renderSidebar();
+  setTimeout(() => results.setAttribute("aria-live", "off"), 0);
+};
 $("#session-project").onchange = renderWorkspaceOptions;
 $("#create-session").onclick = () => createSession("");
 $("#create-and-run").onclick = () => {
@@ -561,6 +572,7 @@ function applyTimelineChange(message) {
   }
 
   replaceOrAppend(scope.timeline, message.entry, "entryId");
+  scope.session.timelineRevision = message.revision;
   renderCurrentView();
 }
 
@@ -774,12 +786,13 @@ function renderSidebar() {
   const catalog = showArchivedSessions
     ? state.archivedSessions
     : state.sessions;
-  const matchingSessions = catalog.filter(session => {
-    const searchableText = `${session.name} ${sessionGroupName(session)}`;
-    return searchableText.toLowerCase().includes(query);
-  });
-  matchingSessions.sort(
-    (left, right) => right.timelineRevision - left.timelineRevision,
+  const unreadOnly = $("#unread-only").checked;
+  const matchingSessions = discoverSessions(
+    catalog.map(session => ({
+      ...session,
+      searchText: `${session.name} ${sessionGroupName(session)}`,
+    })),
+    { query, unreadOnly },
   );
 
   const groups = new Map();
@@ -796,6 +809,9 @@ function renderSidebar() {
     return [heading, ...sessions.map(createSessionLink)];
   });
   $("#sessions").replaceChildren(...groupElements);
+  $("#unread-results").textContent = unreadOnly
+    ? `${matchingSessions.length} unread Session${matchingSessions.length === 1 ? "" : "s"}`
+    : "";
 }
 
 function createSessionLink(session) {
@@ -809,10 +825,30 @@ function createSessionLink(session) {
   );
   link.append(document.createTextNode(session.name));
 
+  const status = accessibleSessionStatus(session, sessionAttention(session));
+  if (status) {
+    link.setAttribute("aria-label", `${session.name}, ${status}`);
+  }
+
   const cue = document.createElement("small");
   cue.textContent = sessionCue(session);
   link.append(cue);
   return link;
+}
+
+function sessionAttention(session) {
+  const scope = state.scopes.get(session.sessionId);
+  if ((scope?.interactions || []).some(interaction =>
+    ACTIVE_INTERACTION_STATES.includes(interaction.state)
+  ) || (scope?.runs || []).some(run => run.state === "held")) {
+    return "needs-response";
+  }
+  if ((scope?.runs || []).some(run =>
+    ACTIVE_RUN_STATES.includes(run.state) || run.state === "queued"
+  )) {
+    return "working";
+  }
+  return "quiet";
 }
 
 function sessionCue(session) {
@@ -923,12 +959,41 @@ function wireSessionView(session) {
 }
 
 function renderTimeline(scope) {
+  tailObserver?.disconnect();
+  tailObserver = undefined;
   const timeline = $("#timeline");
   if (!scope) {
     timeline.textContent = "Loading complete Timeline…";
     return;
   }
-  timeline.replaceChildren(...scope.timeline.map(createTimelineEntry));
+  const tail = document.createElement("div");
+  tail.dataset.timelineTail = "";
+  tail.setAttribute("aria-hidden", "true");
+  timeline.replaceChildren(...scope.timeline.map(createTimelineEntry), tail);
+  observeAuthoritativeTail(scope, tail);
+}
+
+function observeAuthoritativeTail(scope, tail) {
+  tailObserver = new IntersectionObserver(entries => {
+    const command = visibleTailMarkRead.command({
+      sessionId: scope.session.sessionId,
+      presentedTimelineRevision: scope.session.timelineRevision,
+      authoritativeCommitted: state.current &&
+        state.currentScopes.has(sessionScopeKey(scope.session.sessionId)),
+      currentSession: currentSessionId() === scope.session.sessionId,
+      foreground: !document.hidden,
+      tailVisible: entries.some(entry => entry.isIntersecting),
+      online: navigator.onLine && socket?.readyState === WebSocket.OPEN,
+    });
+    if (!command || !send(command)) return;
+    state.optimisticReadStates.set(scope.session.sessionId, {
+      commandId: command.commandId,
+      presentedTimelineRevision: command.presentedTimelineRevision,
+      observedReadStateRevision:
+        state.readStates.get(scope.session.sessionId).readStateRevision,
+    });
+  });
+  tailObserver.observe(tail);
 }
 
 function wireComposer(session, executingRun) {
