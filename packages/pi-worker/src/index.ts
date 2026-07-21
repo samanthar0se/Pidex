@@ -110,6 +110,16 @@ export class ExactPiChild {
     }
   }
 
+  async steer(text: string): Promise<void> {
+    if (!this.#running || !this.#session) throw new Error("pi-child-steering-unavailable");
+    await this.#session.steer(text);
+  }
+
+  async stop(): Promise<void> {
+    if (!this.#running || !this.#session) throw new Error("pi-child-stop-unavailable");
+    await this.#session.abort();
+  }
+
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -158,6 +168,8 @@ interface BoundPiChild {
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
   ): Promise<ExactPiRunResult>;
+  steer(text: string): Promise<void>;
+  stop(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -176,6 +188,9 @@ export class ExactPiWorkerEndpoint {
   #child?: BoundPiChild;
   #nextSequence = 0;
   #work = Promise.resolve();
+  #execution?: Promise<void>;
+  #activeCorrelationId?: string;
+  #stopRequested = false;
   #heartbeat?: NodeJS.Timeout;
   #closed = false;
 
@@ -201,6 +216,7 @@ export class ExactPiWorkerEndpoint {
     this.#closed = true;
     if (this.#heartbeat) clearInterval(this.#heartbeat);
     await this.#work;
+    await this.#execution;
     await this.#child?.dispose();
     this.#transport.close();
   }
@@ -234,21 +250,53 @@ export class ExactPiWorkerEndpoint {
       this.#heartbeat.unref();
       return;
     }
+    if (frame.type === "steer") {
+      this.#assertActiveRun(frame.correlationId);
+      await this.#child!.steer(frame.text);
+      return;
+    }
+    if (frame.type === "stop") {
+      this.#assertActiveRun(frame.correlationId);
+      this.#stopRequested = true;
+      await this.#child!.stop();
+      return;
+    }
     if (frame.type !== "execute") return;
     if (!this.#child) throw new Error("generation-not-ready");
-    const result = await this.#child.execute(frame.prompt, fact => {
-      this.#send("fact", { correlationId: frame.correlationId, fact });
+    if (this.#execution) throw new Error("generation-busy");
+    this.#activeCorrelationId = frame.correlationId;
+    this.#stopRequested = false;
+    this.#execution = this.#execute(frame).finally(() => {
+      this.#execution = undefined;
+      this.#activeCorrelationId = undefined;
+      this.#stopRequested = false;
     });
-    this.#send("checkpoint", {
-      correlationId: frame.correlationId,
-      checkpointId: result.checkpoint,
-      state: "exported",
-    });
-    this.#send("outcome", {
-      correlationId: frame.correlationId,
-      outcome: "completed",
-      checkpointId: result.checkpoint,
-    });
+  }
+
+  async #execute(frame: Extract<WorkerFrame, { type: "execute" }>): Promise<void> {
+    try {
+      const result = await this.#child!.execute(frame.prompt, fact => {
+        this.#send("fact", { correlationId: frame.correlationId, fact });
+      });
+      this.#send("checkpoint", {
+        correlationId: frame.correlationId,
+        checkpointId: result.checkpoint,
+        state: "exported",
+      });
+      this.#send("outcome", {
+        correlationId: frame.correlationId,
+        outcome: this.#stopRequested ? "cancelled" : "completed",
+        checkpointId: result.checkpoint,
+      });
+    } catch (cause) {
+      this.#sendFault(cause, frame.correlationId);
+    }
+  }
+
+  #assertActiveRun(correlationId: string): void {
+    if (!this.#child || this.#activeCorrelationId !== correlationId) {
+      throw new Error("stale-run-correlation");
+    }
   }
 
   #send(type: WorkerFrame["type"], body: Record<string, unknown>): void {
@@ -261,10 +309,11 @@ export class ExactPiWorkerEndpoint {
     this.#transport.send(frame);
   }
 
-  #sendFault(cause: unknown): void {
+  #sendFault(cause: unknown, correlationId?: string): void {
     if (this.#closed) return;
     this.#send("fault", {
       scope: this.#child ? "run" : "readiness",
+      ...(correlationId ? { correlationId } : {}),
       code: cause instanceof Error ? cause.message : "worker-failed",
       retryable: false,
     });

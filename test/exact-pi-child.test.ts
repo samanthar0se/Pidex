@@ -72,6 +72,8 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
       onEvent?.({ type: "assistant.delta", text: "offline" });
       return { text: "offline", checkpoint: "checkpoint-3" };
     },
+    steer: async () => {},
+    stop: async () => {},
     dispose: async () => {},
   };
   const endpoint = new ExactPiWorkerEndpoint(childStream, identity, {
@@ -107,6 +109,49 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
     "ready", "fact", "checkpoint", "outcome",
   ]);
   assert.equal((frames[3] as { checkpointId: string }).checkpointId, "checkpoint-3");
+  await endpoint.close();
+  host.destroy();
+});
+
+test("the exact Pi child endpoint applies steering and Stop while a Run is executing", async () => {
+  const [host, childStream] = duplexPair();
+  const identity = {
+    sessionId: "session-controls",
+    workerId: "worker-controls",
+    generation: 4,
+    protocolGeneration: 1,
+  } as const;
+  let finish: ((result: { text: string; checkpoint: string }) => void) | undefined;
+  const controls: string[] = [];
+  const endpoint = new ExactPiWorkerEndpoint(childStream, identity, {
+    authenticationToken: "b".repeat(64),
+    bind: async () => ({
+      binding: { ...identity, cwd: "/canonical", agentDir: "/profile" },
+      execute: () => new Promise(resolve => { finish = resolve; }),
+      steer: async text => { controls.push(`steer:${text}`); },
+      stop: async () => { controls.push("stop"); finish?.({ text: "", checkpoint: "cancelled-cp" }); },
+      dispose: async () => {},
+    }),
+    agentDir: "/profile",
+  });
+  const output = readFrames(host, 3);
+  const send = (type: string, sequence: number, body: object) => host.write(
+    SessionWorkerTransport.frame({ ...identity, type, sequence, ...body }),
+  );
+  send("bootstrap", 0, {
+    authenticationToken: "b".repeat(64), releaseGeneration: "release-1",
+    configGeneration: "config-1", piGeneration: EXACT_PI_VERSION, cwd: "/canonical",
+  });
+  send("execute", 1, { correlationId: "run-1", prompt: "work" });
+  send("steer", 2, { correlationId: "run-1", text: "change course" });
+  send("stop", 3, { correlationId: "run-1", reason: "user" });
+
+  const frames = await output;
+  assert.deepEqual(controls, ["steer:change course", "stop"]);
+  assert.deepEqual(frames.map(frame => (frame as { type: string }).type), [
+    "ready", "checkpoint", "outcome",
+  ]);
+  assert.equal((frames[2] as { outcome: string }).outcome, "cancelled");
   await endpoint.close();
   host.destroy();
 });
