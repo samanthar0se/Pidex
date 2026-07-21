@@ -32,6 +32,7 @@ USER ${AGENT_UID}:${AGENT_GID}
 WORKDIR /home/agent
 
 RUN pi install npm:@howaboua/pi-codex-conversion@2.2.13
+RUN pi install git:https://github.com/samanthar0se/pi-mattpococks-skills
 
 # In worktree sandbox mode, Sandcastle bind-mounts the git worktree at /home/agent/workspace
 # and overrides the working directory to /home/agent/workspace at container start.

@@ -1,55 +1,82 @@
 # TASK
 
-Review the code changes on branch `{{BRANCH}}` and improve code clarity, consistency, and maintainability while preserving exact functionality.
+Review PR #{{PR_NUMBER}} on branch `{{BRANCH}}` for issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
+
+You are an expert code reviewer. Your job is **not just to comment** — actively improve the code on this branch, and explain what you changed.
 
 # CONTEXT
 
-## Branch diff
+Read `CONTEXT.md`, `.sandcastle/CODING_STANDARDS.md`, and any relevant ADRs under `docs/adr/` before starting.
 
-!`git diff {{TARGET_BRANCH}}...{{BRANCH}}`
+<linked-issue>
 
-## Commits on this branch
+!`gh issue view {{ISSUE_NUMBER}} --comments`
 
-!`git log {{TARGET_BRANCH}}..{{BRANCH}} --oneline`
+</linked-issue>
+
+<diff-to-main>
+
+This is a **summary** of the diff — changed files with added/removed line counts, not the full patch:
+
+!`git diff main..HEAD --stat`
+
+The full patch is deliberately omitted here because it can be very long. Go deeper on the files that matter: run `git diff main..HEAD -- <path>` on the changed files above to read the actual changes before reviewing.
+
+</diff-to-main>
+
+<pr-comments>
+
+The following PR comments have been fetched by the workflow. They are tagged by surface:
+
+- `issue_comment` — top-level PR conversation comment, not anchored to code.
+- `review_thread` — inline thread anchored to a file + line. Only **unresolved** threads are included. Each has a `commentId` you can reply to in-thread.
+- `review_summary` — top-level body of a submitted review (with approve/request-changes/comment state).
+
+```json
+{{PR_COMMENTS_JSON}}
+```
+
+</pr-comments>
 
 # REVIEW PROCESS
 
-1. **Understand the change**: Read the diff and commits above to understand the intent.
+## 1. Analyse with the `code-review` skill
 
-2. **Analyze for improvements**: Look for opportunities to:
-   - Reduce unnecessary complexity and nesting
-   - Eliminate redundant code and abstractions
-   - Improve readability through clear variable and function names
-   - Consolidate related logic
-   - Remove unnecessary comments that describe obvious code
-   - Avoid nested ternary operators - prefer switch statements or if/else chains
-   - Choose clarity over brevity - explicit code is often better than overly compact code
+Use the **`code-review` skill** (It is supplied by the `samanthar0se/pi-mattpococks-skills` Pi package.) to produce the review. It analyses the diff along two axes — **Standards** and **Spec** — using parallel sub-agents. Its findings are the **single source of truth** for what's wrong with this branch: act only on what it reports, not on a separate ad-hoc pass of your own.
 
-3. **Check correctness**:
-   - Does the implementation match the intent? Are edge cases handled?
-   - Are new/changed behaviours covered by tests?
-   - Are there unsafe casts, `any` types, or unchecked assumptions?
-   - Does the change introduce injection vulnerabilities, credential leaks, or other security issues?
+Invoke it with everything it needs, so it does **not** run its own discovery and does **not** prompt or pause:
 
-4. **Maintain balance**: Avoid over-simplification that could:
-   - Reduce code clarity or maintainability
-   - Create overly clever solutions that are hard to understand
-   - Combine too many concerns into single functions or components
-   - Remove helpful abstractions that improve code organization
-   - Make the code harder to debug or extend
+- **Fixed point:** `main`. The diff to review is `git diff main...HEAD`. Do not ask for a fixed point — it is `main`.
+- **Spec:** issue #{{ISSUE_NUMBER}} — already fetched above in `<linked-issue>`. Pass this as the spec. Do **not** look for `docs/agents/issue-tracker.md` and do **not** run `/setup-matt-pocock-skills`; the spec is provided. If the linked issue is a **PRD** (it has sub-issues), pull them with `gh api repos/$GH_REPO/issues/{{ISSUE_NUMBER}}/sub_issues` and treat each closed sub-issue as a sub-requirement; code for an _open_ sub-issue is a scope violation.
+- **Standards:** `.sandcastle/CODING_STANDARDS.md` is this repo's documented standard — feed it as the standards source. The skill's built-in smell baseline applies on top, but a documented repo standard always wins.
 
-5. **Apply project standards**: Follow the coding standards defined in @.sandcastle/CODING_STANDARDS.md
+The skill is read-only and produces a report; it does not edit code. That report — its Standards findings and its Spec findings — is your worklist for the steps below.
 
-6. **Preserve functionality**: Never change what the code does - only how it does it. All original features, outputs, and behaviors must remain intact.
+## 2. Act on the skill's findings
+
+Work through the skill's findings and resolve each one on this branch:
+
+- For any **correctness/robustness** finding, write a test that exercises it and try to actually break it. If you can break it, fix it. Cover the edge cases the skill flagged (empty/zero/negative inputs, missing optional fields, null/undefined, off-by-one, races, regressions in adjacent code).
+- For any **quality/standards** finding, improve the code: reduce nesting, eliminate redundancy, improve names, consolidate related logic, drop comments that restate obvious code, avoid nested ternaries (prefer if/else or switch), choose clarity over brevity. Apply `.sandcastle/CODING_STANDARDS.md`.
+- For any **spec** finding (missing coverage, scope creep, misinterpretation), do **not** silently "fix" missing spec coverage by adding code yourself — call it out in the `summary` and (where line-anchored) the inline comments for the human reviewer to decide.
+
+**Preserve functionality.** When improving code, never change what it does — only how it does it. All original features, outputs, and behaviours must remain intact.
+
+# RESPONDING TO HUMAN COMMENTS
+
+For each unresolved `review_thread` and each `issue_comment` directed at the code, choose one:
+
+- **Address** — make a code change in your commit, then reply in-thread (or with an issue comment) explaining what you did. Use the comment's `commentId` for in-thread replies.
+- **Decline** — don't change the code, but reply explaining your reasoning. Use Decline when you have a substantive disagreement (the suggestion would break something, conflicts with project standards, is out of scope).
+- **Defer** — do nothing, no reply. Only valid when the comment isn't a code-review request (jokes, off-topic banter, stale comments about already-fixed code, side conversations between humans).
+
+Default to Address. Decline when you have a real reason. Defer only when a reply would be noise.
 
 # EXECUTION
 
-If you find improvements to make:
+1. Run `npm run typecheck` and `npm run test` — confirm the current state passes.
+2. Make improvements + write any new edge-case tests. Stage and commit them as a **single squashed commit** on this branch with a message starting with `CLANKER: Review -`.
+3. Run `npm run typecheck` and `npm run test` again. If either fails, fix it before continuing — do not leave the branch broken.
+4. Decide which inline review comments to leave (line-anchored notes about your changes or remaining findings) and which thread replies to make.
 
-1. Make the changes directly on this branch
-2. Run tests and type checking to ensure nothing is broken
-3. Commit describing the refinements
-
-If the code is already clean and well-structured, do nothing.
-
-Once complete, output <promise>COMPLETE</promise>.
+If the code is already clean and there are no human comments to address, make no commits.
