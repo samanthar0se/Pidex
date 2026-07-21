@@ -1,0 +1,426 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pidex open Interactions prototype</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --rail: #e9e9e6;
+      --surface: #fff;
+      --soft: #f5f5f3;
+      --line: #d9d9d5;
+      --line-strong: #bebeb9;
+      --ink: #242424;
+      --muted: #73736f;
+      --accent: #252525;
+      --warning: #966414;
+      --warning-bg: #fff8e8;
+      --success: #347050;
+      --danger: #a0443d;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--surface); color: var(--ink); }
+    button, textarea, input { font: inherit; }
+    button { color: inherit; }
+    button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid #5a7c6c; outline-offset: 2px; }
+
+    .shell { min-height: 100%; display: grid; grid-template-columns: 300px minmax(0, 1fr); padding-bottom: 74px; }
+    .rail { display: flex; flex-direction: column; min-height: calc(100vh - 74px); padding: 18px 14px; border-right: 1px solid var(--line); background: var(--rail); }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 17px; font-weight: 750; }
+    .brand-mark { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 8px; background: #242424; color: white; font-size: 12px; }
+    .new-session { width: 100%; padding: 10px; border: 0; border-radius: 9px; background: transparent; text-align: left; font-weight: 650; }
+    .rail-label { margin: 24px 9px 8px; color: var(--muted); font-size: 11px; }
+    .session { width: 100%; display: grid; grid-template-columns: 9px minmax(0, 1fr); gap: 10px; padding: 10px 11px; border: 0; border-radius: 10px; background: transparent; text-align: left; }
+    .session.selected { background: #d8d8d4; }
+    .dot { width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #7f7f7b; }
+    .dot.waiting { background: #cf942e; }
+    .dot.running { background: #3e8a62; }
+    .session strong, .session small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session strong { font-size: 13px; font-weight: 600; }
+    .session small { margin-top: 4px; color: var(--muted); font-size: 11px; }
+    .connection { margin-top: auto; padding: 11px; border: 1px solid #cececa; border-radius: 10px; background: #f1f1ef; font-size: 11px; }
+
+    .workbench { min-width: 0; height: calc(100vh - 74px); display: grid; grid-template-rows: auto minmax(170px, 1fr) auto; }
+    .header { min-height: 70px; display: flex; align-items: center; gap: 12px; padding: 12px 25px; border-bottom: 1px solid var(--line); }
+    .menu { display: none; }
+    .title { min-width: 0; flex: 1; }
+    .title h1 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; }
+    .title p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+    .quiet, .icon, .primary, .choice { border: 0; border-radius: 9px; background: transparent; cursor: pointer; }
+    .quiet { padding: 8px 10px; color: var(--muted); }
+    .icon { width: 34px; height: 34px; }
+    .quiet:hover, .icon:hover { background: var(--soft); color: var(--ink); }
+    .pill { padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+
+    .timeline { overflow: auto; padding: 40px max(32px, calc((100% - 820px) / 2)); }
+    .entry { margin-bottom: 35px; }
+    .entry-label { margin-bottom: 7px; color: var(--muted); font-size: 11px; }
+    .message { font-size: 14px; line-height: 1.58; }
+    .user-message { width: fit-content; max-width: 85%; margin-left: auto; padding: 12px 15px; border-radius: 16px; background: #f1f1ef; }
+    .work-disclosure { margin: 13px 0; color: var(--muted); font-size: 12px; }
+    .fact { display: flex; gap: 8px; margin-top: 15px; padding: 9px 0; border-top: 1px solid #eeeeeb; color: var(--muted); font-size: 12px; }
+    .fact strong { color: var(--ink); }
+
+    .bottom { padding: 0 35px 20px; background: linear-gradient(transparent, #fff 14%); }
+    .takeover-shell { max-width: 900px; margin-inline: auto; border: 1px solid var(--line-strong); border-radius: 18px; background: #fcfcfb; box-shadow: 0 10px 34px #00000012; overflow: hidden; }
+    .takeover-switch { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border-bottom: 1px solid var(--line); background: #f3f3f1; }
+    .takeover-switch button { padding: 7px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; }
+    .takeover-switch button.selected { background: white; color: var(--ink); box-shadow: 0 1px 4px #0001; font-weight: 700; }
+    .takeover-switch .state-summary { margin-left: auto; color: var(--muted); font-size: 10px; }
+    .interaction-area, .composer-box { max-width: 900px; margin-inline: auto; }
+    .takeover-shell .interaction-area, .takeover-shell .composer-box { max-width: none; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+    .interaction-area { position: relative; z-index: 2; border: 1px solid var(--line-strong); border-radius: 16px; background: #fcfcfb; box-shadow: 0 10px 34px #0000000d; overflow: hidden; }
+    .interaction-state { display: flex; align-items: center; gap: 8px; padding: 8px 13px; border-bottom: 1px solid #e7e7e3; background: var(--warning-bg); color: #695221; font-size: 11px; }
+    .interaction-state span:last-child { margin-left: auto; color: var(--warning); }
+    .pending-note, .race-note { margin: 0; padding: 9px 13px; border-top: 1px solid #e7e7e3; font-size: 11px; }
+    .pending-note { color: #536c5e; background: #eff7f2; }
+    .race-note { color: var(--danger); background: #fff2f0; }
+    .interaction-title { margin: 0; font-size: 15px; }
+    .interaction-copy { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .provenance { color: var(--muted); font-size: 11px; }
+    .response { margin-top: 13px; }
+    .choices { display: flex; flex-wrap: wrap; gap: 7px; }
+    .choice { padding: 8px 11px; border: 1px solid var(--line); background: #fff; }
+    .choice.selected { border-color: var(--ink); background: var(--ink); color: white; }
+    .text-response { width: 100%; min-height: 58px; padding: 10px; resize: vertical; border: 1px solid var(--line); border-radius: 9px; background: white; color: var(--ink); }
+    .interaction-actions { display: flex; align-items: center; gap: 7px; margin-top: 13px; }
+    .interaction-actions .dismiss { margin-left: auto; }
+    .primary { padding: 8px 13px; background: var(--accent); color: white; font-weight: 650; }
+    .primary:disabled, .choice:disabled { cursor: default; opacity: .45; }
+    .dismiss { padding: 8px 10px; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+    .simulate { color: #74572a; }
+    .takeover-footer { display: flex; align-items: center; gap: 8px; padding: 8px 13px; border-top: 1px solid var(--line); background: #f4f4f2; color: var(--muted); font-size: 10px; }
+    .takeover-footer button { margin-left: auto; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: white; color: var(--ink); cursor: pointer; }
+    .split-message-switch { margin-left: auto; padding: 5px 8px; border: 1px solid #ddcda9; border-radius: 7px; background: white; cursor: pointer; }
+
+    .pager-body { padding: 14px 15px 15px; }
+    .pager-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .pager-count { min-width: 72px; color: var(--muted); text-align: center; font-size: 11px; }
+    .pager-head .provenance { margin-left: auto; }
+    .progress-dots { display: flex; gap: 5px; }
+    .progress-dots i { width: 6px; height: 6px; border-radius: 50%; background: #d2d2ce; }
+    .progress-dots i.current { background: #966414; }
+
+    .stack { max-height: 340px; overflow: auto; }
+    .stack-row { border-bottom: 1px solid #e4e4e0; }
+    .stack-row:last-child { border-bottom: 0; }
+    .stack-summary { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 11px 14px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+    .stack-summary:hover { background: var(--soft); }
+    .stack-summary strong, .stack-summary small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stack-summary strong { font-size: 12px; }
+    .stack-summary small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .stack-detail { padding: 3px 14px 14px 32px; background: #fafaf8; }
+
+    .split { display: grid; grid-template-columns: minmax(190px, 32%) minmax(0, 1fr); min-height: 238px; }
+    .split-list { border-right: 1px solid var(--line); background: #f5f5f3; }
+    .split-heading { padding: 10px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+    .split-item { width: 100%; display: block; padding: 11px 12px; border: 0; border-bottom: 1px solid #e1e1dd; background: transparent; text-align: left; cursor: pointer; }
+    .split-item.selected { background: white; box-shadow: inset 3px 0 var(--warning); }
+    .split-item strong, .split-item small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .split-item strong { font-size: 12px; }
+    .split-item small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+    .split-detail { padding: 15px 16px; }
+
+    .composer-box { border: 1px solid #cececa; border-radius: 18px; background: white; box-shadow: 0 10px 32px #00000010; overflow: hidden; }
+    .composer-return { display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-bottom: 1px solid var(--line); background: #f4f4f2; color: var(--muted); font-size: 10px; }
+    .composer-return button { margin-left: auto; padding: 6px 9px; border: 1px solid #ddcda9; border-radius: 7px; background: var(--warning-bg); color: #6f531f; cursor: pointer; }
+    .composer-box textarea { width: 100%; min-height: 65px; padding: 14px 16px 4px; resize: none; border: 0; outline: 0; background: transparent; }
+    .composer-actions { display: flex; align-items: center; gap: 5px; padding: 6px 9px 9px; }
+    .composer-actions .primary { margin-left: auto; border-radius: 50%; width: 36px; height: 36px; padding: 0; }
+
+    .switcher { position: fixed; z-index: 20; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 7px; border: 1px solid #52645b; border-radius: 999px; background: #eef4f0; box-shadow: 0 12px 40px #0005; }
+    .switcher button { width: 34px; height: 34px; border: 0; border-radius: 50%; background: #d5e1da; cursor: pointer; }
+    .switch-label { min-width: 220px; text-align: center; font-size: 12px; font-weight: 700; }
+    .prototype-note { position: fixed; z-index: 19; top: 8px; left: 50%; transform: translateX(-50%); padding: 5px 9px; border-radius: 999px; background: #242424; color: white; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+
+    @media (max-width: 760px) {
+      .shell { display: block; }
+      .rail { display: none; }
+      .workbench { height: calc(100vh - 74px); }
+      .header { min-height: 58px; padding: 8px 11px; }
+      .menu { display: block; }
+      .header .quiet, .header .pill { display: none; }
+      .timeline { padding: 24px 16px; }
+      .bottom { padding: 0 10px 14px; }
+      .takeover-shell { border-radius: 14px; }
+      .interaction-area { max-height: 42vh; overflow: auto; border-radius: 14px; }
+      .split { display: block; min-height: 0; }
+      .split-list { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+      .split-heading { display: none; }
+      .split-item { min-width: 150px; border-right: 1px solid #e1e1dd; border-bottom: 0; }
+      .split-item.selected { box-shadow: inset 0 -3px var(--warning); }
+      .split-detail { padding: 13px; }
+      .stack { max-height: 35vh; }
+      .interaction-actions { flex-wrap: wrap; }
+      .interaction-actions .dismiss { margin-left: 0; }
+      .simulate { width: 100%; text-align: left; }
+      .switcher { bottom: 9px; }
+      .switch-label { min-width: 175px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="prototype-note">Throwaway · in-memory</div>
+  <main id="app"></main>
+  <nav class="switcher" aria-label="Prototype variants">
+    <button id="previous" aria-label="Previous variant">←</button>
+    <div class="switch-label" id="variant-label"></div>
+    <button id="next" aria-label="Next variant">→</button>
+  </nav>
+
+  <script>
+    const variantNames = {
+      A: "Focused pager",
+      B: "Compact stack",
+      C: "Split inbox"
+    };
+    const variantKeys = Object.keys(variantNames);
+    const seedInteractions = [
+      { id: "deploy-target", kind: "select", title: "Choose the deployment target", source: "release-tools", deadline: "3:42", created: 1, run: "Run 7", options: ["Staging", "Production"] },
+      { id: "migration-confirm", kind: "confirm", title: "Apply the pending schema migration?", source: "database-tools", deadline: "8:16", created: 2, run: "Run 7", options: ["Apply", "Do not apply"] },
+      { id: "release-note", kind: "input", title: "Add a short release note", source: "release-tools", deadline: null, created: 3, run: null, options: [] }
+    ];
+    let interactions = structuredClone(seedInteractions);
+    let selectedId = interactions[0].id;
+    let pendingId = null;
+    let selectedValue = null;
+    let raceMessage = "";
+    let timelineOutcome = null;
+    let surface = "interaction";
+    let preservedDraft = "";
+
+    function currentVariant() {
+      const requested = new URLSearchParams(location.search).get("variant")?.toUpperCase();
+      return variantNames[requested] ? requested : "B";
+    }
+
+    function setVariant(key) {
+      const url = new URL(location.href);
+      url.searchParams.set("variant", key);
+      history.replaceState({}, "", url);
+      render();
+    }
+
+    function cycleVariant(direction) {
+      const index = variantKeys.indexOf(currentVariant());
+      setVariant(variantKeys[(index + direction + variantKeys.length) % variantKeys.length]);
+    }
+
+    function currentInteraction() {
+      return interactions.find(interaction => interaction.id === selectedId) ?? interactions[0];
+    }
+
+    function chooseInteraction(id) {
+      selectedId = id;
+      selectedValue = null;
+      raceMessage = "";
+      surface = "interaction";
+      render();
+    }
+
+    function chooseValue(value) {
+      selectedValue = value;
+      render();
+    }
+
+    function responseValue(interaction) {
+      if (interaction.kind !== "input") return selectedValue;
+      return document.querySelector("[data-input-response]")?.value.trim() ?? "";
+    }
+
+    function resolveSelected(dismiss = false) {
+      const interaction = currentInteraction();
+      const value = dismiss ? "Dismissed" : responseValue(interaction);
+      if (!dismiss && !value) return;
+      pendingId = interaction.id;
+      raceMessage = "";
+      render();
+      setTimeout(() => {
+        interactions = interactions.filter(item => item.id !== interaction.id);
+        timelineOutcome = { title: interaction.title, value, device: "UD’s Device" };
+        pendingId = null;
+        selectedValue = null;
+        selectedId = interactions[0]?.id ?? null;
+        surface = interactions.length ? "interaction" : "composer";
+        render();
+      }, 900);
+    }
+
+    function simulateRace() {
+      const interaction = currentInteraction();
+      pendingId = interaction.id;
+      render();
+      setTimeout(() => {
+        interactions = interactions.filter(item => item.id !== interaction.id);
+        timelineOutcome = { title: interaction.title, value: "Responded on Sam’s Device", device: "Sam’s Device" };
+        pendingId = null;
+        raceMessage = "Your response was not applied. The Host accepted Sam’s Device first and this View reconciled to that terminal fact.";
+        selectedValue = null;
+        selectedId = interactions[0]?.id ?? null;
+        surface = interactions.length ? "interaction" : "composer";
+        render();
+      }, 900);
+    }
+
+    function resetPrototype() {
+      interactions = structuredClone(seedInteractions);
+      selectedId = interactions[0].id;
+      pendingId = null;
+      selectedValue = null;
+      raceMessage = "";
+      timelineOutcome = null;
+      surface = "interaction";
+      preservedDraft = "";
+      render();
+    }
+
+    function responseControl(interaction) {
+      if (interaction.kind === "input") {
+        return `<textarea class="text-response" data-input-response placeholder="Response is delivered to the exact request and not retained by Pidex"></textarea>`;
+      }
+      return `<div class="choices">${interaction.options.map(option => `<button class="choice ${selectedValue === option ? "selected" : ""}" data-value="${option}" ${pendingId ? "disabled" : ""}>${option}</button>`).join("")}</div>`;
+    }
+
+    function responseDetail(interaction) {
+      const pending = pendingId === interaction.id;
+      return `<h2 class="interaction-title">${interaction.title}</h2>
+        <p class="interaction-copy">${interaction.kind === "input" ? "This free-form response is delivered to the exact live request, then excluded from Pidex history and caches." : "Choose one exact response. Another paired Device may answer first."}</p>
+        <div class="response">${responseControl(interaction)}</div>
+        <div class="interaction-actions">
+          <button class="primary" data-respond ${pending ? "disabled" : ""}>${pending ? "Sending…" : "Respond"}</button>
+          <button class="quiet simulate" data-race ${pending ? "disabled" : ""}>Simulate competing Device</button>
+          <button class="dismiss" data-dismiss ${pending ? "disabled" : ""}>Dismiss</button>
+        </div>`;
+    }
+
+    function statusBar(interaction) {
+      return `<div class="interaction-state"><span><strong>${interactions.length} open Interaction${interactions.length === 1 ? "" : "s"}</strong> · ${interaction.run ?? "Session-level request"}</span><span>${interaction.deadline ? `${interaction.deadline} remaining` : "No deadline"}</span></div>`;
+    }
+
+    function notices() {
+      return `${pendingId ? '<p class="pending-note">Pending on this Device · waiting for the authoritative Host change; controls remain bound to this exact Interaction.</p>' : ""}${raceMessage ? `<p class="race-note">${raceMessage}</p>` : ""}`;
+    }
+
+    function renderPager() {
+      const interaction = currentInteraction();
+      const index = interactions.indexOf(interaction);
+      return `<section class="interaction-area">${statusBar(interaction)}<div class="pager-body">
+        <div class="pager-head">
+          <button class="icon" data-page="-1" aria-label="Previous Interaction">←</button>
+          <span class="pager-count">${index + 1} of ${interactions.length}</span>
+          <button class="icon" data-page="1" aria-label="Next Interaction">→</button>
+          <span class="progress-dots">${interactions.map(item => `<i class="${item.id === interaction.id ? "current" : ""}"></i>`).join("")}</span>
+          <span class="provenance">${interaction.kind} · ${interaction.source}</span>
+        </div>${responseDetail(interaction)}</div>${notices()}</section>`;
+    }
+
+    function renderStack() {
+      const interaction = currentInteraction();
+      return `<section class="interaction-area">${statusBar(interaction)}<div class="stack">${interactions.map(item => `<article class="stack-row">
+        <button class="stack-summary" data-select="${item.id}"><span class="dot waiting"></span><span><strong>${item.title}</strong><small>${item.kind} · ${item.source}</small></span><span class="provenance">${item.deadline ? `${item.deadline} left` : "untimed"} ${item.id === interaction.id ? "⌃" : "⌄"}</span></button>
+        ${item.id === interaction.id ? `<div class="stack-detail">${responseDetail(item)}</div>` : ""}</article>`).join("")}</div>${notices()}</section>`;
+    }
+
+    function renderSplit() {
+      const interaction = currentInteraction();
+      return `<section class="interaction-area">${statusBar(interaction).replace('</div>', '<button class="split-message-switch" data-show-composer title="Write message">✎</button></div>')}<div class="split">
+        <div class="split-list"><div class="split-heading">Waiting requests</div>${interactions.map(item => `<button class="split-item ${item.id === interaction.id ? "selected" : ""}" data-select="${item.id}"><strong>${item.title}</strong><small>${item.deadline ? `${item.deadline} left` : "Untimed"} · ${item.source}</small></button>`).join("")}</div>
+        <div class="split-detail"><div class="provenance" style="margin-bottom:9px">${interaction.kind} · ${interaction.run ?? "Session-level"}</div>${responseDetail(interaction)}</div>
+      </div>${notices()}</section>`;
+    }
+
+    function interactionArea() {
+      if (!interactions.length) {
+        return `<section class="interaction-area"><div class="interaction-state"><span><strong>No open Interactions</strong> · authoritative Host projection</span><span>Current</span></div><div class="pager-body"><h2 class="interaction-title">All requests reconciled</h2><p class="interaction-copy">Live controls have left the pinned area. Durable terminal facts remain in the Timeline.</p><div class="interaction-actions"><button class="quiet" data-reset>Reset prototype</button></div></div>${notices()}</section>`;
+      }
+      return currentVariant() === "A" ? renderPager() : currentVariant() === "B" ? renderStack() : renderSplit();
+    }
+
+    function composerSurface() {
+      const hasInteractions = interactions.length > 0;
+      return `<div class="composer-box">${hasInteractions ? `<div class="composer-return"><span>${interactions.length} open Interaction${interactions.length === 1 ? "" : "s"} remain. Your draft is Device-local.</span><button data-show-interactions>Return to requests</button></div>` : ""}<textarea data-composer-draft placeholder="${hasInteractions ? "Write a steering message…" : "Steer the executing Run…"}">${preservedDraft}</textarea><div class="composer-actions"><button class="quiet">Auto · GPT-5</button><button class="quiet">＋</button><button class="primary" aria-label="Send steering">↑</button></div></div>`;
+    }
+
+    function takeoverSurface() {
+      if (!interactions.length) return composerSurface();
+      const variant = currentVariant();
+      if (surface === "composer") {
+        return `<section class="takeover-shell">${variant === "A" ? `<div class="takeover-switch"><button data-show-interactions>Requests · ${interactions.length}</button><button class="selected">Write message</button><span class="state-summary">Draft preserved on this Device</span></div>` : ""}${composerSurface()}</section>`;
+      }
+      const area = interactionArea();
+      if (variant === "A") {
+        return `<section class="takeover-shell"><div class="takeover-switch"><button class="selected">Requests · ${interactions.length}</button><button data-show-composer>Write message</button><span class="state-summary">Composer replaced, not destroyed</span></div>${area}</section>`;
+      }
+      if (variant === "B") {
+        return `<section class="takeover-shell">${area}<div class="takeover-footer"><span>The Interaction surface temporarily occupies the Composer footprint.</span><button data-show-composer>✎ Write message</button></div></section>`;
+      }
+      return `<section class="takeover-shell">${area}</section>`;
+    }
+
+    function durableOutcome() {
+      if (!timelineOutcome) return `<div class="fact"><span>◇</span><span><strong>Interaction opened</strong> · release-tools is waiting for a response. Live controls are pinned below.</span></div>`;
+      return `<div class="fact"><span>◇</span><span><strong>${timelineOutcome.title}</strong> · ${timelineOutcome.value} · ${timelineOutcome.device}</span></div>`;
+    }
+
+    function appShell() {
+      return `<div class="shell">
+        <aside class="rail"><div class="brand"><span class="brand-mark">P</span>Pidex</div><button class="new-session">✎ &nbsp; New Session</button><div class="rail-label">Pidex / main</div>
+          <button class="session selected"><span class="dot waiting"></span><span><strong>Release pipeline review</strong><small>${interactions.length ? `${interactions.length} Interaction${interactions.length === 1 ? "" : "s"} need response` : "Run executing"}</small></span></button>
+          <button class="session"><span class="dot running"></span><span><strong>Reconnect receipt race</strong><small>Run 18 executing</small></span></button>
+          <button class="session"><span class="dot"></span><span><strong>PWA cache boundaries</strong><small>Available · sleeping</small></span></button>
+          <div class="connection"><strong>● Current</strong><br>Dev workstation</div></aside>
+        <section class="workbench"><header class="header"><button class="icon menu">☰</button><div class="title"><h1>Release pipeline review</h1><p>Pidex / main · C:\\git\\Pidex</p></div><button class="quiet">■ Stop</button><span class="pill">GPT-5 · Auto</span><button class="quiet">•••</button></header>
+          <div class="timeline"><div class="entry"><div class="entry-label">You · 10:42</div><div class="message user-message">Prepare the release and walk me through every decision.</div></div><div class="entry"><div class="entry-label"><span class="dot running" style="display:inline-block;margin:0 5px 0 0"></span>Pi · Run 7 executing</div><div class="message">The release checks passed. I’m waiting on the extension requests below before continuing.</div><div class="work-disclosure">⌄ Worked for 2m 18s · 6 tool calls</div>${durableOutcome()}</div></div>
+          <div class="bottom">${takeoverSurface()}</div>
+        </section></div>`;
+    }
+
+    function bind() {
+      document.querySelectorAll("[data-select]").forEach(button => button.addEventListener("click", () => chooseInteraction(button.dataset.select)));
+      document.querySelectorAll("[data-value]").forEach(button => button.addEventListener("click", () => chooseValue(button.dataset.value)));
+      document.querySelector("[data-respond]")?.addEventListener("click", () => resolveSelected(false));
+      document.querySelector("[data-dismiss]")?.addEventListener("click", () => resolveSelected(true));
+      document.querySelector("[data-race]")?.addEventListener("click", simulateRace);
+      document.querySelector("[data-reset]")?.addEventListener("click", resetPrototype);
+      document.querySelectorAll("[data-show-composer]").forEach(button => button.addEventListener("click", () => {
+        surface = "composer";
+        render();
+      }));
+      document.querySelectorAll("[data-show-interactions]").forEach(button => button.addEventListener("click", () => {
+        preservedDraft = document.querySelector("[data-composer-draft]")?.value ?? preservedDraft;
+        surface = "interaction";
+        render();
+      }));
+      document.querySelector("[data-composer-draft]")?.addEventListener("input", event => {
+        preservedDraft = event.target.value;
+      });
+      document.querySelectorAll("[data-page]").forEach(button => button.addEventListener("click", () => {
+        const index = interactions.indexOf(currentInteraction());
+        chooseInteraction(interactions[(index + Number(button.dataset.page) + interactions.length) % interactions.length].id);
+      }));
+    }
+
+    function render() {
+      document.querySelector("#app").innerHTML = appShell();
+      const key = currentVariant();
+      document.querySelector("#variant-label").textContent = `${key} — ${variantNames[key]}`;
+      document.title = `Pidex prototype · ${key} — ${variantNames[key]}`;
+      bind();
+    }
+
+    document.querySelector("#previous").addEventListener("click", () => cycleVariant(-1));
+    document.querySelector("#next").addEventListener("click", () => cycleVariant(1));
+    document.addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+      if (event.target.matches("input, textarea, [contenteditable]")) return;
+      cycleVariant(event.key === "ArrowLeft" ? -1 : 1);
+    });
+    window.addEventListener("popstate", render);
+    render();
+  </script>
+</body>
+</html>

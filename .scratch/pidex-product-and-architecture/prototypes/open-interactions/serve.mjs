@@ -1,0 +1,18 @@
+import { createReadStream } from "node:fs";
+import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
+
+const indexPath = fileURLToPath(new URL("./index.html", import.meta.url));
+const port = 4174;
+
+createServer((request, response) => {
+  if (request.url === "/favicon.ico") {
+    response.writeHead(204).end();
+    return;
+  }
+
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  createReadStream(indexPath).pipe(response);
+}).listen(port, "0.0.0.0", () => {
+  console.log(`Open Interactions prototype: http://localhost:${port}/?variant=A`);
+});
