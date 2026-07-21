@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { mapWindowsNativeError, type WindowsPlatformError } from "./errors.js";
+import { mapWindowsNativeError } from "./errors.js";
+import { createManagedWindowsResource, type NativeManagedWindowsResource } from "./managed-resource.js";
 import type { ContainedProcessRequest, ManagedProcess, ProcessPort } from "./ports.js";
 
 const absoluteWindowsPath = z.string().regex(/^(?:[A-Za-z]:\\|\\\\)/, "path must be absolute");
@@ -18,10 +19,8 @@ const requestSchema = z.strictObject({
   }),
 });
 
-export interface NativeManagedProcess {
+export interface NativeManagedProcess extends NativeManagedWindowsResource {
   readonly processId: number;
-  close(): Promise<void>;
-  readonly lateFault?: Promise<unknown>;
 }
 
 export interface NativeProcessBinding {
@@ -39,26 +38,13 @@ export function createProcessPort(native: NativeProcessBinding): ProcessPort {
         await resource.close().catch(() => undefined);
         throw mapWindowsNativeError(undefined, "spawnContained");
       }
-      return new ProcessResource(resource);
+      return {
+        processId: resource.processId,
+        ...createManagedWindowsResource(resource, {
+          lateFault: "managedProcess",
+          close: "closeContainedProcess",
+        }),
+      };
     },
   };
-}
-
-class ProcessResource implements ManagedProcess {
-  readonly processId: number;
-  readonly lateFault: Promise<WindowsPlatformError>;
-  private closing?: Promise<void>;
-
-  constructor(private readonly native: NativeManagedProcess) {
-    this.processId = native.processId;
-    this.lateFault = native.lateFault
-      ? native.lateFault.then(error => mapWindowsNativeError(error, "managedProcess"))
-      : new Promise(() => undefined);
-  }
-
-  close(): Promise<void> {
-    return this.closing ??= this.native.close().catch(error => {
-      throw mapWindowsNativeError(error, "closeContainedProcess");
-    });
-  }
 }

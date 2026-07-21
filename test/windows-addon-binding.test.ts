@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { parseResolvedLaunchManifest } from "../packages/launch-manifest/src/index.js";
-import { loadWindowsAddon, WindowsPlatformError } from "../packages/windows/src/index.js";
+import { loadWindowsAddon, windowsAddonExports, WindowsPlatformError } from "../packages/windows/src/index.js";
 
 const bytes = Buffer.from("candidate addon");
 const digest = createHash("sha256").update(bytes).digest("hex");
@@ -149,7 +149,7 @@ function addonDescriptor(overrides: { releaseId?: string } = {}) {
     addonGeneration: 1,
     schemaGeneration: 1,
     releaseId: "r1",
-    exports: addonExports,
+    exports: windowsAddonExports,
     ...overrides,
   };
 }
@@ -177,14 +177,6 @@ function addonModule(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
-
-const addonExports = [
-  "selfTest", "inspectCertificate", "installCertificate", "removeCertificate",
-  "inspectTask", "registerTask", "removeTask", "inspectFirewallRule",
-  "ensureFirewallRule", "removeFirewallRule", "snapshotInterfaces",
-  "observeInterfaces", "openAdvertisement", "spawnContained",
-  "inspectStoragePath", "observeStorageTopology", "writeDiagnosticEvent",
-];
 
 function fixture() {
   const roles = Object.fromEntries(

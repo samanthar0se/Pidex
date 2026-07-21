@@ -51,13 +51,13 @@ export interface NativeModuleLoader {
 }
 
 const require = createRequire(import.meta.url);
-const expectedExports = [
+export const windowsAddonExports = [
   "selfTest", "inspectCertificate", "installCertificate", "removeCertificate",
   "inspectTask", "registerTask", "removeTask", "inspectFirewallRule",
   "ensureFirewallRule", "removeFirewallRule", "snapshotInterfaces",
   "observeInterfaces", "openAdvertisement", "spawnContained",
   "inspectStoragePath", "observeStorageTopology", "writeDiagnosticEvent",
-];
+] as const;
 
 export async function loadWindowsAddon(
   manifest: ResolvedLaunchManifest,
@@ -137,10 +137,10 @@ function validateAddon(addon: RawAddon, manifest: ResolvedLaunchManifest): void 
   }
 
   const nativeExports = Object.keys(addon).filter(name => name !== "descriptor");
-  const hasExpectedDescriptor = descriptor.exports.length === expectedExports.length
-    && descriptor.exports.every((name, index) => name === expectedExports[index]);
-  const hasExpectedNativeExports = nativeExports.length === expectedExports.length
-    && expectedExports.every(name => nativeExports.includes(name));
+  const hasExpectedDescriptor = descriptor.exports.length === windowsAddonExports.length
+    && descriptor.exports.every((name, index) => name === windowsAddonExports[index]);
+  const hasExpectedNativeExports = nativeExports.length === windowsAddonExports.length
+    && windowsAddonExports.every(name => nativeExports.includes(name));
   if (!hasExpectedDescriptor || !hasExpectedNativeExports || typeof addon.selfTest !== "function") {
     throw new Error("Windows addon exports mismatch");
   }
