@@ -110,7 +110,7 @@ test("FX-INT-02/04/05/06: Interaction resolution keeps authoritative order and e
   });
 
   await store.getState().openSession("session-one");
-  await store.getState().resolveInteraction("urgent", false, "private response");
+  await store.getState().resolveInteraction("urgent", { kind: "respond", value: "private response" });
 
   assert.deepEqual(commands, [{
     type: "interaction.resolve", commandId: "resolve-command", interactionId: "urgent",

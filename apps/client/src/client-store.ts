@@ -35,6 +35,9 @@ export interface InteractionFact {
   provenance?: string; state: InteractionState; revision: number; createdAt: number; deadlineAt: number | null;
   terminalCause: string | null; respondedAt: number | null; respondingDeviceLabel: string | null; applicationProven: boolean | null;
 }
+export type InteractionResolution =
+  | { kind: "dismiss" }
+  | { kind: "respond"; value: string | boolean };
 export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; runs?: RunFact[]; interactions?: InteractionFact[]; olderCursor?: string | null; }
 export interface TimelineChange { baseRevision: number; revision: number; entry: TimelineFact }
 export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
@@ -135,7 +138,7 @@ export interface ClientState {
   submitComposer(): Promise<void>;
   stopRun(runId: string): Promise<void>;
   actOnHeldRun(runId: string, action: "release" | "cancel"): Promise<void>;
-  resolveInteraction(interactionId: string, dismiss: boolean, value?: string | boolean): Promise<void>;
+  resolveInteraction(interactionId: string, resolution: InteractionResolution): Promise<void>;
   setSearchQuery(query: string): void;
   setDiscoveryMode(mode: "available" | "archived"): void;
   toggleProject(projectId: string): Promise<void>;
@@ -330,7 +333,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         runs: result.kind === "accepted" ? { ...current.runs, [sessionId]: current.runs[sessionId]!.map(item => item.runId === runId ? { ...item, state: action === "release" ? "executing" : "cancelled" } : item) } : current.runs,
       }));
     },
-    async resolveInteraction(interactionId, dismiss, value) {
+    async resolveInteraction(interactionId, resolution) {
       const state = get();
       const sessionId = state.selectedSessionId;
       const interaction = sessionId ? state.interactions[sessionId]?.find(item => item.interactionId === interactionId) : undefined;
@@ -340,7 +343,8 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const result = await adapters.host.resolveInteraction({
         type: "interaction.resolve", commandId: id, interactionId,
         workerGeneration: interaction.workerGeneration, observedRevision: interaction.revision,
-        dismiss, ...(dismiss ? {} : { value }),
+        dismiss: resolution.kind === "dismiss",
+        ...(resolution.kind === "respond" ? { value: resolution.value } : {}),
       });
       set(current => ({ interactionIntents: { ...current.interactionIntents, [interactionId]: {
         commandId: id, phase: result.kind === "accepted" ? "accepted-awaiting-projection" : result.kind,

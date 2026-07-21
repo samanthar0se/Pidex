@@ -11,6 +11,7 @@ import {
   type NewSessionState,
   type SessionFact,
 } from "./client-store.js";
+import { InteractionControl } from "./InteractionControl.js";
 import { SessionTimeline } from "./SessionTimeline.js";
 
 function applyPath(path: string) {
@@ -104,7 +105,6 @@ function Composer({ sessionId, draft }: { sessionId: string; draft: string }) {
   const held = runs.filter(run => run.state === "held");
   const interactions = state.interactions[sessionId] ?? [];
   const [interactionIndex, setInteractionIndex] = useState<number | null>(null);
-  const [response, setResponse] = useState<string | boolean>("");
   const composer = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (!interactions.length) { setInteractionIndex(null); return; }
@@ -128,24 +128,17 @@ function Composer({ sessionId, draft }: { sessionId: string; draft: string }) {
       <select disabled aria-label="Model for next Run"><option>Host default model</option></select>
       <select disabled aria-label="Mode for next Run"><option>Host default mode</option></select>
     </div>}
-    {interaction ? <section className="interaction-control" aria-label="Open Interactions">
-      <div className="interaction-heading"><strong>Interaction {interactionIndex! + 1} of {interactions.length}</strong>
-        <span>{interaction.runId ? `Run ${interaction.runId}` : "Session request"}{interaction.provenance ? ` · ${interaction.provenance}` : ""}</span></div>
-      <p>{interaction.payload.message}</p>
-      {interaction.kind === "select" && <select aria-label="Interaction response" value={String(response)} onChange={event => setResponse(event.target.value)}>
-        <option value="">Choose…</option>{interaction.payload.options?.map(option => <option key={option}>{option}</option>)}</select>}
-      {interaction.kind === "confirm" && <select aria-label="Interaction response" value={String(response)} onChange={event => setResponse(event.target.value === "true")}><option value="">Choose…</option><option value="true">Confirm</option><option value="false">Decline</option></select>}
-      {interaction.kind === "input" && <input aria-label="Interaction response" value={String(response)} onChange={event => setResponse(event.target.value)}/>}
-      {interaction.kind === "editor" && <textarea aria-label="Interaction response" value={String(response)} onChange={event => setResponse(event.target.value)}/>}
-      <div className="interaction-actions">
-        <button onClick={() => { setInteractionIndex(null); requestAnimationFrame(() => composer.current?.focus()); }}>Write message</button>
-        <button disabled={interactions.length < 2} onClick={() => { setInteractionIndex((interactionIndex! + 1) % interactions.length); setResponse(""); }}>Next request</button>
-        <button disabled={Boolean(state.interactionIntents[interaction.interactionId])} onClick={() => void store.getState().resolveInteraction(interaction.interactionId, true)}>Dismiss</button>
-        <button disabled={Boolean(state.interactionIntents[interaction.interactionId]) || response === ""} onClick={() => void store.getState().resolveInteraction(interaction.interactionId, false, response)}>Respond</button>
-        {executing && <button aria-label={`Stop Run ${executing.runId}`} onClick={() => void store.getState().stopRun(executing.runId)}>Stop</button>}
-      </div>
-      {state.interactionIntents[interaction.interactionId] && <p role="status">{state.interactionIntents[interaction.interactionId]!.phase}</p>}
-    </section> : <div className="composer-row">
+    {interaction ? <InteractionControl
+      interaction={interaction}
+      position={interactionIndex! + 1}
+      count={interactions.length}
+      intentPhase={state.interactionIntents[interaction.interactionId]?.phase}
+      executingRunId={executing?.runId}
+      onWriteMessage={() => { setInteractionIndex(null); requestAnimationFrame(() => composer.current?.focus()); }}
+      onNext={() => setInteractionIndex((interactionIndex! + 1) % interactions.length)}
+      onResolve={(interactionId, resolution) => void store.getState().resolveInteraction(interactionId, resolution)}
+      onStop={runId => void store.getState().stopRun(runId)}
+    /> : <div className="composer-row">
       <textarea ref={composer} aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}/>
       <button aria-label={executing && !draft.trim() ? `Stop Run ${executing.runId}` : action} onClick={submit}>{action}</button>
