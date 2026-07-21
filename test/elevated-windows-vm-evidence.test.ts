@@ -17,19 +17,31 @@ const candidate = {
   ],
 };
 
-test("elevated Windows VM evidence binds both exact lanes and always cleans each scenario", async () => {
-  const calls: string[] = [];
-  const scenario = (name: ElevatedWindowsVmScenario["name"]): ElevatedWindowsVmScenario => ({
+function passingScenario(
+  name: ElevatedWindowsVmScenario["name"],
+  artifactSha256: string,
+  recordCall: (call: string) => void = () => {},
+): ElevatedWindowsVmScenario {
+  return {
     name,
     async run(context) {
-      calls.push(`run:${context.lane.lane}:${name}`);
-      return { artifactSha256: "a".repeat(64), passedChecks: requiredChecks[name] };
+      recordCall(`run:${context.lane.lane}:${name}`);
+      return { artifactSha256, passedChecks: requiredChecks[name] };
     },
-    async cleanup(context) { calls.push(`cleanup:${context.lane.lane}:${name}`); },
-  });
+    async cleanup(context) {
+      recordCall(`cleanup:${context.lane.lane}:${name}`);
+    },
+  };
+}
+
+test("elevated Windows VM evidence binds both exact lanes and always cleans each scenario", async () => {
+  const calls: string[] = [];
+  const recordCall = (call: string): void => {
+    calls.push(call);
+  };
   const campaign = new ElevatedWindowsVmCampaign(candidate, [
-    scenario("native-capabilities"),
-    scenario("two-checkout-source-lifecycle"),
+    passingScenario("native-capabilities", "a".repeat(64), recordCall),
+    passingScenario("two-checkout-source-lifecycle", "a".repeat(64), recordCall),
   ]);
 
   const evidence = await campaign.run({
@@ -71,8 +83,8 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
   };
   const failed = await campaign.run(input);
   const diagnosticRetry = await new ElevatedWindowsVmCampaign(candidate, [
-    { name: "native-capabilities", async run() { return { artifactSha256: "c".repeat(64), passedChecks: requiredChecks["native-capabilities"] }; }, async cleanup() {} },
-    { name: "two-checkout-source-lifecycle", async run() { return { artifactSha256: "d".repeat(64), passedChecks: requiredChecks["two-checkout-source-lifecycle"] }; }, async cleanup() {} },
+    passingScenario("native-capabilities", "c".repeat(64)),
+    passingScenario("two-checkout-source-lifecycle", "d".repeat(64)),
   ]).run(input);
   const attempts = new FirstAttemptEvidence();
 
@@ -80,6 +92,9 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
   attempts.record(diagnosticRetry);
 
   assert.equal(failed.status, "incomplete");
-  assert.match(failed.lanes[0]!.scenarios[0]!.failure!, /cleanup failed: handle remained open/);
+  assert.equal(
+    failed.lanes[0]!.scenarios[0]!.failure,
+    "Job assignment failed; cleanup failed: handle remained open",
+  );
   assert.equal(attempts.authoritative(candidate.candidate), failed);
 });

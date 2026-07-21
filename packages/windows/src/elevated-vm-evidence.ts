@@ -85,13 +85,15 @@ export class ElevatedWindowsVmCampaign {
           result = { name: scenario.name, status: "passed", artifactSha256: output.artifactSha256 };
         } catch (error) {
           result = { name: scenario.name, status: "failed", failure: coarseFailure(error) };
-        } finally {
-          try { await scenario.cleanup(context); }
-          catch (error) {
-            result = { name: scenario.name, status: "incomplete", failure: `cleanup failed: ${coarseFailure(error)}` };
-          }
         }
-        results.push(result!);
+        try {
+          await scenario.cleanup(context);
+        } catch (error) {
+          const cleanupFailure = `cleanup failed: ${coarseFailure(error)}`;
+          const failure = result.failure ? `${result.failure}; ${cleanupFailure}` : cleanupFailure;
+          result = { name: scenario.name, status: "incomplete", failure };
+        }
+        results.push(result);
       }
       lanes.push({
         lane: lane.lane,
@@ -128,18 +130,7 @@ export const requiredChecks = {
   ],
 } as const satisfies Record<ElevatedWindowsVmScenario["name"], readonly string[]>;
 
-/** In-memory policy boundary; durable callers persist the returned first record. */
-export class FirstAttemptEvidence {
-  private readonly attempts = new Map<string, ElevatedWindowsVmEvidence>();
-
-  record(evidence: ElevatedWindowsVmEvidence): void {
-    if (!this.attempts.has(evidence.candidate)) this.attempts.set(evidence.candidate, evidence);
-  }
-
-  authoritative(candidate: string): ElevatedWindowsVmEvidence | undefined {
-    return this.attempts.get(candidate);
-  }
-}
+export { FirstAttemptEvidence } from "./first-attempt-evidence.js";
 
 function validateCampaign(candidate: WindowsNativeCandidate, scenarios: readonly ElevatedWindowsVmScenario[]): void {
   if (candidate.schemaVersion !== 1 || candidate.architecture !== "x64") throw new Error("unsupported Windows native candidate");
