@@ -25,12 +25,19 @@ export type CommandResult =
   | { kind: "uncertain"; reason: string };
 export type SessionCreateResult = CommandResult & { session?: SessionFact };
 
+type FailedCommandResult = Exclude<CommandResult, { kind: "accepted" }>;
+
+export type NewSessionProgress =
+  | { phase: "editing"; reason?: string }
+  | { phase: "creating" }
+  | { phase: "creation-failed"; result: FailedCommandResult }
+  | { phase: "session-created"; sessionId: string }
+  | { phase: "submitting-run"; sessionId: string }
+  | { phase: "run-finished"; sessionId: string; result: CommandResult };
+
 export interface NewSessionState extends NewSessionScope {
   draft: string;
-  status: "editing" | "creating" | "create-rejected" | "create-uncertain" |
-    "session-created" | "submitting-run" | "run-rejected" | "run-uncertain" | "run-accepted";
-  reason?: string;
-  sessionId?: string;
+  progress: NewSessionProgress;
 }
 
 export interface ClientAdapters {
@@ -73,60 +80,65 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     isSessionCurrent: false,
     async openNewSession(scope = {}) {
       const draft = await adapters.drafts.read("new-session");
-      set({ selectedSessionId: undefined, newSession: { ...scope, draft, status: "editing" } });
+      set({ selectedSessionId: undefined, newSession: { ...scope, draft, progress: { phase: "editing" } } });
       adapters.routing.replace("/new");
     },
     async setNewSessionScope(scope) {
       const current = get().newSession;
-      if (!current || current.status !== "editing") return;
+      if (!current || current.progress.phase !== "editing") return;
       set({ newSession: { ...current, ...scope } });
     },
     async setNewSessionDraft(value) {
       const current = get().newSession;
-      if (!current || current.status !== "editing") return;
+      if (!current || current.progress.phase !== "editing") return;
       set({ newSession: { ...current, draft: value } });
       await adapters.drafts.write("new-session", value);
     },
     async submitNewSession(createEmpty = false) {
       const initial = get().newSession;
-      if (!initial || initial.status !== "editing" || !adapters.host.createSession) return;
+      if (!initial || initial.progress.phase !== "editing" || !adapters.host.createSession) return;
       const prompt = initial.draft;
       if (!createEmpty && !prompt.trim()) {
-        set({ newSession: { ...initial, reason: "Enter a prompt or create an empty Session" } });
+        set({ newSession: { ...initial, progress: {
+          phase: "editing", reason: "Enter a prompt or create an empty Session",
+        } } });
         return;
       }
-      set({ newSession: { ...initial, status: "creating", reason: undefined } });
+      set({ newSession: { ...initial, progress: { phase: "creating" } } });
       const created = await adapters.host.createSession({
         commandId: commandId(), projectId: initial.projectId, workspaceId: initial.workspaceId,
       });
       if (created.kind !== "accepted" || !created.session) {
         const reason = created.kind === "accepted" ? "Host accepted creation without a Session projection" : created.reason;
-        set({ newSession: { ...initial,
-          status: created.kind === "uncertain" ? "create-uncertain" : "create-rejected",
-          reason,
-        } });
+        const kind = created.kind === "uncertain" ? "uncertain" : "rejected";
+        set({ newSession: { ...initial, progress: {
+          phase: "creation-failed", result: { kind, reason },
+        } } });
         return;
       }
-      const durable = { ...initial, status: "session-created" as const, sessionId: created.session.sessionId };
+      const sessionId = created.session.sessionId;
+      const durable = {
+        ...initial,
+        progress: { phase: "session-created" as const, sessionId },
+      };
       set(state => ({
-        sessions: { ...state.sessions, [created.session!.sessionId]: created.session! },
+        sessions: { ...state.sessions, [sessionId]: created.session! },
         newSession: durable,
       }));
       if (createEmpty) {
-        adapters.routing.replace(`/sessions/${encodeURIComponent(created.session.sessionId)}`);
+        adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
         return;
       }
       if (!adapters.host.submitRun) return;
-      set({ newSession: { ...durable, status: "submitting-run" } });
+      set({ newSession: { ...durable, progress: { phase: "submitting-run", sessionId } } });
       const submitted = await adapters.host.submitRun({
-        commandId: commandId(), sessionId: created.session.sessionId, prompt,
+        commandId: commandId(), sessionId, prompt,
       });
-      set({ newSession: { ...durable,
-        status: submitted.kind === "accepted" ? "run-accepted" : submitted.kind === "uncertain" ? "run-uncertain" : "run-rejected",
-        reason: submitted.kind === "accepted" ? undefined : submitted.reason,
-      } });
+      set({ newSession: { ...durable, progress: {
+        phase: "run-finished", sessionId, result: submitted,
+      } } });
       if (submitted.kind === "accepted") {
-        adapters.routing.replace(`/sessions/${encodeURIComponent(created.session.sessionId)}`);
+        adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
       }
     },
     async openSession(sessionId) {

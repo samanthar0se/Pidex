@@ -42,7 +42,9 @@ test("FX-COMP-01/06: New Session creates durable scope before accepting its init
     { commandId: "command_1", projectId: "project_one", workspaceId: "workspace_two" },
     { commandId: "command_2", sessionId: "session_created", prompt: "keep this exact prompt" },
   ]);
-  assert.equal(store.getState().newSession?.status, "run-accepted");
+  assert.deepEqual(store.getState().newSession?.progress, {
+    phase: "run-finished", sessionId: "session_created", result: { kind: "accepted" },
+  });
   assert.equal(store.getState().newSession?.draft, "keep this exact prompt");
 });
 
@@ -70,8 +72,10 @@ test("FX-RESP-01/02/03: partial and uncertain creation outcomes preserve the exa
   assert.equal(creates, 1);
   assert.equal(submissions, 1);
   assert.deepEqual(store.getState().newSession, {
-    projectId: "project_exact", draft: "do not duplicate", status: "run-uncertain",
-    sessionId: "session_durable", reason: "transport-lost",
+    projectId: "project_exact", draft: "do not duplicate", progress: {
+      phase: "run-finished", sessionId: "session_durable",
+      result: { kind: "uncertain", reason: "transport-lost" },
+    },
   });
 });
 
