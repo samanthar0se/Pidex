@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { CliControlClient } from "./cli-control-client.js";
 
-/** Operations exposed by the signed CLI entry point. */
+/** Operations exposed by the manifest-selected local-control CLI entry point. */
 export const PIDEX_COMMANDS = Object.freeze([
   "status",
   "start",

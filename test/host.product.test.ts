@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
-import { readStatus } from "../packages/cli/src/main.js";
+import { readStatus } from "./device-status-client.js";
 import {
   ensureCertificate,
   type HostCertificateProvisioningRequest,
@@ -62,7 +62,7 @@ function readPwaHeaders(
   });
 }
 
-test("HTTPS PWA and CLI observe durable authoritative Host status across restart", async () => {
+test("HTTPS PWA and Device protocol observe durable authoritative Host status across restart", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-product-"));
 
   try {

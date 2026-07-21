@@ -118,10 +118,7 @@ test("product composition cannot select deterministic manifests", async () => {
 });
 
 test("direct product startup cannot bypass the manifest-only composition root", async () => {
-  await assert.rejects(
-    runHost("product"),
-    /product Host startup requires the verified manifest composition root/,
-  );
+  await assert.rejects(runHost("product" as never), /restricted to deterministic/);
 });
 
 test("a stable finding degrades only its decided service scope and can recover", () => {

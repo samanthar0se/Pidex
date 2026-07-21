@@ -18,6 +18,8 @@ export {
   parseHostCompatibilityRecord,
 } from "./compatibility.js";
 export type { HostCompatibilityRecord } from "./compatibility.js";
+export { publishRunnableHostValidation } from "./runnable-host-validation.js";
+export type { RunnableHostValidationInput } from "./runnable-host-validation.js";
 
 const REAL_CANONICAL_PORT = 47831;
 const PINNED_PI_VERSION = "0.80.10";

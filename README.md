@@ -2,7 +2,7 @@
 
 Pidex is a Windows-first, PWA-first control plane for durable [Pi](https://github.com/badlogic/pi-mono) coding sessions on a local LAN. One authoritative **Host** owns execution and state; paired desktop and mobile **Devices** can reconnect to, supervise, and control the same Sessions.
 
-> **Status:** this repository is a v0.1 implementation scaffold with a working Host, protocol, PWA, persistence, deterministic adapters, and product-level tests. The signed Windows package, native Windows bridge, and real Pi adapter are not bundled yet.
+> **Status:** the manifest-selected, source-runnable Windows Host has replaced the product scaffolds. This bounded claim does **not** claim installer readiness, signed distribution, daily-driver completion, or full v1 promotion.
 
 ## Core Model
 
@@ -18,9 +18,9 @@ Pidex is a Windows-first, PWA-first control plane for durable [Pi](https://githu
 - `apps/pwa/` — dependency-free PWA, offline working set, pairing, and Session UI.
 - `packages/host/` — HTTPS/WebSocket Host, SQLite authority, workers, lifecycle, backup, recovery, and release gates.
 - `packages/protocol/` — versioned Zod schemas and capability negotiation.
-- `packages/adapters/` — Pi, clock, storage, network, and Windows seams; includes deterministic test adapters.
+- `packages/adapters/` — deterministic development/test adapters only; product startup cannot select them.
 - `packages/launcher/` — Windows installation, supervision, lifecycle, and signed-update logic.
-- `packages/cli/` — local control CLI surface; only `status` runs without the packaged launcher adapter.
+- `packages/cli/` — authenticated local-control CLI surface selected by the resolved manifest.
 - `test/` — end-to-end product contract tests using Node's test runner.
 - `docs/` — maintained security, architecture, operations, and release-evidence guidance.
 - `.scratch/pidex-product-and-architecture/` — product specification, domain glossary, decision map, and throwaway UI prototype.
