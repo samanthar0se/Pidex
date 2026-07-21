@@ -4,6 +4,7 @@ import {
   serverMessageSchema,
   type HostStatus,
 } from "../../protocol/src/status.js";
+export { CliControlClient, projectStatus, resolveCliTarget } from "./local-control.js";
 
 /**
  * Operations exposed by the signed CLI entry point. Product packaging delegates
@@ -13,6 +14,8 @@ export const PIDEX_COMMANDS = Object.freeze([
   "status",
   "start",
   "retry",
+  "stop",
+  "restart",
   "pairing",
   "revoke",
   "origin",
@@ -21,9 +24,13 @@ export const PIDEX_COMMANDS = Object.freeze([
   "update",
   "logs",
   "backup",
+  "restore",
   "recovery",
   "doctor",
   "support",
+  "operation",
+  "unprepare",
+  "purge",
 ] as const);
 
 export async function readStatus(
@@ -64,6 +71,9 @@ export async function readStatus(
   });
 }
 
+/* Legacy Device-protocol helper retained only for existing public-protocol
+ * parity tests. CLI command dispatch must use CliControlClient/local control. */
+
 if (process.argv[1]?.endsWith("main.ts")) {
   const command = process.argv[2];
   const isKnownCommand = PIDEX_COMMANDS.some(candidate => candidate === command);
@@ -71,23 +81,7 @@ if (process.argv[1]?.endsWith("main.ts")) {
   if (!isKnownCommand) {
     throw new Error(`Usage: pidex <${PIDEX_COMMANDS.join("|")}>`);
   }
-  if (command !== "status") {
-    throw new Error(
-      `${command} requires the installed signed launcher adapter`,
-    );
-  }
-
-  const status = await readStatus(
-    process.env.PIDEX_ORIGIN ?? "https://localhost:7443",
-    process.env.PIDEX_AUTHORIZATION,
-  );
-  console.log(
-    [
-      `Host identity: ${status.hostId}`,
-      `Release identity: ${status.releaseId}`,
-      `Readiness: ${status.readiness}`,
-      ...status.warnings.map(warning => `HIGH: ${warning.detail}`),
-      `Synchronization basis: ${status.synchronization.cursor}`,
-    ].join("\n"),
+  throw new Error(
+    `${command} requires the manifest-selected authenticated local-control adapter`,
   );
 }
