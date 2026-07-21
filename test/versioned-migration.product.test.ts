@@ -75,7 +75,7 @@ test("authority migration validates a new generation before atomic activation an
   }
 });
 
-test("Pi artifacts migrate lazily by copy and a typed failure leaves source and other history readable", async () => {
+test("Pi artifacts migrate by copy, advance the usable head only on success, and preserve source history on failure", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-pi-migration-"));
   try {
     await mkdir(join(root, "artifacts", "source"), { recursive: true });
@@ -89,6 +89,7 @@ test("Pi artifacts migrate lazily by copy and a typed failure leaves source and 
       checkpoint: "old-cp",
     };
     const manager = new PiArtifactMigrationManager(root);
+    let usableHead = source;
     const worker: PiAdapter = {
       kind: "deterministic",
       migrateArtifact: async request => {
@@ -101,7 +102,9 @@ test("Pi artifacts migrate lazily by copy and a typed failure leaves source and 
       source,
       { pidexVersion: "0.2", piVersion: "pi-new" },
       worker,
+      head => { usableHead = head; },
     );
+    assert.deepEqual(usableHead, migrated);
     assert.equal(await readFile(join(root, source.artifact), "utf8"), "old-one");
     assert.equal(
       await readFile(join(root, migrated.artifact), "utf8"),
@@ -119,11 +122,13 @@ test("Pi artifacts migrate lazily by copy and a typed failure leaves source and 
         { ...source, sessionId: "broken" },
         { pidexVersion: "0.3", piVersion: "pi-bad" },
         failingWorker,
+        head => { usableHead = head; },
       ),
       (error: unknown) =>
         error instanceof MigrationError &&
         error.code === "artifact-migration-failed",
     );
+    assert.deepEqual(usableHead, migrated);
     assert.equal(
       await readFile(join(root, "timeline.json"), "utf8"),
       "unaffected history",
