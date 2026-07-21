@@ -10,6 +10,11 @@
 namespace pidex::windows {
 namespace {
 
+int compare_environment_names(const std::wstring& left,
+                              const std::wstring& right) noexcept {
+  return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE);
+}
+
 std::wstring quote_argument(const std::wstring& argument) {
   if (!argument.empty() &&
       argument.find_first_of(L" \t\"") == std::wstring::npos) {
@@ -49,8 +54,8 @@ std::vector<wchar_t> environment_block(
   std::vector<std::pair<std::wstring, std::wstring>> entries(
       environment.begin(), environment.end());
   std::ranges::sort(entries, [](const auto& left, const auto& right) {
-    return CompareStringOrdinal(left.first.c_str(), -1, right.first.c_str(), -1,
-                                TRUE) == CSTR_LESS_THAN;
+    return compare_environment_names(left.first, right.first) ==
+           CSTR_LESS_THAN;
   });
   std::vector<wchar_t> result;
   for (const auto& [name, value] : entries) {
@@ -191,8 +196,7 @@ std::variant<managed_process, native_error> spawn_contained(
          left != request.environment.end(); ++left) {
       for (auto right = std::next(left); right != request.environment.end();
            ++right) {
-        if (CompareStringOrdinal(left->first.c_str(), -1,
-                                 right->first.c_str(), -1, TRUE) ==
+        if (compare_environment_names(left->first, right->first) ==
             CSTR_EQUAL) {
           return win32_error("spawn_contained.environment.duplicate",
                              native_error_category::invalid_input,
@@ -240,7 +244,14 @@ std::variant<managed_process, native_error> spawn_contained(
       terminate_partial_process(process.get());
       return error;
     }
-    thread.reset();
+    if (!CloseHandle(thread.get())) {
+      const auto error = process_error("CloseHandle.thread");
+      if (TerminateJobObject(job.get(), ERROR_PROCESS_ABORTED)) {
+        WaitForSingleObject(process.get(), INFINITE);
+      }
+      return error;
+    }
+    static_cast<void>(thread.release());
 
     auto state = std::make_unique<managed_process::state>();
     state->process = std::move(process);

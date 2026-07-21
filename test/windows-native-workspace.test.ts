@@ -131,6 +131,26 @@ test("process encoding preserves empty arguments and rejects reserved environmen
   assert.match(processSource, /CompareStringOrdinal/);
 });
 
+test("process creation fails closed when its resumed thread handle cannot be closed", async () => {
+  const processSource = await readNativeFile("common/src/process.cpp");
+
+  const resume = processSource.indexOf("ResumeThread");
+  const close = processSource.indexOf("CloseHandle(thread.get())");
+  const closeFailure = processSource.indexOf(
+    'process_error("CloseHandle.thread")',
+  );
+  const terminate = processSource.indexOf(
+    "TerminateJobObject(job.get(), ERROR_PROCESS_ABORTED)",
+    closeFailure,
+  );
+  const failsClosed =
+    resume >= 0 &&
+    close > resume &&
+    closeFailure > close &&
+    terminate > closeFailure;
+  assert.ok(failsClosed);
+});
+
 test("the per-instance pipe rejects squatting, remote access, and unauthenticated tokens", async () => {
   const [cmake, pipeSource] = await Promise.all([
     readNativeFile("common/CMakeLists.txt"),
