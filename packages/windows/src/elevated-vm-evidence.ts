@@ -36,6 +36,16 @@ export interface SecondarySoakObservation {
   monotonicallyGrowingHandles: boolean;
 }
 
+export interface PrimaryHyperVCampaignObservation {
+  persistenceStateOracle: "passed" | "failed" | "incomplete";
+  deterministicFaultRecoveryCampaign: "passed" | "failed" | "incomplete";
+  hardPowerOff: {
+    status: "passed" | "failed" | "incomplete";
+    advisory: true;
+    attempt: number;
+  };
+}
+
 export interface WindowsNodeLane {
   lane: "primary" | "secondary";
   version: string;
@@ -91,6 +101,21 @@ export const requiredChecks = {
     "thirty-minute-four-resident-two-executing-soak",
     "memory-cpu-readiness-and-handle-ceilings",
   ],
+  "primary-hyperv-failure-campaign": [
+    "fresh-prepare-start-and-exact-readiness",
+    "five-retries-circuit-and-explicit-retry",
+    "pre-acceptance-rollback-and-launcher-crash-teardown",
+    "daemon-worker-ipc-addon-and-descendant-failures",
+    "session-isolation-stop-heartbeat-and-conservative-settlement",
+    "interaction-withdrawal-and-no-uncertain-replay",
+    "drain-restart-force-and-maintenance-exclusivity",
+    "shutdown-logoff-and-drain-deadlines",
+    "network-port-firewall-mdns-and-certificate-transitions",
+    "volume-and-durability-coverage-transitions",
+    "local-control-failure-states",
+    "source-update-and-lazy-pi-migration",
+    "backup-restore-reidentify-and-corrupt-newest-recovery",
+  ],
 } as const;
 
 type ScenarioName = keyof typeof requiredChecks;
@@ -100,6 +125,7 @@ interface ElevatedWindowsVmScenarioOutput {
   passedChecks?: readonly string[];
   observedIdentity?: ObservedWindowsLaneIdentity;
   secondarySoak?: SecondarySoakObservation;
+  primaryCampaign?: PrimaryHyperVCampaignObservation;
 }
 
 export interface ElevatedWindowsVmScenario {
@@ -123,6 +149,12 @@ const scenarioPolicies: Record<ScenarioName, ScenarioPolicy> = {
       assertSecondarySoak(output.secondarySoak);
     },
   },
+  "primary-hyperv-failure-campaign": {
+    lane: "primary",
+    validate(output) {
+      assertPrimaryCampaign(output.primaryCampaign);
+    },
+  },
 };
 
 type EvidenceStatus = "passed" | "failed" | "incomplete";
@@ -132,6 +164,7 @@ interface ScenarioEvidence {
   status: EvidenceStatus;
   artifactSha256?: string;
   failure?: string;
+  hardPowerOff?: PrimaryHyperVCampaignObservation["hardPowerOff"];
 }
 
 interface LaneEvidence {
@@ -179,7 +212,12 @@ export class ElevatedWindowsVmCampaign {
           if (missing.length > 0) throw new Error(`scenario missing required checks: ${missing.join(", ")}`);
           assertIdentity(output.observedIdentity, this.candidate.identities, lane);
           policy.validate?.(output);
-          result = { name: scenario.name, status: "passed", artifactSha256: output.artifactSha256 };
+          result = {
+            name: scenario.name,
+            status: "passed",
+            artifactSha256: output.artifactSha256,
+            ...(output.primaryCampaign ? { hardPowerOff: { ...output.primaryCampaign.hardPowerOff } } : {}),
+          };
         } catch (error) {
           result = { name: scenario.name, status: "failed", failure: coarseFailure(error) };
         }
@@ -268,6 +306,19 @@ function assertSecondarySoak(soak: SecondarySoakObservation | undefined): void {
     soak.monotonicallyGrowingHandles && "handles monotonically growing",
   ].filter((failure): failure is string => Boolean(failure));
   if (failures.length > 0) throw new Error(`secondary soak ceilings failed: ${failures.join(", ")}`);
+}
+
+function assertPrimaryCampaign(campaign: PrimaryHyperVCampaignObservation | undefined): void {
+  if (!campaign) throw new Error("primary lane missing Hyper-V campaign observations");
+  if (campaign.persistenceStateOracle !== "passed") {
+    throw new Error("blocking persistence-state oracle did not pass");
+  }
+  if (campaign.deterministicFaultRecoveryCampaign !== "passed") {
+    throw new Error("blocking deterministic fault/recovery campaign did not pass");
+  }
+  if (campaign.hardPowerOff.advisory !== true || !Number.isInteger(campaign.hardPowerOff.attempt) || campaign.hardPowerOff.attempt < 1) {
+    throw new Error("hard-power-off evidence must preserve a numbered advisory attempt");
+  }
 }
 
 function assertVm(vm: ElevatedWindowsVmIdentity): void {

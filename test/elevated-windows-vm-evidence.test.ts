@@ -50,6 +50,11 @@ function passingScenario(
         passedChecks: requiredChecks[name],
         observedIdentity: { ...candidate.identities, nodeVersion: context.lane.version, nodeApi: context.lane.nodeApi },
         secondarySoak: passingSecondarySoak,
+        primaryCampaign: {
+          persistenceStateOracle: "passed",
+          deterministicFaultRecoveryCampaign: "passed",
+          hardPowerOff: { status: "failed", advisory: true, attempt: 1 },
+        },
       };
     },
     async cleanup(context) {
@@ -104,6 +109,7 @@ test("elevated Windows VM evidence binds both exact lanes and always cleans each
     "run:primary:native-capabilities", "cleanup:primary:native-capabilities",
     "run:primary:two-checkout-source-lifecycle", "cleanup:primary:two-checkout-source-lifecycle",
     "run:primary:launcher-cli-maintenance-states", "cleanup:primary:launcher-cli-maintenance-states",
+    "run:primary:primary-hyperv-failure-campaign", "cleanup:primary:primary-hyperv-failure-campaign",
     "run:secondary:native-capabilities", "cleanup:secondary:native-capabilities",
     "run:secondary:two-checkout-source-lifecycle", "cleanup:secondary:two-checkout-source-lifecycle",
     "run:secondary:launcher-cli-maintenance-states", "cleanup:secondary:launcher-cli-maintenance-states",
@@ -135,6 +141,7 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
       "two-checkout-source-lifecycle": "d".repeat(64),
       "launcher-cli-maintenance-states": "e".repeat(64),
       "secondary-readiness-and-soak": "f".repeat(64),
+      "primary-hyperv-failure-campaign": "1".repeat(64),
     },
   })).run(input);
   const attempts = new FirstAttemptEvidence();
@@ -157,6 +164,7 @@ test("launcher, CLI, and maintenance evidence requires every supported Host stat
       "two-checkout-source-lifecycle": "b".repeat(64),
       "launcher-cli-maintenance-states": "c".repeat(64),
       "secondary-readiness-and-soak": "d".repeat(64),
+      "primary-hyperv-failure-campaign": "e".repeat(64),
     },
     overrides: {
       "launcher-cli-maintenance-states": {
