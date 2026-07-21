@@ -5,6 +5,7 @@ import {
   composePortableManifestHost,
   type ManifestHostFactories,
 } from "../packages/host/src/daemon-composition.js";
+import { createCompleteManifestHostFactories } from "./manifest-host-factories.js";
 
 const fixtureSha256 = "b".repeat(64);
 const portableFixtureRoot = "C:\\Users\\fixture\\AppData\\Local\\Pidex\\Source\\portable";
@@ -36,25 +37,6 @@ function portableManifest() {
     execution: { implementation: "deterministic", evidenceClass: "deterministic-test" },
     provenance: { source: { kind: "default", detail: "portable production-composition fixture" } },
   });
-}
-
-function createCompleteManifestHostFactories(): ManifestHostFactories {
-  const owner = () => ({ close: async () => {} });
-  return {
-    proveLauncherContainment: async () => {},
-    openAuthenticatedLocalControl: async () => owner(),
-    verifyReleaseAndNativeIdentity: async () => {},
-    openAuthority: async () => ({ mode: "normal", ...owner() }),
-    openDurability: async () => owner(),
-    openWindows: async () => owner(),
-    openModules: async () => owner(),
-    openLifecycle: async () => owner(),
-    openBackupRecovery: async () => owner(),
-    probePi: async () => {},
-    openPiSupervisor: async () => owner(),
-    openLan: async () => owner(),
-    openRunAdmission: async () => owner(),
-  };
 }
 
 test("portable evidence uses the manifest composition root without claiming native containment or real profile access", async () => {

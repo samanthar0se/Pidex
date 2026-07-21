@@ -115,20 +115,25 @@ function findingKey(scope: HealthScope, code: HealthCode): string {
 export interface CompositionOwner { close(): Promise<void>; }
 export interface AuthorityOwner extends CompositionOwner { readonly mode: "normal" | "recovery-only"; }
 
+export interface ManifestOwnerContext {
+  readonly manifest: ResolvedLaunchManifest;
+  readonly health: HostHealthGraph;
+}
+
 /** Runtime construction ports. Each returned owner has one lexical owner in this composition root. */
 export interface ManifestHostFactories {
   proveLauncherContainment(manifest: ResolvedLaunchManifest): Promise<void>;
   openAuthenticatedLocalControl(manifest: ResolvedLaunchManifest): Promise<CompositionOwner>;
   verifyReleaseAndNativeIdentity(manifest: ResolvedLaunchManifest): Promise<void>;
   openAuthority(manifest: ResolvedLaunchManifest): Promise<AuthorityOwner>;
-  openDurability(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
-  openWindows(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
-  openModules(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
-  openLifecycle(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
-  openBackupRecovery(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
+  openDurabilityServices(context: ManifestOwnerContext): Promise<CompositionOwner>;
+  openWindowsAddonPorts(context: ManifestOwnerContext): Promise<CompositionOwner>;
+  openModuleRegistry(context: ManifestOwnerContext): Promise<CompositionOwner>;
+  openLifecycleCoordinator(context: ManifestOwnerContext): Promise<CompositionOwner>;
+  openBackupRecoveryCoordinator(context: ManifestOwnerContext): Promise<CompositionOwner>;
   probePi(manifest: ResolvedLaunchManifest): Promise<void>;
-  openPiSupervisor(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
-  openLan(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
+  openPiChildSupervisor(context: ManifestOwnerContext): Promise<CompositionOwner>;
+  openLanEdge(context: ManifestOwnerContext): Promise<CompositionOwner>;
   openRunAdmission(manifest: ResolvedLaunchManifest): Promise<CompositionOwner>;
 }
 
@@ -221,6 +226,7 @@ async function composeValidatedManifestHost(
   factories: ManifestHostFactories,
 ): Promise<ManifestHost> {
   const health = new HostHealthGraph(SCOPES);
+  const ownerContext: ManifestOwnerContext = { manifest, health };
   const owners: CompositionOwner[] = [];
   try {
     await factories.proveLauncherContainment(manifest);
@@ -233,18 +239,18 @@ async function composeValidatedManifestHost(
     owners.push(authority);
     health.set("authority", authority.mode === "normal" ? "available" : "recovery-only", authority.mode);
 
-    owners.push(await factories.openDurability(manifest, health));
-    owners.push(await factories.openWindows(manifest, health));
-    owners.push(await factories.openModules(manifest, health));
-    owners.push(await factories.openLifecycle(manifest, health));
-    owners.push(await factories.openBackupRecovery(manifest, health));
+    owners.push(await factories.openDurabilityServices(ownerContext));
+    owners.push(await factories.openWindowsAddonPorts(ownerContext));
+    owners.push(await factories.openModuleRegistry(ownerContext));
+    owners.push(await factories.openLifecycleCoordinator(ownerContext));
+    owners.push(await factories.openBackupRecoveryCoordinator(ownerContext));
 
     if (authority.mode === "normal") {
       await factories.probePi(manifest);
       health.set("pi-configuration", "available", "static-probe-passed");
-      owners.push(await factories.openPiSupervisor(manifest, health));
+      owners.push(await factories.openPiChildSupervisor(ownerContext));
       health.set("pi-execution", "available", "supervisor-ready");
-      owners.push(await factories.openLan(manifest, health));
+      owners.push(await factories.openLanEdge(ownerContext));
       health.set("lan", "available", "edge-open");
       owners.push(await factories.openRunAdmission(manifest));
     } else {
@@ -271,9 +277,10 @@ async function composeValidatedManifestHost(
 function assertCompleteFactories(factories: ManifestHostFactories): void {
   for (const component of [
     "proveLauncherContainment", "openAuthenticatedLocalControl",
-    "verifyReleaseAndNativeIdentity", "openAuthority", "openDurability",
-    "openWindows", "openModules", "openLifecycle", "openBackupRecovery",
-    "probePi", "openPiSupervisor", "openLan", "openRunAdmission",
+    "verifyReleaseAndNativeIdentity", "openAuthority", "openDurabilityServices",
+    "openWindowsAddonPorts", "openModuleRegistry", "openLifecycleCoordinator",
+    "openBackupRecoveryCoordinator", "probePi", "openPiChildSupervisor",
+    "openLanEdge", "openRunAdmission",
   ] as const) {
     if (typeof factories[component] !== "function") {
       throw new Error(`missing production composition component: ${component}`);

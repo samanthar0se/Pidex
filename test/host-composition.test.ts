@@ -8,6 +8,7 @@ import {
   type ManifestHostFactories,
 } from "../packages/host/src/daemon-composition.js";
 import { runHost } from "../packages/host/src/run-host.js";
+import { createCompleteManifestHostFactories } from "./manifest-host-factories.js";
 
 const hash = "a".repeat(64);
 const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
@@ -42,15 +43,7 @@ function recordingFactories(
   authorityMode: "normal" | "recovery-only",
 ): ManifestHostFactories {
   const owner = () => ({ close: async () => {} });
-  const requiredOwners = {
-    openDurability: async () => { calls.push("durability"); return owner(); },
-    openWindows: async () => { calls.push("windows"); return owner(); },
-    openPiSupervisor: async () => { calls.push("pi-supervisor"); return owner(); },
-    openLifecycle: async () => { calls.push("lifecycle"); return owner(); },
-    openBackupRecovery: async () => { calls.push("backup-recovery"); return owner(); },
-    openModules: async () => { calls.push("modules"); return owner(); },
-  };
-  return {
+  return createCompleteManifestHostFactories({
     proveLauncherContainment: async () => { calls.push("containment"); },
     openAuthenticatedLocalControl: async () => {
       calls.push("control");
@@ -61,8 +54,14 @@ function recordingFactories(
       calls.push("authority");
       return { mode: authorityMode, ...owner() };
     },
+    openDurabilityServices: async () => { calls.push("durability"); return owner(); },
+    openWindowsAddonPorts: async () => { calls.push("windows"); return owner(); },
+    openModuleRegistry: async () => { calls.push("modules"); return owner(); },
+    openLifecycleCoordinator: async () => { calls.push("lifecycle"); return owner(); },
+    openBackupRecoveryCoordinator: async () => { calls.push("backup-recovery"); return owner(); },
     probePi: async () => { calls.push("pi"); },
-    openLan: async () => {
+    openPiChildSupervisor: async () => { calls.push("pi-supervisor"); return owner(); },
+    openLanEdge: async () => {
       calls.push("lan");
       return owner();
     },
@@ -70,8 +69,7 @@ function recordingFactories(
       calls.push("runs");
       return owner();
     },
-    ...requiredOwners,
-  };
+  });
 }
 
 test("manifest Host proves containment and local control before opening Authority or product edges", async () => {
