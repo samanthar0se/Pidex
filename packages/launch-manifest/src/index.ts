@@ -2,6 +2,18 @@ import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { z } from "zod";
 
+export {
+  assertCompleteTraceability,
+  evaluateTraceability,
+  traceabilityManifestSchema,
+} from "./traceability.js";
+export type {
+  TraceabilityCatalog,
+  TraceabilityManifest,
+  TraceabilityResult,
+  TraceabilitySource,
+} from "./traceability.js";
+
 const REAL_CANONICAL_PORT = 47831;
 const PINNED_PI_VERSION = "0.80.10";
 
