@@ -8,8 +8,14 @@ native_error win32_error(const std::string_view operation,
                          const bool retryable) noexcept {
   // Localized system messages can contain sensitive paths or names. Policy gets
   // only stable fields; callers may supply a separately reviewed coarse detail.
-  return {std::string(operation), category, native_error_domain::win32,
-          static_cast<std::int64_t>(code), retryable, "native operation failed"};
+  return {
+      .operation = std::string(operation),
+      .category = category,
+      .domain = native_error_domain::win32,
+      .code = static_cast<std::int64_t>(code),
+      .retryable = retryable,
+      .redacted_detail = "native operation failed",
+  };
 }
 
 }  // namespace pidex::windows

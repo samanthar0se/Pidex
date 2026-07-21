@@ -1,7 +1,9 @@
 #pragma once
 
 #include "pidex/windows/error.hpp"
+
 #include <Windows.h>
+
 #include <optional>
 #include <string_view>
 

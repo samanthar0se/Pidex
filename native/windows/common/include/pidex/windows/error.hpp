@@ -6,10 +6,22 @@
 
 namespace pidex::windows {
 
-enum class native_error_domain { win32, hresult, dns, configret, node_api };
+enum class native_error_domain {
+  win32,
+  hresult,
+  dns,
+  configret,
+  node_api,
+};
+
 enum class native_error_category {
-  invalid_identity, permission_denied, invalid_input, unavailable,
-  conflict, resource_exhausted, internal
+  invalid_identity,
+  permission_denied,
+  invalid_input,
+  unavailable,
+  conflict,
+  resource_exhausted,
+  internal,
 };
 
 struct native_error final {

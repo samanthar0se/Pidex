@@ -36,6 +36,19 @@
       }
     }
   ],
-  "compilerOptions": ["/permissive-", "/W4", "/WX", "/EHsc", "/utf-8", "/guard:cf", "/sdl"],
-  "linkerOptions": ["/WX", "/DYNAMICBASE", "/NXCOMPAT", "/CETCOMPAT"]
+  "compilerOptions": [
+    "/permissive-",
+    "/W4",
+    "/WX",
+    "/EHsc",
+    "/utf-8",
+    "/guard:cf",
+    "/sdl"
+  ],
+  "linkerOptions": [
+    "/WX",
+    "/DYNAMICBASE",
+    "/NXCOMPAT",
+    "/CETCOMPAT"
+  ]
 }
