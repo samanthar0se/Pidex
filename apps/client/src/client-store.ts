@@ -56,6 +56,16 @@ export interface NewSessionState extends NewSessionScope {
   progress: NewSessionProgress;
 }
 
+type ComposerRunAction = "steer" | "stop" | "release" | "cancel";
+type ComposerCommandTarget =
+  | { action: "submit" }
+  | { action: ComposerRunAction; runId: string };
+type ComposerCommand = ComposerCommandTarget & {
+  commandId: string;
+  phase: "pending" | "accepted-awaiting-projection" | "rejected" | "uncertain";
+  reason?: string;
+};
+
 export interface ClientAdapters {
   host: {
     readCatalog?(): Promise<DiscoveryProjection>;
@@ -108,8 +118,8 @@ export interface ClientState {
   setNewSessionDraft(value: string): Promise<void>;
   submitNewSession(createEmpty?: boolean): Promise<void>;
   setDraft(value: string): Promise<void>;
-  composerCommand?: { commandId: string; runId: string; action: "steer" | "stop" | "submit" | "release" | "cancel"; phase: "pending" | "accepted-awaiting-projection" | "rejected" | "uncertain"; reason?: string };
-  commandOutcomes: readonly NonNullable<ClientState["composerCommand"]>[];
+  composerCommand?: ComposerCommand;
+  commandOutcomes: readonly ComposerCommand[];
   submitComposer(): Promise<void>;
   actOnHeldRun(runId: string, action: "release" | "cancel"): Promise<void>;
   setSearchQuery(query: string): void;
@@ -248,23 +258,22 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const executing = state.runs[sessionId]?.find(run => run.state === "executing" && run.workerGeneration);
       const text = state.drafts[sessionId] ?? "";
       const id = commandId();
-      let action: "steer" | "stop" | "submit";
-      let targetRunId: string;
+      let target: ComposerCommandTarget;
       let result: CommandResult;
       if (executing && text.trim() && adapters.host.steerRun) {
-        action = "steer"; targetRunId = executing.runId;
-        set({ composerCommand: { commandId: id, runId: targetRunId, action, phase: "pending" } });
+        target = { action: "steer", runId: executing.runId };
+        set({ composerCommand: pendingCommand(id, target) });
         result = await adapters.host.steerRun({ commandId: id, sessionId, runId: executing.runId, workerGeneration: executing.workerGeneration!, observedTimelineRevision: session.timelineRevision, text });
       } else if (executing && !text.trim() && adapters.host.stopRun) {
-        action = "stop"; targetRunId = executing.runId;
-        set({ composerCommand: { commandId: id, runId: targetRunId, action, phase: "pending" } });
+        target = { action: "stop", runId: executing.runId };
+        set({ composerCommand: pendingCommand(id, target) });
         result = await adapters.host.stopRun({ commandId: id, sessionId, runId: executing.runId, workerGeneration: executing.workerGeneration!, observedState: "executing", observedTimelineRevision: session.timelineRevision });
       } else if (text.trim() && adapters.host.submitRun) {
-        action = "submit"; targetRunId = "awaiting-projection";
-        set({ composerCommand: { commandId: id, runId: targetRunId, action, phase: "pending" } });
+        target = { action: "submit" };
+        set({ composerCommand: pendingCommand(id, target) });
         result = await adapters.host.submitRun({ commandId: id, sessionId, prompt: text });
       } else return;
-      const outcome = commandState(id, targetRunId, action, result);
+      const outcome = commandState(id, target, result);
       set(current => ({ composerCommand: outcome, commandOutcomes: [...current.commandOutcomes, outcome] }));
       if (result.kind === "accepted" && text) await get().setDraft("");
     },
@@ -274,11 +283,13 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const run = sessionId ? state.runs[sessionId]?.find(item => item.runId === runId) : undefined;
       if (!sessionId || run?.state !== "held" || !adapters.host.actOnHeldRun) return;
       const id = commandId();
-      set({ composerCommand: { commandId: id, runId, action, phase: "pending" } });
+      const target = { action, runId };
+      set({ composerCommand: pendingCommand(id, target) });
       const result = await adapters.host.actOnHeldRun({ commandId: id, runId, action });
+      const outcome = commandState(id, target, result);
       set(current => ({
-        composerCommand: commandState(id, runId, action, result),
-        commandOutcomes: [...current.commandOutcomes, commandState(id, runId, action, result)],
+        composerCommand: outcome,
+        commandOutcomes: [...current.commandOutcomes, outcome],
         runs: result.kind === "accepted" ? { ...current.runs, [sessionId]: current.runs[sessionId]!.map(item => item.runId === runId ? { ...item, state: action === "release" ? "executing" : "cancelled" } : item) } : current.runs,
       }));
     },
@@ -346,14 +357,17 @@ function omit(items: Readonly<Record<string, SessionFact>>, id: string) {
   const next = { ...items }; delete next[id]; return next;
 }
 
+function pendingCommand(commandId: string, target: ComposerCommandTarget): ComposerCommand {
+  return { commandId, ...target, phase: "pending" };
+}
+
 function commandState(
   commandId: string,
-  runId: string,
-  action: "steer" | "stop" | "submit" | "release" | "cancel",
+  target: ComposerCommandTarget,
   result: CommandResult,
-): NonNullable<ClientState["composerCommand"]> {
-  if (result.kind === "accepted") return { commandId, runId, action, phase: "accepted-awaiting-projection" };
-  return { commandId, runId, action, phase: result.kind, reason: result.reason };
+): ComposerCommand {
+  if (result.kind === "accepted") return { commandId, ...target, phase: "accepted-awaiting-projection" };
+  return { commandId, ...target, phase: result.kind, reason: result.reason };
 }
 
 export function selectDiscoveryGroups(state: ClientState): DiscoveryGroup[] {

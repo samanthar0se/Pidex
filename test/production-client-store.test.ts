@@ -89,6 +89,33 @@ test("FX-COMP-02/03 FX-STATE-03/05 FX-RESP-05/06: Composer commands retain the e
   assert.equal(store.getState().runs["session-one"]?.find(run => run.runId === "run-held")?.state, "executing");
 });
 
+test("Composer submission records no Run identity until the Host projects one", async () => {
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "New work", metadataRevision: 1, timelineRevision: 3 },
+          timeline: [],
+          runs: [],
+        };
+      },
+      async submitRun() { return { kind: "accepted" }; },
+    },
+    drafts: { async read() { return "start this"; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "command-submit",
+  });
+
+  await store.getState().openSession("session-one");
+  await store.getState().submitComposer();
+
+  assert.deepEqual(store.getState().composerCommand, {
+    commandId: "command-submit",
+    action: "submit",
+    phase: "accepted-awaiting-projection",
+  });
+});
+
 test("FX-RESP-01/02/03: partial and uncertain creation outcomes preserve the exact draft and prevent replay", async () => {
   let creates = 0;
   let submissions = 0;

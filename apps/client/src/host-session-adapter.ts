@@ -131,23 +131,22 @@ function createSession(command: Parameters<NonNullable<ClientAdapters["host"]["c
 }
 
 function submitRun(command: Parameters<NonNullable<ClientAdapters["host"]["submitRun"]>>[0]): Promise<CommandResult> {
-  return new Promise(resolve => {
-    let settled = false; let close = () => {};
-    const finish = (result: CommandResult) => { if (settled) return; settled = true; close(); resolve(result); };
-    close = connect(socket => socket.send(JSON.stringify({ type: "run.submit", requiredCapability: "run.submit", ...command })), message => {
-      if (message.type !== "command.outcome" || message.commandId !== command.commandId) return;
-      finish(message.outcome === "rejected" ? { kind: "rejected", reason: message.error ?? "run-rejected" } : { kind: "accepted" });
-    }, () => finish({ kind: "uncertain", reason: "transport-lost" }));
-  });
+  return sendRunCommand(
+    { type: "run.submit", requiredCapability: "run.submit", ...command },
+    "run-rejected",
+  );
 }
 
-function runCommand(message: Record<string, unknown>): Promise<CommandResult> {
+function sendRunCommand(
+  message: Record<string, unknown> & { commandId: string },
+  rejectionReason = "command-rejected",
+): Promise<CommandResult> {
   return new Promise(resolve => {
     let settled = false; let close = () => {};
     const finish = (result: CommandResult) => { if (settled) return; settled = true; close(); resolve(result); };
     close = connect(socket => socket.send(JSON.stringify(message)), incoming => {
       if (incoming.type !== "command.outcome" || incoming.commandId !== message.commandId) return;
-      finish(incoming.outcome === "rejected" ? { kind: "rejected", reason: incoming.error ?? "command-rejected" } : { kind: "accepted" });
+      finish(incoming.outcome === "rejected" ? { kind: "rejected", reason: incoming.error ?? rejectionReason } : { kind: "accepted" });
     }, () => finish({ kind: "uncertain", reason: "transport-lost" }));
   });
 }
@@ -165,9 +164,9 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   restoreSession,
   createSession,
   submitRun,
-  steerRun: command => runCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
-  stopRun: command => runCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
-  actOnHeldRun: command => runCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
+  steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
+  stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
+  actOnHeldRun: command => sendRunCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
   watchSession(sessionId, listener) {
     const sessionListeners = listeners.get(sessionId) ?? new Set();
     sessionListeners.add(listener);
