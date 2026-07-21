@@ -4,6 +4,7 @@ import { parseResolvedLaunchManifest } from "../packages/launch-manifest/src/ind
 import {
   composePortableManifestHost,
   type ManifestHostFactories,
+  type PortableCompositionInputs,
 } from "../packages/host/src/daemon-composition.js";
 import { createCompleteManifestHostFactories } from "./manifest-host-factories.js";
 
@@ -40,15 +41,12 @@ function portableManifest() {
 }
 
 test("portable evidence uses the manifest composition root without claiming native containment or real profile access", async () => {
+  const inputs = portableInputs([
+    { target: "process", operation: "spawn", occurrence: 2 },
+  ]);
   const host = await composePortableManifestHost(portableManifest(), createCompleteManifestHostFactories(), {
     substitutedCapabilities: ["windows", "process"],
-    inputs: {
-      time: { now: 1_700_000_000_000 },
-      entropy: { seed: "portable-composition-seed" },
-      network: { mode: "disabled" },
-      storage: { root: `${portableFixtureRoot}\\fixture-storage` },
-      faults: [{ target: "process", operation: "spawn", occurrence: 2 }],
-    },
+    inputs,
   });
 
   assert.deepEqual(host.evidence, {
@@ -57,13 +55,7 @@ test("portable evidence uses the manifest composition root without claiming nati
     nativeContainment: "not-claimed",
     profileAccess: "synthetic-only",
     providerTraffic: "disabled",
-    inputs: {
-      time: { now: 1_700_000_000_000 },
-      entropy: { seed: "portable-composition-seed" },
-      network: { mode: "disabled" },
-      storage: { root: `${portableFixtureRoot}\\fixture-storage` },
-      faults: [{ target: "process", operation: "spawn", occurrence: 2 }],
-    },
+    inputs,
   });
   assert.equal(host.health.scope("pi-configuration").availability, "available");
   await host.close();
@@ -101,12 +93,26 @@ test("portable composition rejects implicit or ambient test behavior", async () 
   );
 });
 
-function portableInputs() {
+test("portable composition rejects fault targets outside its explicit input boundary", async () => {
+  await assert.rejects(
+    composePortableManifestHost(portableManifest(), createCompleteManifestHostFactories(), {
+      substitutedCapabilities: ["windows", "process"],
+      inputs: portableInputs([
+        { target: "provider", operation: "request", occurrence: 1 } as never,
+      ]),
+    }),
+    /portable composition fault inputs require a supported target/,
+  );
+});
+
+function portableInputs(
+  faults: PortableCompositionInputs["faults"] = [],
+): PortableCompositionInputs {
   return {
     time: { now: 1_700_000_000_000 },
     entropy: { seed: "portable-composition-seed" },
-    network: { mode: "disabled" as const },
+    network: { mode: "disabled" },
     storage: { root: `${portableFixtureRoot}\\fixture-storage` },
-    faults: [],
+    faults,
   };
 }

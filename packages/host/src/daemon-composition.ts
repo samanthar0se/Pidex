@@ -178,6 +178,15 @@ export interface PortableCompositionInputs {
   readonly faults: readonly PortableFaultInput[];
 }
 
+const PORTABLE_FAULT_TARGETS: ReadonlySet<PortableFaultInput["target"]> = new Set([
+  "time",
+  "entropy",
+  "network",
+  "storage",
+  "windows",
+  "process",
+]);
+
 export interface PortableManifestHost extends ManifestHost {
   readonly evidence: PortableCompositionEvidence;
 }
@@ -306,6 +315,9 @@ function validatePortableInputs(input: PortableCompositionInputs | undefined): P
     throw new Error("portable composition requires explicit time, entropy, network, storage, and fault inputs");
   }
   const faults = input.faults.map(fault => {
+    if (!PORTABLE_FAULT_TARGETS.has(fault.target)) {
+      throw new Error("portable composition fault inputs require a supported target");
+    }
     if (!fault.operation || !Number.isInteger(fault.occurrence) || fault.occurrence < 1) {
       throw new Error("portable composition fault inputs require an operation and positive occurrence");
     }
