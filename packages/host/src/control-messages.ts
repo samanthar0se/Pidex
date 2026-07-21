@@ -80,6 +80,14 @@ export interface ScopeSetMessage {
   protocolVersion: string;
 }
 
+export interface SessionMarkReadMessage {
+  type: "session.mark-read";
+  commandId: string;
+  sessionId: string;
+  presentedTimelineRevision: number;
+  requiredCapabilityBasis: [{ id: "session.read-state"; version: 1 }];
+}
+
 export interface RunQueueActionMessage {
   type: "run.release" | "run.cancel";
   commandId: string;
@@ -239,6 +247,25 @@ export function isSessionAvailabilityMessage(
     typeof value.commandId === "string" &&
     typeof value.sessionId === "string" &&
     isPositiveSafeInteger(value.observedMetadataRevision)
+  );
+}
+
+export function isSessionMarkReadMessage(
+  value: unknown,
+): value is SessionMarkReadMessage {
+  return (
+    isObject(value) &&
+    value.type === "session.mark-read" &&
+    typeof value.commandId === "string" &&
+    value.commandId.length > 0 &&
+    typeof value.sessionId === "string" &&
+    Number.isSafeInteger(value.presentedTimelineRevision) &&
+    Number(value.presentedTimelineRevision) >= 0 &&
+    Array.isArray(value.requiredCapabilityBasis) &&
+    value.requiredCapabilityBasis.length === 1 &&
+    isObject(value.requiredCapabilityBasis[0]) &&
+    value.requiredCapabilityBasis[0].id === "session.read-state" &&
+    value.requiredCapabilityBasis[0].version === 1
   );
 }
 

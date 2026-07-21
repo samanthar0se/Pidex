@@ -108,7 +108,7 @@ const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
 const sessionResidencyRowSchema = sessionSummarySchema.pick({ residency: true });
 const sessionAvailabilitySchema = z.enum(["available", "archived"]);
-const sessionRowSchema = sessionSummarySchema.extend({
+const sessionRowSchema = sessionSummarySchema.omit({ readState: true }).extend({
   availability: sessionAvailabilitySchema,
 });
 const forkPointSchema = z.object({
@@ -413,7 +413,8 @@ export class AuthorityStore {
     const sessions: SessionSummary[] = [];
     const archivedSessions: SessionSummary[] = [];
     for (const row of sessionRowSchema.array().parse(sessionRows)) {
-      const { availability, ...session } = row;
+      const { availability, ...storedSession } = row;
+      const session = withInitialReadState(storedSession);
       if (availability === "archived") {
         archivedSessions.push({ ...session, availability });
       } else {
@@ -447,6 +448,11 @@ export class AuthorityStore {
         residency: "sleeping",
         metadataRevision: 1,
         timelineRevision: 1,
+        readState: {
+          readThroughTimelineRevision: 1,
+          readStatus: "read",
+          readStateRevision: 1,
+        },
       };
       this.#db
         .prepare(
@@ -2245,7 +2251,8 @@ export class AuthorityStore {
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
-    const { availability, ...session } = sessionRowSchema.parse(row);
+    const { availability, ...storedSession } = sessionRowSchema.parse(row);
+    const session = withInitialReadState(storedSession);
     return availability === "archived"
       ? { ...session, availability }
       : session;
@@ -2588,6 +2595,19 @@ export class AuthorityStore {
   close(): void {
     this.#db.close();
   }
+}
+
+function withInitialReadState(
+  session: Omit<SessionSummary, "readState">,
+): SessionSummary {
+  return {
+    ...session,
+    readState: {
+      readThroughTimelineRevision: session.timelineRevision,
+      readStatus: "read",
+      readStateRevision: 1,
+    },
+  };
 }
 
 function blobObjectIdFromDigest(digest: string): string {

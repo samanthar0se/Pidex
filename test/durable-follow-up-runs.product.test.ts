@@ -48,6 +48,7 @@ test("durable follow-ups execute once in order and are held after an abnormal pr
     }
     const sessionChange = created.changes[0];
     assert.ok(sessionChange);
+    assert.ok(sessionChange.session);
     const sessionId = sessionChange.session.sessionId;
 
     const submit = (
@@ -82,7 +83,7 @@ test("durable follow-ups execute once in order and are held after an abnormal pr
     secondExecution.reject(new Error("failed two"));
     await nextControlMessage(socket);
 
-    socket.send(JSON.stringify({ type: "scope.set", sessionIds: [sessionId], protocolVersion: "1.1" }));
+    socket.send(JSON.stringify({ type: "scope.set", sessionIds: [sessionId], protocolVersion: "1.2" }));
     await nextControlMessage(socket); // host reset
     const scope = await nextControlMessage(socket);
     assert.equal(scope.type, "scope.reset");

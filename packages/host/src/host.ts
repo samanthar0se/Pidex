@@ -71,6 +71,7 @@ import {
   isSessionAvailabilityMessage,
   isSessionCreateMessage,
   isSessionForkMessage,
+  isSessionMarkReadMessage,
   isSessionRenameMessage,
   isSessionSleepMessage,
   isViewObserveMessage,
@@ -107,7 +108,7 @@ const FORCED_CANCELLATION_DETAIL =
 const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
-const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
+const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create", "session.read-state"];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
 const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
@@ -533,6 +534,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           void handleSessionSleep(webSocket, message);
         } else if (isSessionAvailabilityMessage(message)) {
           handleSessionAvailability(webSocket, message);
+        } else if (
+          typeof message === "object" && message !== null &&
+          "type" in message && message.type === "session.mark-read"
+        ) {
+          handleSessionMarkRead(webSocket, message);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
         } else if (isRunSteerMessage(message)) {
@@ -568,7 +574,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     const offered = hello.protocols
-      .filter(protocol => protocol.major === protocolMajor)
+      .filter(protocol =>
+        protocol.major === protocolMajor && protocol.minor === protocolMinor
+      )
       .sort((a, b) => b.minor - a.minor)[0];
     if (!offered) {
       sendProtocolUpdateRequired(client, currentStatus.hostId, "no-common-major");
@@ -578,9 +586,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const admittedCapabilities = hostCapabilities.filter(hostCapability =>
       hello.capabilities.some(clientCapability =>
         clientCapability.id === hostCapability.id &&
-        (clientCapability.minVersion ?? 1) <= hostCapability.version &&
-        (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >=
-          hostCapability.version,
+        (clientCapability.version === undefined
+          ? (clientCapability.minVersion ?? 1) <= hostCapability.version &&
+            (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >= hostCapability.version
+          : clientCapability.version === hostCapability.version),
       ),
     );
     const missingRequiredCapability = REQUIRED_CLIENT_CAPABILITIES.some(
@@ -602,7 +611,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       hostId: currentStatus.hostId,
       protocol: {
         major: protocolMajor,
-        minor: Math.min(protocolMinor, offered.minor),
+        minor: protocolMinor,
       },
       capabilities: admittedCapabilities.map(item => ({ ...item })),
     });
@@ -682,13 +691,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           scope: { kind: "host" },
           cursor: currentStatus.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
-            allSessions.map(session => [
-              session.sessionId,
-              session.metadataRevision,
+            allSessions.flatMap(session => [
+              [session.sessionId, session.metadataRevision],
+              [`readState:${session.sessionId}`, session.readState.readStateRevision],
             ]),
           ),
           protocolBasis: protocolVersion,
-          capabilities: ["session.create", "session.rename", "scope.session"],
+          capabilities: ["session.create", "session.rename", "scope.session", "session.read-state@1"],
         },
         snapshot: projection,
       });
@@ -728,9 +737,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           resourceRevisions: {
             metadata: session.metadataRevision,
             timeline: session.timelineRevision,
+            readState: session.readState.readStateRevision,
           },
           protocolBasis: protocolVersion,
-          capabilities: ["session.rename"],
+          capabilities: ["session.rename", "session.read-state@1"],
         },
         snapshot: {
           session,
@@ -1044,6 +1054,37 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sessionJobs.delete(sessionId);
     workers.delete(sessionId);
     workerGenerations.delete(sessionId);
+  }
+
+  function handleSessionMarkRead(client: WebSocket, value: unknown): void {
+    const commandId = typeof value === "object" && value !== null &&
+      "commandId" in value && typeof value.commandId === "string"
+      ? value.commandId
+      : "";
+    const command = isSessionMarkReadMessage(value) ? value : undefined;
+    const admittedBasis = admittedCapabilityBasisByClient.get(client);
+    if (
+      !command ||
+      !supportsCapabilityBasis(admittedBasis, command.requiredCapabilityBasis)
+    ) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId,
+        outcome: "rejected",
+        error: "required-capability-basis-unavailable",
+      });
+      return;
+    }
+
+    // Authority transitions are introduced by issue #129. The protocol seam
+    // still returns an authoritative rejection rather than fabricating state.
+    sendServerMessage(client, {
+      type: "command.outcome",
+      commandId: command.commandId,
+      outcome: "rejected",
+      error: "unknown-session",
+      reconciliationCursor: status().synchronization.cursor,
+    });
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {

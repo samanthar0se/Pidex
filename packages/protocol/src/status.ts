@@ -1,8 +1,8 @@
 import { z } from "zod";
 
-export const protocolVersion = "1.1";
+export const protocolVersion = "1.2";
 export const protocolMajor = 1;
-export const protocolMinor = 1;
+export const protocolMinor = 2;
 
 export const protocolCapabilities = [
   { id: "scope.host", version: 1 },
@@ -20,6 +20,7 @@ export const protocolCapabilities = [
   { id: "run.cancel", version: 1 },
   { id: "run.stop", version: 1 },
   { id: "durability.coverage", version: 1 },
+  { id: "session.read-state", version: 1 },
 ] as const;
 
 const protocolSchema = z.object({
@@ -143,6 +144,13 @@ export const workspaceSummarySchema = z.object({
   name: z.string(),
 });
 
+export const sessionReadStateSchema = z.strictObject({
+  readThroughTimelineRevision: z.number().int().nonnegative(),
+  readStatus: z.enum(["read", "unread"]),
+  readStateRevision: z.number().int().positive(),
+});
+export type SessionReadState = z.infer<typeof sessionReadStateSchema>;
+
 export const sessionSummarySchema = z.object({
   sessionId: z.string(),
   name: z.string(),
@@ -154,6 +162,7 @@ export const sessionSummarySchema = z.object({
   residency: z.enum(["sleeping", "resident"]),
   metadataRevision: z.number(),
   timelineRevision: z.number(),
+  readState: sessionReadStateSchema,
   parentSessionId: z.string().nullable().optional(),
   forkPointEntryId: z.string().nullable().optional(),
 });
@@ -280,6 +289,12 @@ const synchronizationBarrierSchema = z.object({
 });
 
 export const hostChangeSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("session.read-state-changed"),
+    sessionId: z.string(),
+    readState: sessionReadStateSchema,
+    session: z.never().optional(),
+  }),
   z.object({
     type: z.literal("session.created"),
     session: sessionSummarySchema,
@@ -417,6 +432,8 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     currentMetadataRevision: z.number().optional(),
     reconciliationCursor: z.string().optional(),
     runId: z.string().optional(),
+    effect: z.enum(["advanced", "no-op"]).optional(),
+    readState: sessionReadStateSchema.optional(),
   }),
   z.object({
     type: z.literal("run.completed"),

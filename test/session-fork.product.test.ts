@@ -177,7 +177,7 @@ test("fork command validates the runtime checkpoint and publishes the child sess
     if (created.type !== "host.change-set") {
       throw new Error("session not created");
     }
-    const parentSessionId = created.changes[0]?.session.sessionId;
+    const parentSessionId = created.changes[0]?.session?.sessionId;
     assert.ok(parentSessionId);
 
     socket.send(

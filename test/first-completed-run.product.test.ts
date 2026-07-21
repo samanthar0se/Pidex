@@ -28,7 +28,7 @@ test("an accepted prompt completes durably and its receipt survives a Host resta
       throw new Error("expected Session creation");
     }
 
-    const sessionId = change.changes[0]?.session.sessionId;
+    const sessionId = change.changes[0]?.session?.sessionId;
     assert.ok(sessionId);
     const submit = {
       type: "run.submit",
