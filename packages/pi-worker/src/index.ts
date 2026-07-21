@@ -8,7 +8,10 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSessionEvent,
+  ExtensionUIContext,
+} from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Duplex } from "node:stream";
 import type { PiTimelineEvent } from "../../adapters/src/index.js";
@@ -52,6 +55,7 @@ export class ExactPiChild {
   readonly #modelRuntime?: ModelRuntime;
   readonly #model?: Model<string>;
   #session?: Awaited<ReturnType<typeof createAgentSession>>["session"];
+  #uiContext?: ExtensionUIContext;
   #running = false;
   #disposed = false;
 
@@ -120,6 +124,13 @@ export class ExactPiChild {
     await this.#session.abort();
   }
 
+  async configureUI(uiContext: ExtensionUIContext): Promise<void> {
+    this.#uiContext = uiContext;
+    if (this.#session) {
+      await this.#session.bindExtensions({ uiContext, mode: "rpc" });
+    }
+  }
+
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -157,6 +168,9 @@ export class ExactPiChild {
       sessionManager: SessionManager.inMemory(cwd),
       noTools: "all",
     });
+    if (this.#uiContext) {
+      await session.bindExtensions({ uiContext: this.#uiContext, mode: "rpc" });
+    }
     this.#session = session;
     return this.#session;
   }
@@ -170,6 +184,7 @@ interface BoundPiChild {
   ): Promise<ExactPiRunResult>;
   steer(text: string): Promise<void>;
   stop(): Promise<void>;
+  configureUI?(uiContext: ExtensionUIContext): Promise<void> | void;
   dispose(): Promise<void>;
 }
 
@@ -191,6 +206,11 @@ export class ExactPiWorkerEndpoint {
   #execution?: Promise<void>;
   #activeCorrelationId?: string;
   #stopRequested = false;
+  #nextInteraction = 0;
+  readonly #interactions = new Map<string, {
+    kind: "select" | "confirm" | "input" | "editor";
+    resolve: (value: string | boolean | undefined) => void;
+  }>();
   #heartbeat?: NodeJS.Timeout;
   #closed = false;
 
@@ -215,6 +235,7 @@ export class ExactPiWorkerEndpoint {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#heartbeat) clearInterval(this.#heartbeat);
+    this.#withdrawInteractions();
     await this.#work;
     await this.#execution;
     await this.#child?.dispose();
@@ -234,6 +255,7 @@ export class ExactPiWorkerEndpoint {
         cwd: frame.cwd,
         agentDir: this.#options.agentDir,
       });
+      await this.#child.configureUI?.(this.#createUIContext());
       this.#send("ready", {
         readiness: {
           release: "ready",
@@ -246,6 +268,8 @@ export class ExactPiWorkerEndpoint {
           { id: "model.select", version: 1 },
           { id: "mode.select", version: 1 },
           { id: "checkpoint.durable", version: 1 },
+          { id: "interaction.basic", version: 1 },
+          { id: "presentation.effects", version: 1 },
         ],
       });
       const interval = this.#options.heartbeatIntervalMs ?? 10_000;
@@ -263,7 +287,21 @@ export class ExactPiWorkerEndpoint {
     if (frame.type === "stop") {
       this.#assertActiveRun(frame.correlationId);
       this.#stopRequested = true;
+      this.#withdrawInteractions();
       await this.#child!.stop();
+      return;
+    }
+    if (frame.type === "interaction.response") {
+      const pending = this.#interactions.get(frame.correlationId);
+      if (!pending) throw new Error("stale-interaction-correlation");
+      const value = frame.response.dismissed ? undefined : frame.response.value;
+      if (
+        (pending.kind === "confirm" && typeof value !== "boolean") ||
+        (pending.kind !== "confirm" && value !== undefined && typeof value !== "string")
+      ) throw new Error("invalid-interaction-response");
+      this.#interactions.delete(frame.correlationId);
+      pending.resolve(value);
+      this.#send("interaction.applied", { correlationId: frame.correlationId });
       return;
     }
     if (frame.type !== "execute") return;
@@ -302,6 +340,65 @@ export class ExactPiWorkerEndpoint {
     if (!this.#child || this.#activeCorrelationId !== correlationId) {
       throw new Error("stale-run-correlation");
     }
+  }
+
+  #createUIContext(): ExtensionUIContext {
+    const interaction = (
+      kind: "select" | "confirm" | "input" | "editor",
+      message: string,
+      body: Record<string, unknown> = {},
+    ) => {
+      if (!this.#activeCorrelationId) return Promise.reject(new Error("ui-outside-run"));
+      const correlationId = `interaction-${this.#nextInteraction++}`;
+      const result = new Promise<string | boolean | undefined>(resolve => {
+        this.#interactions.set(correlationId, { kind, resolve });
+      });
+      this.#send("interaction.request", {
+        correlationId,
+        runCorrelationId: this.#activeCorrelationId,
+        interaction: { kind, message, ...body },
+      });
+      return result;
+    };
+    const unsupportedBlocking = () => Promise.reject(new Error("unsupported-blocking-ui"));
+    return {
+      select: (title: string, options: string[]) => interaction("select", title, { options }) as Promise<string | undefined>,
+      confirm: (title: string, message: string) => interaction("confirm", `${title}\n${message}`) as Promise<boolean>,
+      input: (title: string, placeholder?: string) => interaction("input", title, {
+        ...(placeholder === undefined ? {} : { defaultValue: placeholder }),
+      }) as Promise<string | undefined>,
+      editor: (title: string, prefill?: string) => interaction("editor", title, {
+        ...(prefill === undefined ? {} : { defaultValue: prefill }),
+      }) as Promise<string | undefined>,
+      notify: (text: string, level: "info" | "warning" | "error" = "info") => this.#send("presentation", {
+        effect: { type: "notification", level, text },
+      }),
+      setStatus: (key: string, text?: string) => this.#send("presentation", {
+        effect: { type: "status", key, text: text ?? null },
+      }),
+      setWidget: (key: string, content: string[] | ((...args: never[]) => unknown) | undefined) => {
+        if (content !== undefined && !Array.isArray(content)) return;
+        this.#send("presentation", {
+          effect: { type: "widget", key, text: content?.join("\n") ?? null },
+        });
+      },
+      setTitle: (text: string) => this.#send("presentation", {
+        effect: { type: "title", text },
+      }),
+      setEditorText: (text: string) => this.#send("presentation", {
+        effect: { type: "editor-text", text },
+      }),
+      custom: unsupportedBlocking,
+      getEditorText: () => { throw new Error("unsupported-blocking-ui"); },
+      onTerminalInput: () => () => {},
+    } as unknown as ExtensionUIContext;
+  }
+
+  #withdrawInteractions(): void {
+    for (const pending of this.#interactions.values()) {
+      pending.resolve(pending.kind === "confirm" ? false : undefined);
+    }
+    this.#interactions.clear();
   }
 
   #send(type: WorkerFrame["type"], body: Record<string, unknown>): void {

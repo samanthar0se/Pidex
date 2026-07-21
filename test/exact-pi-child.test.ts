@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { PiTimelineEvent } from "../packages/adapters/src/index.js";
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
   ExactPiChild,
   ExactPiWorkerEndpoint,
@@ -160,6 +161,61 @@ test("the exact Pi child endpoint applies steering and Stop while a Run is execu
     "ready", "checkpoint", "outcome",
   ]);
   assert.equal((frames[2] as { outcome: string }).outcome, "cancelled");
+  await endpoint.close();
+  host.destroy();
+});
+
+test("the exact Pi endpoint brokers blocking extension UI and acknowledges application", async () => {
+  const [host, childStream] = duplexPair();
+  const identity = {
+    sessionId: "session-ui", workerId: "worker-ui", generation: 5,
+    protocolGeneration: 1,
+  } as const;
+  let ui: ExtensionUIContext | undefined;
+  const endpoint = new ExactPiWorkerEndpoint(childStream, identity, {
+    authenticationToken: "c".repeat(64),
+    bind: async () => ({
+      binding: { ...identity, cwd: "/canonical", agentDir: "/profile" },
+      configureUI: value => { ui = value; },
+      execute: async () => {
+        ui?.notify("Waiting for approval", "info");
+        assert.equal(await ui?.confirm("Deploy", "Continue?"), true);
+        return { text: "", checkpoint: "ui-cp" };
+      },
+      steer: async () => {}, stop: async () => {}, dispose: async () => {},
+    }),
+    agentDir: "/profile",
+  });
+  const output = readFrames(host, 6);
+  const firstOutput = readFrames(host, 3);
+  const send = (type: string, sequence: number, body: object) => host.write(
+    SessionWorkerTransport.frame({ ...identity, type, sequence, ...body }),
+  );
+  send("bootstrap", 0, {
+    authenticationToken: "c".repeat(64), releaseGeneration: "release-1",
+    configGeneration: "config-1", piGeneration: EXACT_PI_VERSION, cwd: "/canonical",
+  });
+  send("execute", 1, { correlationId: "run-ui", prompt: "deploy" });
+
+  const first = await firstOutput;
+  assert.deepEqual(
+    (first[0] as { capabilities: Array<{ id: string }> }).capabilities
+      .map(capability => capability.id),
+    ["run.execute", "input.text", "model.select", "mode.select", "checkpoint.durable", "interaction.basic", "presentation.effects"],
+  );
+  const request = first[2] as { correlationId: string; interaction: unknown };
+  assert.deepEqual(request.interaction, {
+    kind: "confirm", message: "Deploy\nContinue?",
+  });
+  send("interaction.response", 2, {
+    correlationId: request.correlationId,
+    response: { dismissed: false, value: true },
+  });
+
+  const frames = await output;
+  assert.deepEqual(frames.map(frame => (frame as { type: string }).type), [
+    "ready", "presentation", "interaction.request", "interaction.applied", "checkpoint", "outcome",
+  ]);
   await endpoint.close();
   host.destroy();
 });
