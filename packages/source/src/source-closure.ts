@@ -72,6 +72,7 @@ export interface SourceClosureEvidence {
   releaseId: string;
   closureSha256: string;
   roles: SourceClosureRole[];
+  launcherPath: string;
 }
 
 export function publishImmutableSourceClosure(options: {
@@ -135,6 +136,10 @@ function verifySourceClosure(directory: string, requireContentAddressedLocation:
     releaseId: manifest.releaseId,
     closureSha256: manifest.releaseId.slice("sha256-".length),
     roles: [...new Set(manifest.files.map(file => file.role))].sort(),
+    launcherPath: safePath(
+      directory,
+      manifest.files.find(file => file.role === "launcher")!.path,
+    ),
   };
 }
 
