@@ -26,13 +26,7 @@ interface Marker { schemaVersion: 1; instanceId: string }
 interface State { schemaVersion: 1; instanceId: string; owningSid: string }
 interface Selection { schemaVersion: 1; activeReleaseId: string; previousReleaseId?: string }
 
-export async function startSourceRelease(options: SelectSourceReleaseOptions): Promise<void> {
-  await selectAndStart(options);
-}
-
-export async function updateSourceRelease(options: SelectSourceReleaseOptions): Promise<void> {
-  await selectAndStart(options);
-}
+export { selectAndStart as startSourceRelease, selectAndStart as updateSourceRelease };
 
 export async function rollbackSourceRelease(options: SourceLaunchOptions): Promise<void> {
   const instance = resolvePreparedInstance(options);
