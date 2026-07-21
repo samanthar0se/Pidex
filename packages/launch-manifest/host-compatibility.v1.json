@@ -34,6 +34,10 @@
     }
   ],
   "piArtifactPaths": [
-    { "sourceGeneration": 1, "targetGeneration": 1, "converterArtifact": "maintenance" }
+    {
+      "sourceGeneration": 1,
+      "targetGeneration": 1,
+      "converterArtifact": "maintenance"
+    }
   ]
 }
