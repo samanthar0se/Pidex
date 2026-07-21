@@ -1,7 +1,8 @@
-#include "pidex/windows/network.hpp"
+#include "pidex/windows/private_network.hpp"
+
+#include "pidex/windows/raii.hpp"
 
 #include <Windows.h>
-#include <dnsapi.h>
 #include <iphlpapi.h>
 #include <netlistmgr.h>
 #include <ws2tcpip.h>
@@ -15,8 +16,21 @@
 namespace pidex::windows {
 namespace {
 
-// NLM is the profile authority. IP Helper supplies bounded address and interface
-// facts only after NLM has admitted the network as Private.
+class scoped_com_apartment final {
+ public:
+  scoped_com_apartment() : initialized_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
+  ~scoped_com_apartment() {
+    if (SUCCEEDED(initialized_)) CoUninitialize();
+  }
+
+  [[nodiscard]] bool available() const {
+    return SUCCEEDED(initialized_) || initialized_ == RPC_E_CHANGED_MODE;
+  }
+
+ private:
+  HRESULT initialized_;
+};
+
 bool is_private_network(INetwork* network) {
   NLM_NETWORK_CATEGORY category{};
   return SUCCEEDED(network->GetCategory(&category)) &&
@@ -99,6 +113,9 @@ std::vector<private_network_interface> enumerate_adapter_addresses(
 }  // namespace
 
 std::vector<private_network_interface> snapshot_private_interfaces() {
+  scoped_com_apartment apartment;
+  if (!apartment.available()) throw std::runtime_error("COM is unavailable");
+
   INetworkListManager* manager = nullptr;
   const HRESULT created = CoCreateInstance(CLSID_NetworkListManager, nullptr,
       CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&manager));
@@ -154,53 +171,15 @@ managed_network_observer::managed_network_observer(change_callback changed, faul
     CoUninitialize();
   });
 }
+
 managed_network_observer::~managed_network_observer() { close().wait(); }
+
 std::future<void> managed_network_observer::close() {
-  std::call_once(close_once_, [state = state_] {
+  return close_managed_resource_once(close_once_, [state = state_] {
     state->open = false;
     state->worker.request_stop();
     if (state->worker.joinable()) state->worker.join();
   });
-  return std::async(std::launch::deferred, [] {});
-}
-
-struct managed_dns_sd_advertisement::state {
-  std::atomic<bool> open{true};
-  fault_callback faulted;
-  std::vector<DNS_SERVICE_CANCEL> cancellations;
-  std::vector<DNS_SERVICE_REGISTER_REQUEST> requests;
-};
-
-managed_dns_sd_advertisement::managed_dns_sd_advertisement(
-    const dns_sd_record& record, fault_callback faulted)
-    : state_(std::make_shared<state>()) {
-  if (record.interfaces.empty() || record.interfaces.size() > 256 || record.text.size() > 16) {
-    throw std::invalid_argument("DNS-SD advertisement is outside bounds");
-  }
-  state_->faulted = std::move(faulted);
-  state_->cancellations.resize(record.interfaces.size());
-  state_->requests.resize(record.interfaces.size());
-  for (std::size_t index = 0; index < record.interfaces.size(); ++index) {
-    auto& request = state_->requests[index];
-    request.Version = DNS_QUERY_REQUEST_VERSION1;
-    // The addon retains the DNS_SERVICE_INSTANCE backing each request and sets
-    // dwInterfaceIndex from the Private-only snapshot before this call.
-    const DNS_STATUS status = DnsServiceRegister(&request, &state_->cancellations[index]);
-    if (status != DNS_REQUEST_PENDING && status != ERROR_SUCCESS) {
-      close().wait();
-      throw std::runtime_error("DNS-SD registration failed");
-    }
-  }
-}
-managed_dns_sd_advertisement::~managed_dns_sd_advertisement() { close().wait(); }
-std::future<void> managed_dns_sd_advertisement::close() {
-  std::call_once(close_once_, [state = state_] {
-    state->open = false;
-    for (std::size_t index = 0; index < state->requests.size(); ++index) {
-      DnsServiceDeRegister(&state->requests[index], &state->cancellations[index]);
-    }
-  });
-  return std::async(std::launch::deferred, [] {});
 }
 
 }  // namespace pidex::windows
