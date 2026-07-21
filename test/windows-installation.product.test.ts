@@ -208,26 +208,11 @@ test("launcher contains the daemon before readiness and closes its Job after rep
   });
 
   assert.equal(state.state, "circuit-open");
-  assert.deepEqual(events, [
-    "assigned",
-    "started",
-    "closed",
-    "assigned",
-    "started",
-    "closed",
-    "assigned",
-    "started",
-    "closed",
-    "assigned",
-    "started",
-    "closed",
-    "assigned",
-    "started",
-    "closed",
-    "assigned",
-    "started",
-    "closed",
-  ]);
+  const expectedEvents = Array.from(
+    { length: STARTUP_BACKOFF_MS.length + 1 },
+    () => ["assigned", "started", "closed"],
+  ).flat();
+  assert.deepEqual(events, expectedEvents);
 });
 
 test("each retry supervises one fresh daemon generation and tears it down before backoff", async () => {
@@ -262,17 +247,18 @@ test("each retry supervises one fresh daemon generation and tears it down before
   });
 
   assert.deepEqual(state, { state: "ready", attempts: 3 });
+  const failedGenerationEvents = [
+    { generation: 1, backoffMs: STARTUP_BACKOFF_MS[0] },
+    { generation: 2, backoffMs: STARTUP_BACKOFF_MS[1] },
+  ].flatMap(({ generation: failedGeneration, backoffMs }) => [
+    `created:${failedGeneration}`,
+    `assigned:${failedGeneration}`,
+    `started:${failedGeneration}`,
+    `closed:${failedGeneration}`,
+    `sleep:${backoffMs}`,
+  ]);
   assert.deepEqual(events, [
-    "created:1",
-    "assigned:1",
-    "started:1",
-    "closed:1",
-    "sleep:1000",
-    "created:2",
-    "assigned:2",
-    "started:2",
-    "closed:2",
-    "sleep:2000",
+    ...failedGenerationEvents,
     "created:3",
     "assigned:3",
     "started:3",
