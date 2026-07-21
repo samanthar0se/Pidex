@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   HostLifecycleError,
+  FORCE_LIFECYCLE_CONFIRMATION,
   PURGE_CONFIRMATION,
   coordinatePlannedLifecycle,
   coordinateWindowsShutdown,
@@ -26,7 +27,7 @@ function lifecycleHooks(
     reportRemainingWork: work => {
       events.push(`remaining:${work.length}`);
     },
-    stopAffectedSessions: () => {
+    forceStopAffectedSessions: () => {
       events.push("durable-stop");
     },
     flushAndStopWorkers: () => {
@@ -58,6 +59,7 @@ test("explicit force durably stops Sessions before worker Job closure", async ()
   await coordinatePlannedLifecycle({
     operation: "restart",
     force: true,
+    forceConfirmation: FORCE_LIFECYCLE_CONFIRMATION,
     hooks: lifecycleHooks(events, () => true),
   });
   assert.deepEqual(events, [
@@ -68,6 +70,20 @@ test("explicit force durably stops Sessions before worker Job closure", async ()
     "restart",
     "resume",
   ]);
+});
+
+test("force is a separately confirmed lifecycle operation", async () => {
+  const events: string[] = [];
+  await assert.rejects(
+    coordinatePlannedLifecycle({
+      operation: "stop",
+      force: true,
+      hooks: lifecycleHooks(events, () => true),
+    }),
+    (error: unknown) =>
+      error instanceof HostLifecycleError && error.code === "force-not-confirmed",
+  );
+  assert.deepEqual(events, []);
 });
 
 test("normal uninstall removes product bytes but preserves same-user durable data", async () => {
