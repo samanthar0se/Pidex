@@ -807,7 +807,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         snapshot: {
           session,
           timelineWindow: store.timelineWindow(sessionId),
-          runs: store.runs(sessionId),
+          runs: store.runs(sessionId).map(run =>
+            run.state === "executing" || run.state === "cancelling"
+              ? { ...run, workerGeneration: workerGenerations.get(sessionId) }
+              : run,
+          ),
           interactions: store.interactions(sessionId),
         },
       });
