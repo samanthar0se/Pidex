@@ -122,3 +122,30 @@ test("a managed process cannot run before its fresh kill-on-close Job contains i
   assert.match(processSource, /terminate_partial_process/);
   assert.match(processSource, /std::call_once/);
 });
+
+test("the per-instance pipe rejects squatting, remote access, and unauthenticated tokens", async () => {
+  const [cmake, pipeSource] = await Promise.all([
+    readNativeFile("common/CMakeLists.txt"),
+    readNativeFile("common/src/local_pipe.cpp"),
+  ]);
+  assert.match(cmake, /local_pipe\.cpp/);
+  assert.match(pipeSource, /FILE_FLAG_FIRST_PIPE_INSTANCE/);
+  assert.match(pipeSource, /PIPE_REJECT_REMOTE_CLIENTS/);
+  assert.match(pipeSource, /ImpersonateNamedPipeClient/);
+  assert.match(pipeSource, /OpenThreadToken/);
+  assert.match(pipeSource, /validate_owning_token/);
+  assert.match(pipeSource, /GetNamedPipeClientProcessId/);
+  assert.ok(
+    pipeSource.indexOf("validate_owning_token") <
+      pipeSource.indexOf("peer.process_id = process_id"),
+  );
+});
+
+test("the per-instance pipe reports a failed impersonation revert before token errors", async () => {
+  const pipeSource = await readNativeFile("common/src/local_pipe.cpp");
+
+  assert.ok(
+    pipeSource.indexOf("if (!reverted)") <
+      pipeSource.indexOf("if (!opened)"),
+  );
+});

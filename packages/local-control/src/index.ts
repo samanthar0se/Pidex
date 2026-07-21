@@ -1,5 +1,22 @@
 import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import { canonicalJson } from "./canonical-json.js";
+import {
+  identifierSchema,
+  protocolSchema,
+  roleSchema,
+  type LocalControlRole,
+} from "./contract-schemas.js";
+
+export {
+  type ChildBootstrapIdentity,
+  OneUseChildBootstrap,
+} from "./child-bootstrap.js";
+export type { LocalControlRole } from "./contract-schemas.js";
+export {
+  LocalControlAdmission,
+  type LocalPeerEvidence,
+} from "./peer-admission.js";
 
 export const LOCAL_CONTROL_LIMITS = Object.freeze({
   frameBytes: 1_048_576,
@@ -8,11 +25,7 @@ export const LOCAL_CONTROL_LIMITS = Object.freeze({
   inFlightRequests: 64,
 });
 
-const identifierSchema = z.string().min(1).max(200);
-const protocolSchema = z.literal("pidex-local-control-v1");
 const hex256BitSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const roleSchema = z.enum(["cli", "launcher", "daemon", "maintenance"]);
-export type LocalControlRole = z.infer<typeof roleSchema>;
 
 export const compatibilitySchema = z.strictObject({
   generation: z.number().int().nonnegative(),
@@ -294,19 +307,6 @@ function enforceValueBounds(value: unknown): void {
       enforceValueBounds(child);
     }
   }
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const properties = Object.entries(value)
-      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`);
-    return `{${properties.join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function calculateFrameMac(

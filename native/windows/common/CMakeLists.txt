@@ -1,6 +1,7 @@
 add_library(pidex_windows_common STATIC
   src/error.cpp
   src/identity.cpp
+  src/local_pipe.cpp
   src/process.cpp
 )
 
