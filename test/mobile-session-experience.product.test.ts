@@ -54,6 +54,10 @@ test("supported mobile browsers and standalone PWAs expose the routable Session 
     visibilityEnd,
   );
   assert.match(visibilityHandler, /sendScopeSet\(selectedSessionId\)/);
-  assert.match(visibilityHandler, /authenticateStoredDevice\(\)/);
+  assert.match(visibilityHandler, /reconnectNow\(\)/);
   assert.match(visibilityHandler, /closeControlSocket\(\)/);
+  assert.match(
+    application,
+    /function reconnectNow[\s\S]*?authenticateStoredDevice\(\);\s*}/,
+  );
 });
