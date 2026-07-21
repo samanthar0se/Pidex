@@ -175,16 +175,11 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
           adapters.preferences?.readExpandedProjects() ?? Promise.resolve([]),
         ]);
         set({
-          projects: catalog.projects,
-          sessions: byId(catalog.sessions), sessionOrder: catalog.sessions.map(item => item.sessionId),
-          archivedSessions: byId(catalog.archivedSessions), archivedOrder: catalog.archivedSessions.map(item => item.sessionId),
+          ...discoveryStateFrom(catalog),
           expandedProjectIds: expanded,
         });
       } catch (error) {
-        set(state => ({ authority: {
-          ...state.authority, status: "offline",
-          reason: error instanceof Error ? error.message : "Host unavailable",
-        } }));
+        set(state => ({ authority: offlineAuthority(state.authority, error) }));
       }
     },
     async openNewSession(scope = {}) {
@@ -254,7 +249,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         const localDraft = await adapters.drafts.read(sessionId).catch(() => get().drafts[sessionId] ?? "");
         if (get().selectedSessionId === sessionId) set(state => ({
           drafts: { ...state.drafts, [sessionId]: localDraft },
-          authority: { ...state.authority, status: "offline", reason: error instanceof Error ? error.message : "Host unavailable" },
+          authority: offlineAuthority(state.authority, error),
           isSessionCurrent: false,
         }));
         return;
@@ -459,11 +454,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         for (const [, intent] of uncertainInteractions) reconciled.set(intent.commandId, await adapters.host.reconcileCommand!(intent.commandId));
         const synchronizedAt = new Date().toISOString();
         set(state => ({
-          ...(catalog ? {
-            projects: catalog.projects,
-            sessions: byId(catalog.sessions), sessionOrder: catalog.sessions.map(item => item.sessionId),
-            archivedSessions: byId(catalog.archivedSessions), archivedOrder: catalog.archivedSessions.map(item => item.sessionId),
-          } : {}),
+          ...(catalog ? discoveryStateFrom(catalog) : {}),
           ...(sessionId && projection ? {
             sessions: { ...(catalog ? byId(catalog.sessions) : state.sessions), [sessionId]: projection.session },
             timelines: { ...state.timelines, [sessionId]: projection.timeline },
@@ -489,7 +480,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         }));
       } catch (error) {
         set({
-          authority: { ...before, status: "offline", reason: error instanceof Error ? error.message : "Host unavailable" },
+          authority: offlineAuthority(before, error),
           isSessionCurrent: false,
         });
       }
@@ -508,6 +499,24 @@ function compareTimelineEntries(left: TimelineFact, right: TimelineFact): number
 
 function activeInteractions(interactions: readonly InteractionFact[]): InteractionFact[] {
   return interactions.filter(item => item.state === "open" || item.state === "resolving");
+}
+
+function discoveryStateFrom(catalog: DiscoveryProjection) {
+  return {
+    projects: catalog.projects,
+    sessions: byId(catalog.sessions),
+    sessionOrder: catalog.sessions.map(item => item.sessionId),
+    archivedSessions: byId(catalog.archivedSessions),
+    archivedOrder: catalog.archivedSessions.map(item => item.sessionId),
+  };
+}
+
+function offlineAuthority(authority: AuthorityState, error: unknown): AuthorityState {
+  return {
+    ...authority,
+    status: "offline",
+    reason: error instanceof Error ? error.message : "Host unavailable",
+  };
 }
 
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }
