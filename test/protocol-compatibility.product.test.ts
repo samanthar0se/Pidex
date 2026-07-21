@@ -17,7 +17,7 @@ function socket(origin: string): WebSocket {
 }
 
 test(
-  "protocol negotiation binds Host identity, admits minor extensions, and fails closed for incompatible Clients",
+  "protocol negotiation binds Host identity, admits exact protocol 1.2, and fails closed for incompatible Clients",
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-protocol-"));
     const host = await startHost({
@@ -37,7 +37,7 @@ test(
       compatible.send(JSON.stringify({
         type: "client.hello",
         expectedHostId: offer.hostId,
-        protocols: [{ major: 1, minor: 99 }],
+        protocols: [{ major: 1, minor: 2 }],
         capabilities: offer.capabilities.map(item => ({
           id: item.id,
           minVersion: item.version,
@@ -47,7 +47,7 @@ test(
       const admitted = await nextControlMessage(compatible);
       assert.deepEqual(
         admitted.type === "protocol.admitted" && admitted.protocol,
-        { major: 1, minor: 1 },
+        { major: 1, minor: 2 },
       );
       assert.equal(
         (await nextControlMessage(compatible)).type,
@@ -158,7 +158,7 @@ test(
       client.send(JSON.stringify({
         type: "client.hello",
         expectedHostId: offer.hostId,
-        protocols: [{ major: 1, minor: 1 }],
+        protocols: [{ major: 1, minor: 2 }],
         capabilities: offer.capabilities.map(item => ({
           id: item.id,
           minVersion: item.version,

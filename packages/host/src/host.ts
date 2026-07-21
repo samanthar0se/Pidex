@@ -20,6 +20,8 @@ import {
   protocolMajor,
   protocolMinor,
   protocolVersion,
+  sessionReadStateCapability,
+  sessionReadStateCapabilityKey,
   type ClientHello,
   type DurabilityCoverage,
   type HostStatus,
@@ -74,8 +76,10 @@ import {
   isSessionRenameMessage,
   isSessionSleepMessage,
   isViewObserveMessage,
+  parseSessionMarkReadMessage,
   supportsCapabilityBasis,
   type InteractionResolveMessage,
+  type ParsedSessionMarkReadMessage,
   type RunQueueActionMessage,
   type RunSteerMessage,
   type RunStopMessage,
@@ -107,7 +111,11 @@ const FORCED_CANCELLATION_DETAIL =
 const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
-const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create"];
+const REQUIRED_CLIENT_CAPABILITIES = [
+  "scope.host",
+  "session.create",
+  sessionReadStateCapability.id,
+];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
 const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
@@ -518,6 +526,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     webSocket.on("message", bytes => {
       try {
         const message: unknown = JSON.parse(bytes.toString());
+        const markReadMessage = parseSessionMarkReadMessage(message);
         if (!admittedClients.has(webSocket)) {
           const hello = clientHelloSchema.safeParse(message);
           if (hello.success) negotiate(webSocket, hello.data);
@@ -533,6 +542,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           void handleSessionSleep(webSocket, message);
         } else if (isSessionAvailabilityMessage(message)) {
           handleSessionAvailability(webSocket, message);
+        } else if (markReadMessage) {
+          handleSessionMarkRead(webSocket, markReadMessage);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
         } else if (isRunSteerMessage(message)) {
@@ -568,7 +579,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     const offered = hello.protocols
-      .filter(protocol => protocol.major === protocolMajor)
+      .filter(protocol =>
+        protocol.major === protocolMajor && protocol.minor === protocolMinor
+      )
       .sort((a, b) => b.minor - a.minor)[0];
     if (!offered) {
       sendProtocolUpdateRequired(client, currentStatus.hostId, "no-common-major");
@@ -578,9 +591,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const admittedCapabilities = hostCapabilities.filter(hostCapability =>
       hello.capabilities.some(clientCapability =>
         clientCapability.id === hostCapability.id &&
-        (clientCapability.minVersion ?? 1) <= hostCapability.version &&
-        (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >=
-          hostCapability.version,
+        (clientCapability.version === undefined
+          ? (clientCapability.minVersion ?? 1) <= hostCapability.version &&
+            (clientCapability.maxVersion ?? Number.MAX_SAFE_INTEGER) >= hostCapability.version
+          : clientCapability.version === hostCapability.version),
       ),
     );
     const missingRequiredCapability = REQUIRED_CLIENT_CAPABILITIES.some(
@@ -602,7 +616,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       hostId: currentStatus.hostId,
       protocol: {
         major: protocolMajor,
-        minor: Math.min(protocolMinor, offered.minor),
+        minor: protocolMinor,
       },
       capabilities: admittedCapabilities.map(item => ({ ...item })),
     });
@@ -682,13 +696,18 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           scope: { kind: "host" },
           cursor: currentStatus.synchronization.cursor,
           resourceRevisions: Object.fromEntries(
-            allSessions.map(session => [
-              session.sessionId,
-              session.metadataRevision,
+            allSessions.flatMap(session => [
+              [session.sessionId, session.metadataRevision],
+              [`readState:${session.sessionId}`, session.readState.readStateRevision],
             ]),
           ),
           protocolBasis: protocolVersion,
-          capabilities: ["session.create", "session.rename", "scope.session"],
+          capabilities: [
+            "session.create",
+            "session.rename",
+            "scope.session",
+            sessionReadStateCapabilityKey,
+          ],
         },
         snapshot: projection,
       });
@@ -728,9 +747,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           resourceRevisions: {
             metadata: session.metadataRevision,
             timeline: session.timelineRevision,
+            readState: session.readState.readStateRevision,
           },
           protocolBasis: protocolVersion,
-          capabilities: ["session.rename"],
+          capabilities: ["session.rename", sessionReadStateCapabilityKey],
         },
         snapshot: {
           session,
@@ -1044,6 +1064,36 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sessionJobs.delete(sessionId);
     workers.delete(sessionId);
     workerGenerations.delete(sessionId);
+  }
+
+  function handleSessionMarkRead(
+    client: WebSocket,
+    message: ParsedSessionMarkReadMessage,
+  ): void {
+    const { command, commandId } = message;
+    const admittedBasis = admittedCapabilityBasisByClient.get(client);
+    if (
+      !command ||
+      !supportsCapabilityBasis(admittedBasis, command.requiredCapabilityBasis)
+    ) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId,
+        outcome: "rejected",
+        error: "required-capability-basis-unavailable",
+      });
+      return;
+    }
+
+    // Authority transitions are introduced by issue #129. The protocol seam
+    // still returns an authoritative rejection rather than fabricating state.
+    sendServerMessage(client, {
+      type: "command.outcome",
+      commandId: command.commandId,
+      outcome: "rejected",
+      error: "unknown-session",
+      reconciliationCursor: status().synchronization.cursor,
+    });
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {

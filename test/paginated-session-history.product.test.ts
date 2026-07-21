@@ -79,6 +79,7 @@ test("returns bounded Session windows, pages stable finalized history, and verif
     if (created.type !== "host.change-set") return;
     const [sessionChange] = created.changes;
     assert.ok(sessionChange);
+    assert.ok(sessionChange.session);
     const sessionId = sessionChange.session.sessionId;
     socket.send(
       JSON.stringify({

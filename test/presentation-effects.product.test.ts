@@ -88,7 +88,7 @@ test(
       if (changeSet.type !== "host.change-set") {
         throw new Error("expected Session creation");
       }
-      const sessionId = changeSet.changes[0]?.session.sessionId;
+      const sessionId = changeSet.changes[0]?.session?.sessionId;
       assert.ok(sessionId);
 
       await Promise.all([

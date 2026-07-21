@@ -110,6 +110,11 @@ test("scoped empty Sessions reject atomically, publish typed changes, and surviv
       residency: "sleeping",
       metadataRevision: 1,
       timelineRevision: 1,
+      readState: {
+        readThroughTimelineRevision: 1,
+        readStatus: "read",
+        readStateRevision: 1,
+      },
     });
     first.socket.close();
     await host.close();

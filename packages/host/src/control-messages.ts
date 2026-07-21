@@ -1,3 +1,4 @@
+import { sessionReadStateCapability } from "../../protocol/src/status.js";
 import type {
   SteerCommand,
   StopCommand,
@@ -78,6 +79,19 @@ export interface ScopeSetMessage {
   cursor?: string;
   resourceRevisions?: Record<string, number>;
   protocolVersion: string;
+}
+
+export interface SessionMarkReadMessage {
+  type: "session.mark-read";
+  commandId: string;
+  sessionId: string;
+  presentedTimelineRevision: number;
+  requiredCapabilityBasis: [typeof sessionReadStateCapability];
+}
+
+export interface ParsedSessionMarkReadMessage {
+  commandId: string;
+  command?: SessionMarkReadMessage;
 }
 
 export interface RunQueueActionMessage {
@@ -239,6 +253,39 @@ export function isSessionAvailabilityMessage(
     typeof value.commandId === "string" &&
     typeof value.sessionId === "string" &&
     isPositiveSafeInteger(value.observedMetadataRevision)
+  );
+}
+
+export function parseSessionMarkReadMessage(
+  value: unknown,
+): ParsedSessionMarkReadMessage | undefined {
+  if (!isObject(value) || value.type !== "session.mark-read") {
+    return undefined;
+  }
+
+  return {
+    commandId: typeof value.commandId === "string" ? value.commandId : "",
+    command: isSessionMarkReadMessage(value) ? value : undefined,
+  };
+}
+
+function isSessionMarkReadMessage(
+  value: unknown,
+): value is SessionMarkReadMessage {
+  return (
+    isObject(value) &&
+    value.type === "session.mark-read" &&
+    typeof value.commandId === "string" &&
+    value.commandId.length > 0 &&
+    typeof value.sessionId === "string" &&
+    Number.isSafeInteger(value.presentedTimelineRevision) &&
+    Number(value.presentedTimelineRevision) >= 0 &&
+    Array.isArray(value.requiredCapabilityBasis) &&
+    value.requiredCapabilityBasis.length === 1 &&
+    isObject(value.requiredCapabilityBasis[0]) &&
+    value.requiredCapabilityBasis[0].id === sessionReadStateCapability.id &&
+    value.requiredCapabilityBasis[0].version ===
+      sessionReadStateCapability.version
   );
 }
 
