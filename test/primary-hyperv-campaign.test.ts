@@ -21,7 +21,11 @@ const candidate = {
   },
 };
 
-function scenarios(persistenceStateOracle: "passed" | "failed", hardPowerOff: "passed" | "failed"): ElevatedWindowsVmScenario[] {
+function scenarios(
+  persistenceStateOracle: "passed" | "failed",
+  hardPowerOff: "passed" | "failed",
+  hardPowerOffAttempt = 1,
+): ElevatedWindowsVmScenario[] {
   return (Object.keys(requiredChecks) as ElevatedWindowsVmScenario["name"][]).map(name => ({
     name,
     async run(context) {
@@ -38,7 +42,7 @@ function scenarios(persistenceStateOracle: "passed" | "failed", hardPowerOff: "p
         primaryCampaign: {
           persistenceStateOracle,
           deterministicFaultRecoveryCampaign: "passed" as const,
-          hardPowerOff: { status: hardPowerOff, advisory: true as const, attempt: 1 },
+          hardPowerOff: { status: hardPowerOff, advisory: true as const, attempt: hardPowerOffAttempt },
         },
       };
     },
@@ -60,4 +64,11 @@ test("primary Hyper-V campaign blocks persistence failures while hard-power-off 
   assert.equal(advisoryFailure.status, "passed");
   assert.equal(advisoryFailure.lanes[0]!.scenarios.at(-1)!.hardPowerOff?.status, "failed");
   assert.equal(advisoryFailure.lanes[0]!.scenarios.at(-1)!.hardPowerOff?.advisory, true);
+});
+
+test("primary Hyper-V campaign rejects hard-power-off evidence from a later attempt", async () => {
+  const laterAttempt = await new ElevatedWindowsVmCampaign(candidate, scenarios("passed", "passed", 2)).run(input);
+
+  assert.equal(laterAttempt.status, "failed");
+  assert.match(laterAttempt.lanes[0]!.scenarios.at(-1)!.failure ?? "", /first-attempt/);
 });

@@ -316,8 +316,8 @@ function assertPrimaryCampaign(campaign: PrimaryHyperVCampaignObservation | unde
   if (campaign.deterministicFaultRecoveryCampaign !== "passed") {
     throw new Error("blocking deterministic fault/recovery campaign did not pass");
   }
-  if (campaign.hardPowerOff.advisory !== true || !Number.isInteger(campaign.hardPowerOff.attempt) || campaign.hardPowerOff.attempt < 1) {
-    throw new Error("hard-power-off evidence must preserve a numbered advisory attempt");
+  if (campaign.hardPowerOff.advisory !== true || campaign.hardPowerOff.attempt !== 1) {
+    throw new Error("hard-power-off evidence must preserve first-attempt advisory evidence");
   }
 }
 
