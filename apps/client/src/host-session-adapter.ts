@@ -1,6 +1,8 @@
-import type { ClientAdapters, SessionProjection } from "./client-store.js";
+import type { ClientAdapters, SessionProjection, TimelineChange } from "./client-store.js";
 
 const capabilities = ["scope.host", "scope.session", "session.create", "session.read-state"];
+const sockets = new Map<string, WebSocket>();
+const listeners = new Map<string, Set<(change: TimelineChange) => void>>();
 
 function readSession(sessionId: string): Promise<SessionProjection> {
   return new Promise((resolve, reject) => {
@@ -29,14 +31,41 @@ function readSession(sessionId: string): Promise<SessionProjection> {
         }));
       } else if (message.type === "scope.reset" && message.barrier?.scope?.kind === "session") {
         window.clearTimeout(timeout);
-        socket.close();
+        sockets.set(sessionId, socket);
         resolve({
           session: message.snapshot.session,
           timeline: message.snapshot.timelineWindow.entries,
+          olderCursor: message.snapshot.timelineWindow.olderCursor,
         });
+      } else if (message.type === "timeline.change" && message.sessionId === sessionId) {
+        listeners.get(sessionId)?.forEach(listener => listener(message));
       }
     };
   });
 }
 
-export const hostSessionAdapter: ClientAdapters["host"] = { readSession };
+export const hostSessionAdapter: ClientAdapters["host"] = {
+  readSession,
+  watchSession(sessionId, listener) {
+    const sessionListeners = listeners.get(sessionId) ?? new Set();
+    sessionListeners.add(listener);
+    listeners.set(sessionId, sessionListeners);
+    return () => sessionListeners.delete(listener);
+  },
+  async readOlder(sessionId, cursor) {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/timeline?cursor=${encodeURIComponent(cursor)}&limit=100`);
+    if (!response.ok) throw new Error(`Timeline history unavailable (${response.status})`);
+    return await response.json();
+  },
+  async markRead(sessionId, timelineRevision) {
+    const socket = sockets.get(sessionId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+      type: "session.mark-read",
+      commandId: crypto.randomUUID(),
+      sessionId,
+      presentedTimelineRevision: timelineRevision,
+      requiredCapabilityBasis: [{ id: "session.read-state", version: 1 }],
+    }));
+  },
+};

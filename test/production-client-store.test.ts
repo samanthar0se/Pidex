@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createClientStore,
   selectCurrentSession,
+  selectCurrentTimeline,
   selectDraft,
 } from "../apps/client/src/client-store.js";
 
@@ -43,4 +44,45 @@ test("the Client resumes a routed Session from current Host facts and a Device d
   await store.getState().setDraft("edited on this Device");
   assert.equal(drafts.get("session_one"), "edited on this Device");
   assert.equal(selectCurrentSession(store.getState())?.metadataRevision, 7);
+});
+
+test("FX-TL-04/05 FX-STATE-02/04: live facts reconcile by identity and older pages prepend", async () => {
+  let publish: ((change: any) => void) | undefined;
+  const readThrough: number[] = [];
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "Work", metadataRevision: 1, timelineRevision: 4 },
+          timeline: [
+            { entryId: "work", runId: "run", order: 2, kind: "assistant", text: "hel", revision: 1, finalized: false },
+            { entryId: "answer", runId: "run", order: 3, kind: "response", text: "done", revision: 1, finalized: true },
+          ],
+          olderCursor: "before-2",
+        };
+      },
+      watchSession(_sessionId, listener) { publish = listener; return () => { publish = undefined; }; },
+      async readOlder(_sessionId, cursor) {
+        assert.equal(cursor, "before-2");
+        return {
+          entries: [{ entryId: "prompt", runId: "run", order: 1, kind: "prompt", text: "fix it", revision: 1, finalized: true }],
+          olderCursor: null,
+        };
+      },
+      async markRead(_sessionId, revision) { readThrough.push(revision); },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  await store.getState().openSession("session");
+  publish?.({ baseRevision: 4, revision: 5, entry: { entryId: "work", runId: "run", order: 2, kind: "assistant", text: "hello", revision: 2, finalized: true } });
+  publish?.({ baseRevision: 5, revision: 6, entry: { entryId: "answer", runId: "run", order: 3, kind: "response", text: "rewritten", revision: 2, finalized: true } });
+  publish?.({ baseRevision: 6, revision: 7, entry: { entryId: "correction", runId: "run", order: 4, kind: "lifecycle", text: "Recovery preserved the final answer", revision: 1, finalized: true } });
+  assert.deepEqual(selectCurrentTimeline(store.getState()).map(entry => entry.text), ["hello", "done", "Recovery preserved the final answer"]);
+
+  await store.getState().loadOlder();
+  assert.deepEqual(selectCurrentTimeline(store.getState()).map(entry => entry.entryId), ["prompt", "work", "answer", "correction"]);
+  await store.getState().presentTail();
+  assert.deepEqual(readThrough, [7]);
 });
