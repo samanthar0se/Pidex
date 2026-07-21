@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseResolvedLaunchManifest } from "../packages/launch-manifest/src/index.js";
-import { composeManifestHost } from "../packages/host/src/daemon-composition.js";
+import {
+  composeManifestHost,
+  type ManifestHostFactories,
+} from "../packages/host/src/daemon-composition.js";
 
 const hash = "a".repeat(64);
 const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
@@ -31,17 +34,40 @@ function manifest() {
   });
 }
 
+function recordingFactories(
+  calls: string[],
+  authorityMode: "normal" | "recovery-only",
+): ManifestHostFactories {
+  const owner = () => ({ close: async () => {} });
+  return {
+    proveLauncherContainment: async () => { calls.push("containment"); },
+    openAuthenticatedLocalControl: async () => {
+      calls.push("control");
+      return owner();
+    },
+    verifyReleaseAndNativeIdentity: async () => { calls.push("release"); },
+    openAuthority: async () => {
+      calls.push("authority");
+      return { mode: authorityMode, ...owner() };
+    },
+    probePi: async () => { calls.push("pi"); },
+    openLan: async () => {
+      calls.push("lan");
+      return owner();
+    },
+    openRunAdmission: async () => {
+      calls.push("runs");
+      return owner();
+    },
+  };
+}
+
 test("manifest Host proves containment and local control before opening Authority or product edges", async () => {
   const calls: string[] = [];
-  const host = await composeManifestHost(manifest(), {
-    proveLauncherContainment: async () => { calls.push("containment"); },
-    openAuthenticatedLocalControl: async () => { calls.push("control"); return { close: async () => {} }; },
-    verifyReleaseAndNativeIdentity: async () => { calls.push("release"); },
-    openAuthority: async () => { calls.push("authority"); return { mode: "normal", close: async () => {} }; },
-    probePi: async () => { calls.push("pi"); },
-    openLan: async () => { calls.push("lan"); return { close: async () => {} }; },
-    openRunAdmission: async () => { calls.push("runs"); return { close: async () => {} }; },
-  });
+  const host = await composeManifestHost(
+    manifest(),
+    recordingFactories(calls, "normal"),
+  );
 
   assert.deepEqual(calls, ["containment", "control", "release", "authority", "pi", "lan", "runs"]);
   assert.equal(host.health.scope("authority").availability, "available");
@@ -50,15 +76,10 @@ test("manifest Host proves containment and local control before opening Authorit
 
 test("recovery-only Authority keeps authenticated local recovery open without LAN or Run admission", async () => {
   const calls: string[] = [];
-  const host = await composeManifestHost(manifest(), {
-    proveLauncherContainment: async () => { calls.push("containment"); },
-    openAuthenticatedLocalControl: async () => { calls.push("control"); return { close: async () => {} }; },
-    verifyReleaseAndNativeIdentity: async () => { calls.push("release"); },
-    openAuthority: async () => { calls.push("authority"); return { mode: "recovery-only", close: async () => {} }; },
-    probePi: async () => { calls.push("pi"); },
-    openLan: async () => { calls.push("lan"); return { close: async () => {} }; },
-    openRunAdmission: async () => { calls.push("runs"); return { close: async () => {} }; },
-  });
+  const host = await composeManifestHost(
+    manifest(),
+    recordingFactories(calls, "recovery-only"),
+  );
 
   assert.deepEqual(calls, ["containment", "control", "release", "authority"]);
   assert.equal(host.mode, "recovery-only");
