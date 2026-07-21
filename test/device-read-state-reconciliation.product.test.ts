@@ -63,6 +63,30 @@ test("equal-revision divergence or malformed authority discards the projection",
   }
 });
 
+test("equal-revision divergence between catalog and scoped projections is rejected", () => {
+  const catalog = { sessionId: "s1", readState: read(2) };
+  const scopedReadState: SessionReadState = {
+    ...read(2),
+    readStatus: "unread",
+  };
+  const workingSet = {
+    sessions: [catalog],
+    archivedSessions: [],
+    scopes: new Map([["s1", {
+      session: { sessionId: "s1", readState: scopedReadState },
+    }]]),
+    readStates: new Map(),
+  };
+
+  assert.equal(
+    installSessionReadState(workingSet, catalog),
+    "inconsistent",
+  );
+  assert.deepEqual(workingSet.sessions, []);
+  assert.equal(workingSet.scopes.has("s1"), false);
+  assert.equal(workingSet.readStates.has("s1"), false);
+});
+
 test("a change for an unknown Session requests Host-scope reconciliation", () => {
   const workingSet = {
     sessions: [], archivedSessions: [], scopes: new Map(), readStates: new Map(),

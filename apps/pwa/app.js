@@ -2,6 +2,7 @@ import { assessBrowser, browserSemantics } from "./browser-compatibility.mjs";
 import {
   installSessionReadState,
   reconcileSessionReadState,
+  sessionReadStateResourceId,
 } from "./read-state.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -517,10 +518,7 @@ async function resetSessionScope(message) {
     scope.sessionId,
     candidate,
   );
-  if (reconciliation === "inconsistent" || reconciliation === "missing") {
-    forceAuthoritativeResynchronization();
-    return;
-  }
+  if (resynchronizeIfReadStateUnusable(reconciliation)) return;
   state.scopes.set(scope.sessionId, {
     ...snapshot,
     session: { ...snapshot.session, readState: state.readStates.get(scope.sessionId) },
@@ -613,10 +611,7 @@ function handleCommandOutcome(message) {
         command.sessionId,
         message.readState,
       );
-      if (result === "inconsistent" || result === "missing") {
-        forceAuthoritativeResynchronization();
-        return;
-      }
+      if (resynchronizeIfReadStateUnusable(result)) return;
     } else if (message.outcome === "rejected") {
       forceAuthoritativeResynchronization();
     }
@@ -634,10 +629,7 @@ function applyHostChange(change) {
       change.sessionId,
       change.readState,
     );
-    if (result === "inconsistent" || result === "missing") {
-      forceAuthoritativeResynchronization();
-      return false;
-    }
+    if (resynchronizeIfReadStateUnusable(result)) return false;
     const optimistic = state.optimisticReadStates.get(change.sessionId);
     if (
       optimistic &&
@@ -683,6 +675,12 @@ function forceAuthoritativeResynchronization() {
   state.optimisticReadStates.clear();
   setCurrent(false, "Resynchronizing");
   if (socket?.readyState === WebSocket.OPEN) sendScopeSet(currentSessionId());
+}
+
+function resynchronizeIfReadStateUnusable(result) {
+  if (result !== "inconsistent" && result !== "missing") return false;
+  forceAuthoritativeResynchronization();
+  return true;
 }
 
 function setCurrent(current, label) {
@@ -1358,7 +1356,8 @@ function scopeResourceRevisions(session) {
 
   const resourceRevisions = {
     [session.sessionId]: session.metadataRevision,
-    [`readState:${session.sessionId}`]: session.readState.readStateRevision,
+    [sessionReadStateResourceId(session.sessionId)]:
+      session.readState.readStateRevision,
   };
   const projection = state.scopes.get(session.sessionId);
   const timelineRevision = projection?.session?.timelineRevision;
@@ -1460,7 +1459,10 @@ async function writeWorkingSet(database, sessions) {
     ...cacheBasis(HOST_SCOPE_KEY, Object.fromEntries(
       sessions.flatMap(session => [
         [session.sessionId, session.metadataRevision],
-        [`readState:${session.sessionId}`, session.readState.readStateRevision],
+        [
+          sessionReadStateResourceId(session.sessionId),
+          session.readState.readStateRevision,
+        ],
       ]),
     )),
     projects: state.projects,

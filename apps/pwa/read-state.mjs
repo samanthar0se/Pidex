@@ -1,4 +1,15 @@
 const READ_STATUSES = new Set(["read", "unread"]);
+const READ_STATE_RESOURCE_PREFIX = "readState:";
+
+export function sessionReadStateResourceId(sessionId) {
+  return `${READ_STATE_RESOURCE_PREFIX}${sessionId}`;
+}
+
+export function sessionIdFromReadStateResourceId(resourceId) {
+  return resourceId.startsWith(READ_STATE_RESOURCE_PREFIX)
+    ? resourceId.slice(READ_STATE_RESOURCE_PREFIX.length)
+    : undefined;
+}
 
 export function validSessionReadState(value) {
   return Boolean(
@@ -72,6 +83,16 @@ export function reconcileSessionReadState(workingSet, sessionId, candidate) {
   if (!validSessionReadState(current)) {
     discardSessionProjection(workingSet, sessionId);
     return "inconsistent";
+  }
+  for (const projection of projections(workingSet, sessionId)) {
+    if (
+      !validSessionReadState(projection.readState) ||
+      projection.readState.readStateRevision === current.readStateRevision &&
+        !identical(projection.readState, current)
+    ) {
+      discardSessionProjection(workingSet, sessionId);
+      return "inconsistent";
+    }
   }
   if (candidate.readStateRevision < current.readStateRevision) return "stale";
   if (candidate.readStateRevision === current.readStateRevision) {

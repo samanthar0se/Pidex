@@ -5,6 +5,10 @@ import { createServer } from "node:https";
 import { join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
+  sessionIdFromReadStateResourceId,
+  sessionReadStateResourceId,
+} from "../../../apps/pwa/read-state.mjs";
+import {
   adaptersFor,
   executePidexFirewallOperation,
   type HostAdapters,
@@ -391,7 +395,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const webSocketServer = new WebSocketServer({ noServer: true });
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
-  const publishedReadStateRevisions = new Map<string, number>();
+  const initialProjection = store.projection();
+  const publishedReadStateRevisions = new Map(
+    [...initialProjection.sessions, ...initialProjection.archivedSessions]
+      .map(session => [
+        session.sessionId,
+        session.readState.readStateRevision,
+      ] as const),
+  );
   const admittedCapabilityBasisByClient = new Map<WebSocket, Set<string>>();
   const scopedSessionIdsByClient = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
@@ -662,9 +673,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         if (resourceId === "timeline" || resourceId.startsWith("timeline:")) {
           return true;
         }
-        if (resourceId.startsWith("readState:")) {
-          return sessionsById.get(resourceId.slice("readState:".length))
-            ?.readState.readStateRevision === expected;
+        const readStateSessionId = sessionIdFromReadStateResourceId(resourceId);
+        if (readStateSessionId !== undefined) {
+          return sessionsById.get(readStateSessionId)?.readState
+            .readStateRevision === expected;
         }
         return sessionsById.get(resourceId)?.metadataRevision === expected;
       },
@@ -706,7 +718,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           resourceRevisions: Object.fromEntries(
             allSessions.flatMap(session => [
               [session.sessionId, session.metadataRevision],
-              [`readState:${session.sessionId}`, session.readState.readStateRevision],
+              [
+                sessionReadStateResourceId(session.sessionId),
+                session.readState.readStateRevision,
+              ],
             ]),
           ),
           protocolBasis: protocolVersion,
@@ -1900,21 +1915,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function publishCanonicalReadState(sessionId: string): void {
-    const projection = store.projection();
-    const readState = [...projection.sessions, ...projection.archivedSessions]
-      .find(session => session.sessionId === sessionId)?.readState;
-    if (!readState) return;
+    const item = store.currentSessionReadStateChange(sessionId);
+    if (!item) return;
+    const { readState } = item.change;
     if (
       publishedReadStateRevisions.get(sessionId) ===
       readState.readStateRevision
     ) return;
-    const item = store.changesAfter(0).reverse().find(change =>
-      change.change.type === "session.read-state-changed" &&
-      change.change.sessionId === sessionId &&
-      change.change.readState.readStateRevision ===
-        readState.readStateRevision
-    );
-    if (!item) return;
     publishedReadStateRevisions.set(sessionId, readState.readStateRevision);
     const message: ServerMessage = {
       type: "host.change-set",

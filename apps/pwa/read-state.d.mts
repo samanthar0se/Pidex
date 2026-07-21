@@ -16,6 +16,10 @@ export type DeviceWorkingSet = {
   readStates: Map<string, SessionReadState>;
 };
 
+export function sessionReadStateResourceId(sessionId: string): string;
+export function sessionIdFromReadStateResourceId(
+  resourceId: string,
+): string | undefined;
 export function validSessionReadState(value: unknown): value is SessionReadState;
 export function discardSessionProjection(
   workingSet: DeviceWorkingSet,
