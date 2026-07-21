@@ -32,7 +32,7 @@ export interface SourceClosureFile {
   bytes: Uint8Array;
 }
 
-export interface SourceClosurePlan {
+export interface SourceClosureIdentity {
   schemaVersion: 1;
   trustClass: "local-source";
   /** Prebuilt selection is explicit and mutually exclusive with source build. */
@@ -47,6 +47,9 @@ export interface SourceClosurePlan {
     cpp: "20";
   };
   sourceIdentity: string;
+}
+
+export interface SourceClosurePlan extends SourceClosureIdentity {
   files: readonly SourceClosureFile[];
 }
 
@@ -57,19 +60,7 @@ interface ClosureFileRecord {
   sha256: string;
 }
 
-interface ClosureManifest {
-  schemaVersion: 1;
-  releaseId: string;
-  trustClass: "local-source";
-  inputMode: SourceClosurePlan["inputMode"];
-  node: SourceClosurePlan["node"];
-  nodeApi: number;
-  pi: SourceClosurePlan["pi"];
-  toolchain: SourceClosurePlan["toolchain"];
-  sourceIdentity: string;
-  files: ClosureFileRecord[];
-  sbom: { path: "sbom.cdx.json"; sha256: string };
-}
+type ClosureManifest = ReturnType<typeof createClosureManifest>;
 
 export interface PublishedSourceClosure {
   releaseId: string;
@@ -167,29 +158,48 @@ function resolvePlan(plan: SourceClosurePlan) {
     version: 1,
     components: records.map(file => ({ type: "file", name: file.path, group: file.role, hashes: [{ alg: "SHA-256", content: file.sha256 }] })),
   }));
-  const identity = {
-    schemaVersion: 1 as const,
-    trustClass: plan.trustClass,
-    inputMode: plan.inputMode,
-    node: plan.node,
-    nodeApi: plan.nodeApi,
-    pi: plan.pi,
-    toolchain: plan.toolchain,
-    sourceIdentity: plan.sourceIdentity,
-    files: records,
-    sbom: { path: "sbom.cdx.json" as const, sha256: sha256(sbom) },
-  };
-  const manifest: ClosureManifest = { ...identity, releaseId: releaseIdFor(identity) };
+  const manifest = createClosureManifest(plan, records, {
+    path: "sbom.cdx.json",
+    sha256: sha256(sbom),
+  });
   return { files, sbom, manifest };
 }
 
 function parseManifest(text: string): ClosureManifest {
   const value = JSON.parse(text) as ClosureManifest;
-  const keys = ["schemaVersion", "releaseId", "trustClass", "inputMode", "node", "nodeApi", "pi", "toolchain", "sourceIdentity", "files", "sbom"];
+  const keys = value && typeof value === "object"
+    ? Object.keys(createClosureManifest(value, value.files, value.sbom))
+    : [];
   if (!value || typeof value !== "object" || Object.keys(value).sort().join() !== keys.sort().join() || value.schemaVersion !== 1 || value.trustClass !== "local-source" || !Array.isArray(value.files)) {
     throw new Error("invalid source closure manifest");
   }
   return value;
+}
+
+function createClosureManifest(
+  source: SourceClosureIdentity,
+  files: ClosureFileRecord[],
+  sbom: { path: "sbom.cdx.json"; sha256: string },
+) {
+  const identity = {
+    ...selectSourceClosureIdentity(source),
+    files,
+    sbom,
+  };
+  return { ...identity, releaseId: releaseIdFor(identity) };
+}
+
+function selectSourceClosureIdentity(source: SourceClosureIdentity): SourceClosureIdentity {
+  return {
+    schemaVersion: source.schemaVersion,
+    trustClass: source.trustClass,
+    inputMode: source.inputMode,
+    node: source.node,
+    nodeApi: source.nodeApi,
+    pi: source.pi,
+    toolchain: source.toolchain,
+    sourceIdentity: source.sourceIdentity,
+  };
 }
 
 function assertRequiredRoles(files: readonly { role: SourceClosureRole }[]): void {
