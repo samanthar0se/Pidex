@@ -131,13 +131,23 @@ export interface ManifestHost extends CompositionOwner {
   readonly health: HostHealthGraph;
 }
 
-export interface PortableCompositionEvidence {
-  readonly tier: "portable";
-  readonly substitutedCapabilities: readonly ("windows" | "process")[];
-  readonly nativeContainment: "not-claimed";
-  readonly profileAccess: "synthetic-only";
-  readonly providerTraffic: "disabled";
-}
+export type PortableSubstitutedCapability = "windows" | "process";
+
+const PORTABLE_EVIDENCE_BOUNDARIES = Object.freeze({
+  tier: "portable",
+  nativeContainment: "not-claimed",
+  profileAccess: "synthetic-only",
+  providerTraffic: "disabled",
+} as const);
+
+const PORTABLE_SUBSTITUTED_CAPABILITIES: ReadonlySet<PortableSubstitutedCapability> = new Set([
+  "windows",
+  "process",
+]);
+
+export type PortableCompositionEvidence = typeof PORTABLE_EVIDENCE_BOUNDARIES & {
+  readonly substitutedCapabilities: readonly PortableSubstitutedCapability[];
+};
 
 export interface PortableManifestHost extends ManifestHost {
   readonly evidence: PortableCompositionEvidence;
@@ -154,10 +164,10 @@ const SCOPES: readonly HealthScope[] = [
  * cannot bypass manifest guards with a cast or a product adapter selector.
  */
 export async function composeManifestHost(
-  input: ResolvedLaunchManifest,
+  manifestInput: ResolvedLaunchManifest,
   factories: ManifestHostFactories,
 ): Promise<ManifestHost> {
-  const manifest = parseResolvedLaunchManifest(input);
+  const manifest = parseResolvedLaunchManifest(manifestInput);
   if (manifest.execution.implementation !== "real") {
     throw new Error("product Host requires a real resolved launch manifest");
   }
@@ -171,11 +181,11 @@ export async function composeManifestHost(
  * containment, a real Pi profile, provider traffic, or product readiness.
  */
 export async function composePortableManifestHost(
-  input: ResolvedLaunchManifest,
+  manifestInput: ResolvedLaunchManifest,
   factories: ManifestHostFactories,
-  options: { readonly substitutedCapabilities: readonly ("windows" | "process")[] },
+  options: { readonly substitutedCapabilities: readonly PortableSubstitutedCapability[] },
 ): Promise<PortableManifestHost> {
-  const manifest = parseResolvedLaunchManifest(input);
+  const manifest = parseResolvedLaunchManifest(manifestInput);
   if (
     manifest.execution.implementation !== "deterministic" ||
     manifest.execution.evidenceClass !== "deterministic-test" ||
@@ -184,7 +194,7 @@ export async function composePortableManifestHost(
     throw new Error("portable composition requires an isolated deterministic manifest");
   }
   if (options.substitutedCapabilities.some(capability =>
-    capability !== "windows" && capability !== "process"
+    !PORTABLE_SUBSTITUTED_CAPABILITIES.has(capability)
   )) {
     throw new Error("portable composition may substitute only windows and process capabilities");
   }
@@ -193,11 +203,8 @@ export async function composePortableManifestHost(
   return {
     ...host,
     evidence: Object.freeze({
-      tier: "portable",
+      ...PORTABLE_EVIDENCE_BOUNDARIES,
       substitutedCapabilities: Object.freeze([...options.substitutedCapabilities]),
-      nativeContainment: "not-claimed",
-      profileAccess: "synthetic-only",
-      providerTraffic: "disabled",
     }),
   };
 }

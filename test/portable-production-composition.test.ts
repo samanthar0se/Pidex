@@ -6,8 +6,8 @@ import {
   type ManifestHostFactories,
 } from "../packages/host/src/daemon-composition.js";
 
-const hash = "b".repeat(64);
-const root = "C:\\Users\\fixture\\AppData\\Local\\Pidex\\Source\\portable";
+const fixtureSha256 = "b".repeat(64);
+const portableFixtureRoot = "C:\\Users\\fixture\\AppData\\Local\\Pidex\\Source\\portable";
 
 function portableManifest() {
   const roles = Object.fromEntries([
@@ -15,27 +15,30 @@ function portableManifest() {
     "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState",
     "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics",
     "launcherState", "tlsState", "publicationTemp",
-  ].map(role => [role, `${root}\\${role}`]));
+  ].map(role => [role, `${portableFixtureRoot}\\${role}`]));
   const artifacts = Object.fromEntries([
     "launcher", "node", "daemon", "worker", "addon", "companion", "schemas",
     "certificateTool", "maintenance",
-  ].map((role, index) => [role, { path: `${root}\\releases\\r1\\${index}.bin`, sha256: hash }]));
+  ].map((role, index) => [role, {
+    path: `${portableFixtureRoot}\\releases\\r1\\${index}.bin`,
+    sha256: fixtureSha256,
+  }]));
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "portable", owningSid: "S-1-5-21-1000", trustClass: "source" },
     generations: { release: "r1", daemon: 1, worker: 1, publicProtocol: 1, localControl: 1, capability: 1, addon: 1, schema: 1 },
     endpoints: { canonicalOrigin: "https://portable.invalid:49152", canonicalPort: 49152, localControl: "\\\\.\\pipe\\pidex-portable" },
-    roots: { sourceInstance: root, roles }, artifacts,
+    roots: { sourceInstance: portableFixtureRoot, roles }, artifacts,
     piProfile: { policy: "synthetic-isolated", version: "0.80.10" },
-    runtimes: { node: { lane: "primary", version: "24.1.0", architecture: "x64", sha256: hash }, nodeApi: 10, pi: { version: "0.80.10", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10", cmake: "4", cpp: "20" } },
+    runtimes: { node: { lane: "primary", version: "24.1.0", architecture: "x64", sha256: fixtureSha256 }, nodeApi: 10, pi: { version: "0.80.10", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10", cmake: "4", cpp: "20" } },
     compatibility: { daemonWorker: [1], publicProtocol: [1], localControl: [1], capability: [1], addon: [1], schema: [1], piArtifacts: [] },
-    closure: { id: "sha256:r1", sbom: { path: `${root}\\releases\\r1\\sbom.json`, sha256: hash } },
+    closure: { id: "sha256:r1", sbom: { path: `${portableFixtureRoot}\\releases\\r1\\sbom.json`, sha256: fixtureSha256 } },
     execution: { implementation: "deterministic", evidenceClass: "deterministic-test" },
     provenance: { source: { kind: "default", detail: "portable production-composition fixture" } },
   });
 }
 
-function factories(): ManifestHostFactories {
+function createCompleteManifestHostFactories(): ManifestHostFactories {
   const owner = () => ({ close: async () => {} });
   return {
     proveLauncherContainment: async () => {},
@@ -49,7 +52,7 @@ function factories(): ManifestHostFactories {
 }
 
 test("portable evidence uses the manifest composition root without claiming native containment or real profile access", async () => {
-  const host = await composePortableManifestHost(portableManifest(), factories(), {
+  const host = await composePortableManifestHost(portableManifest(), createCompleteManifestHostFactories(), {
     substitutedCapabilities: ["windows", "process"],
   });
 
@@ -65,7 +68,7 @@ test("portable evidence uses the manifest composition root without claiming nati
 });
 
 test("portable product smoke fails closed when a real composition component is missing", async () => {
-  const incomplete = factories() as Partial<ManifestHostFactories>;
+  const incomplete = createCompleteManifestHostFactories() as Partial<ManifestHostFactories>;
   delete incomplete.probePi;
 
   await assert.rejects(
@@ -78,7 +81,7 @@ test("portable product smoke fails closed when a real composition component is m
 
 test("portable composition rejects substitutes outside Windows and process capabilities", async () => {
   await assert.rejects(
-    composePortableManifestHost(portableManifest(), factories(), {
+    composePortableManifestHost(portableManifest(), createCompleteManifestHostFactories(), {
       substitutedCapabilities: ["windows", "pi"] as never,
     }),
     /portable composition may substitute only windows and process capabilities/,
