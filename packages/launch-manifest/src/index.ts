@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { z } from "zod";
 
@@ -101,6 +102,7 @@ const launchManifestSchema = z.strictObject({
   }),
   runtimes: z.strictObject({
     node: z.strictObject({
+      lane: z.enum(["primary", "secondary"]),
       version: z.string().min(1),
       architecture: z.literal("x64"),
       sha256: sha256Schema,
@@ -318,6 +320,27 @@ function validateRuntimeCompatibility(
       "Pi generation/version mismatch",
     );
   }
+  if (manifest.runtimes.pi.version !== "0.80.10") {
+    addValidationIssue(
+      context,
+      ["runtimes", "pi", "version"],
+      "Pi version must be exactly 0.80.10",
+    );
+  }
+  if (manifest.runtimes.addonAbi !== `napi-${manifest.runtimes.nodeApi}`) {
+    addValidationIssue(
+      context,
+      ["runtimes", "addonAbi"],
+      "addon ABI does not match the declared Node-API level",
+    );
+  }
+  if (manifest.runtimes.node.sha256 !== manifest.artifacts.node.sha256) {
+    addValidationIssue(
+      context,
+      ["runtimes", "node", "sha256"],
+      "Node runtime hash does not match the closure artifact",
+    );
+  }
 
   const compatibilityChecks = [
     ["daemonWorker", manifest.generations.worker],
@@ -337,6 +360,122 @@ function validateRuntimeCompatibility(
       );
     }
   }
+}
+
+export interface ClosureReader {
+  /** Returns every file in the selected closure as an absolute path. */
+  listFiles(): Promise<readonly string[]>;
+  readFile(path: string): Promise<Uint8Array>;
+  /** Must check the platform's publication boundary, not merely an open handle. */
+  isImmutable(path: string): Promise<boolean>;
+}
+
+export interface ClosureCompatibilityEvidence {
+  schemaVersion: 1;
+  closureId: string;
+  manifestSha256: string;
+  closureSha256: string;
+  node: {
+    lane: "primary" | "secondary";
+    version: string;
+    architecture: "x64";
+    nodeApi: number;
+    sha256: string;
+  };
+  pi: { version: "0.80.10"; integrity: string };
+  addon: { abi: string; generation: number; sha256: string };
+  generations: Omit<ResolvedLaunchManifest["generations"], "release">;
+  toolchain: ResolvedLaunchManifest["runtimes"]["toolchain"];
+}
+
+/**
+ * Verifies the selected publication as one exact, immutable closure. The reader
+ * keeps platform-specific immutability policy at the publication boundary.
+ */
+export async function verifyImmutableClosure(
+  input: ResolvedLaunchManifest,
+  reader: ClosureReader,
+): Promise<ClosureCompatibilityEvidence> {
+  const manifest = parseResolvedLaunchManifest(input);
+  const declaredArtifacts = [
+    ...Object.values(manifest.artifacts),
+    manifest.closure.sbom,
+  ];
+  const declared = new Map(
+    declaredArtifacts.map(artifact => [
+      normalizeWindowsPath(artifact.path),
+      artifact,
+    ]),
+  );
+  if (declared.size !== declaredArtifacts.length) {
+    throw new Error("Closure contains duplicate declared paths");
+  }
+
+  const actual = (await reader.listFiles()).map(path => ({
+    original: path,
+    normalized: normalizeWindowsPath(path),
+  }));
+  if (new Set(actual.map(file => file.normalized)).size !== actual.length) {
+    throw new Error("Closure contains duplicate files");
+  }
+  for (const path of declared.keys()) {
+    if (!actual.some(file => file.normalized === path)) {
+      throw new Error(`Closure file is missing: ${path}`);
+    }
+  }
+  for (const file of actual) {
+    if (!declared.has(file.normalized)) {
+      throw new Error(`Closure contains undeclared content: ${file.original}`);
+    }
+  }
+
+  const verifiedFiles: Array<{ path: string; sha256: string }> = [];
+  for (const file of actual.sort((left, right) =>
+    left.normalized.localeCompare(right.normalized)
+  )) {
+    if (!(await reader.isImmutable(file.original))) {
+      throw new Error(`Closure file is mutable: ${file.original}`);
+    }
+    const digest = sha256(await reader.readFile(file.original));
+    if (digest !== declared.get(file.normalized)!.sha256) {
+      throw new Error(`Closure file hash mismatch: ${file.original}`);
+    }
+    verifiedFiles.push({ path: file.normalized, sha256: digest });
+  }
+
+  const generations = {
+    daemon: manifest.generations.daemon,
+    worker: manifest.generations.worker,
+    publicProtocol: manifest.generations.publicProtocol,
+    localControl: manifest.generations.localControl,
+    capability: manifest.generations.capability,
+    addon: manifest.generations.addon,
+    schema: manifest.generations.schema,
+  };
+  return {
+    schemaVersion: 1,
+    closureId: manifest.closure.id,
+    manifestSha256: sha256(
+      Buffer.from(canonicalizeResolvedLaunchManifest(manifest)),
+    ),
+    closureSha256: sha256(Buffer.from(JSON.stringify(verifiedFiles))),
+    node: { ...manifest.runtimes.node, nodeApi: manifest.runtimes.nodeApi },
+    pi: {
+      version: "0.80.10",
+      integrity: manifest.runtimes.pi.integrity,
+    },
+    addon: {
+      abi: manifest.runtimes.addonAbi,
+      generation: manifest.generations.addon,
+      sha256: manifest.artifacts.addon.sha256,
+    },
+    generations,
+    toolchain: manifest.runtimes.toolchain,
+  };
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function normalizeWindowsPath(path: string): string {
