@@ -479,6 +479,9 @@ export class ExactPiWorkerEndpoint {
       });
       let checkpointId = result.checkpoint;
       let checkpointState: "exported" | "published" = "exported";
+      if (result.checkpointArtifact && !this.#options.checkpointStore) {
+        throw new Error("checkpoint-publication-unavailable");
+      }
       if (this.#options.checkpointStore && result.checkpointArtifact) {
         const manifest = await this.#options.checkpointStore.publish({
           sessionId: this.#identity.sessionId,

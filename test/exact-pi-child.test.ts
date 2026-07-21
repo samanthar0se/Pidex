@@ -123,6 +123,63 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
   host.destroy();
 });
 
+test("the exact Pi endpoint never settles exported checkpoint bytes without durable publication", async () => {
+  const [host, childStream] = duplexPair();
+  const identity = {
+    sessionId: "session-unpublished",
+    workerId: "worker-unpublished",
+    generation: 1,
+    protocolGeneration: 1,
+  } as const;
+  const endpoint = new ExactPiWorkerEndpoint(childStream, identity, {
+    authenticationToken: "d".repeat(64),
+    bind: async () => ({
+      binding: { ...identity, cwd: "/canonical", agentDir: "/profile" },
+      execute: async () => ({
+        text: "must not settle",
+        checkpoint: "private-leaf",
+        checkpointArtifact: Buffer.from("opaque Pi state"),
+      }),
+      steer: async () => {},
+      stop: async () => {},
+      dispose: async () => {},
+    }),
+    agentDir: "/profile",
+  });
+  const readiness = readFrames(host, 1);
+  host.write(SessionWorkerTransport.frame({
+    ...identity,
+    type: "bootstrap",
+    sequence: 0,
+    authenticationToken: "d".repeat(64),
+    releaseGeneration: "release-1",
+    configGeneration: "config-1",
+    piGeneration: EXACT_PI_VERSION,
+    cwd: "/canonical",
+  }));
+  assert.equal(((await readiness)[0] as { type: string }).type, "ready");
+  const output = readFrames(host, 1);
+  host.write(SessionWorkerTransport.frame({
+    ...identity,
+    type: "execute",
+    sequence: 1,
+    correlationId: "run-unpublished",
+    prompt: "work",
+  }));
+
+  try {
+    const frames = await output;
+    assert.equal((frames[0] as { type: string }).type, "fault");
+    assert.equal(
+      (frames[0] as { code: string }).code,
+      "checkpoint-publication-unavailable",
+    );
+  } finally {
+    await endpoint.close();
+    host.destroy();
+  }
+});
+
 test("the exact Pi child endpoint applies steering and Stop while a Run is executing", async () => {
   const [host, childStream] = duplexPair();
   const identity = {
