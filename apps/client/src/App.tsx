@@ -1,113 +1,47 @@
 import { useEffect, useRef, useState } from "react";
-import { Archive, ChevronDown, ChevronRight, Menu, Plus, Search, X } from "lucide-react";
 import { useStore } from "zustand";
-import { store } from "./main.js";
+import { store as productionStore } from "./client-instance.js";
+import type { ClientStore } from "./client-store.js";
 import {
   selectCurrentSession,
   selectCurrentTimeline,
-  selectDiscoveryGroups,
   selectDraft,
   type NewSessionProgress,
   type NewSessionState,
-  type SessionFact,
 } from "./client-store.js";
+import { useClientLifecycle } from "./client-lifecycle.js";
+import { ClientHeader } from "./ClientHeader.js";
 import { InteractionControl } from "./InteractionControl.js";
+import { SessionDrawer, useSessionDrawer } from "./SessionDrawer.js";
 import { SessionTimeline } from "./SessionTimeline.js";
 
-function applyPath(path: string) {
-  if (path === "/new") {
-    void store.getState().openNewSession();
-    return;
-  }
-  if (path === "/archived") store.setState({ discoveryMode: "archived" });
-  const match = path.match(/^\/sessions\/([^/]+)$/);
-  if (match) void store.getState().openSession(decodeURIComponent(match[1]), "none");
-}
-
-function describeSessionCues(session: SessionFact) {
-  const unread = session.readState?.readStatus === "unread";
-  let attention: string | undefined;
-  if (session.attention === "working") attention = "Working";
-  if (session.attention === "needs-response") attention = "Needs response";
-
-  const labels = [unread ? "Unread" : undefined, attention].filter((label): label is string => Boolean(label));
-  return { unread, attention, accessibleName: [session.name, ...labels].join(", ") };
-}
-
-export function App() {
-  const session = useStore(store, selectCurrentSession);
-  const timeline = useStore(store, selectCurrentTimeline);
-  const draft = useStore(store, selectDraft);
-  const groups = useStore(store, selectDiscoveryGroups);
+export function App({ clientStore = productionStore }: { clientStore?: ClientStore } = {}) {
+  const store = clientStore;
   const state = useStore(store);
+  const session = selectCurrentSession(state);
+  const timeline = selectCurrentTimeline(state);
+  const draft = selectDraft(state);
   const newSession = state.newSession;
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const drawerToggle = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    void store.getState().loadDiscovery();
-    applyPath(location.pathname);
-  }, []);
-  useEffect(() => {
-    const listener = () => applyPath(location.pathname);
-    addEventListener("popstate", listener);
-    return () => removeEventListener("popstate", listener);
-  }, []);
-  useEffect(() => {
-    const offline = () => store.getState().authorityChanged({ status: "offline" });
-    const online = () => void store.getState().recoverAuthority();
-    const visible = () => { if (document.visibilityState === "visible") void store.getState().recoverAuthority(); };
-    addEventListener("offline", offline); addEventListener("online", online); document.addEventListener("visibilitychange", visible);
-    if (!navigator.onLine) offline();
-    return () => { removeEventListener("offline", offline); removeEventListener("online", online); document.removeEventListener("visibilitychange", visible); };
-  }, []);
-  const closeDrawer = () => { setDrawerOpen(false); requestAnimationFrame(() => drawerToggle.current?.focus()); };
-  const choose = (id: string) => { void store.getState().openSession(id, "push"); closeDrawer(); };
-  const searching = state.searchQuery.trim() !== "";
+  const drawer = useSessionDrawer();
+  useClientLifecycle(store);
 
-  return <div className={`shell ${drawerOpen ? "drawer-open" : ""}`}>
-    <button className="drawer-backdrop" aria-label="Close Session drawer" onClick={closeDrawer}/>
-    <aside aria-label="Session drawer" onKeyDown={event => { if (event.key === "Escape") closeDrawer(); }}>
-      <div className="brand"><strong>PIDEX</strong><button className="close-drawer" aria-label="Close Session drawer" onClick={closeDrawer}><X/></button></div>
-      <button className="new-session-button" onClick={() => { void store.getState().openNewSession(); closeDrawer(); }}><Plus size={16}/> New Session</button>
-      <label className="search"><Search size={15}/><input aria-label="Search Sessions" placeholder="Search Sessions" value={state.searchQuery} onChange={event => store.getState().setSearchQuery(event.target.value)}/></label>
-      <nav aria-label={state.discoveryMode === "archived" ? "Archived Sessions" : "Sessions"}>
-        {groups.map(group => {
-          const expanded = searching || group.id === "chats" || state.expandedProjectIds.includes(group.id);
-          return <section className="discovery-group" key={group.id}>
-            <button className="group-heading" aria-expanded={expanded} onClick={() => group.id !== "chats" && void store.getState().toggleProject(group.id)}>
-              {group.id !== "chats" && (expanded ? <ChevronDown/> : <ChevronRight/>)}<span>{group.name}</span>
-            </button>
-            {expanded && group.sessions.map(item => {
-              const cues = describeSessionCues(item);
-              return <div className="session-row" key={item.sessionId}>
-                <button className="session-link" aria-current={state.selectedSessionId === item.sessionId ? "page" : undefined}
-                  aria-label={cues.accessibleName} onClick={() => choose(item.sessionId)}>
-                  <span className="session-name">{item.name}</span><span className="cues" aria-hidden="true">{cues.unread && <i className="unread"/>}{cues.attention}</span>
-                </button>
-                {state.discoveryMode === "archived" && <button className="restore" onClick={() => void store.getState().restoreSession(item.sessionId)}>Restore</button>}
-              </div>;
-            })}
-          </section>;
-        })}
-        {groups.length === 0 && <p className="no-results">No matching Sessions</p>}
-      </nav>
-      <button className="archived" aria-pressed={state.discoveryMode === "archived"} onClick={() => store.getState().setDiscoveryMode(state.discoveryMode === "archived" ? "available" : "archived")}><Archive size={16}/>{state.discoveryMode === "archived" ? "Back to Sessions" : "Archived"}</button>
-    </aside>
+  return <div className={`shell ${drawer.isOpen ? "drawer-open" : ""}`}>
+    <SessionDrawer store={store} drawer={drawer}/>
     <main>
       <AuthorityBanner authority={state.authority}/>
-      <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu/></button><div><h1>{newSession ? "New Session" : session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{newSession ? "Nothing is created until you submit" : session && (state.isSessionCurrent ? "Current" : "Reconciling current Host data")}</small></div></header>
-      {newSession && <NewSessionView newSession={newSession}/>}
+      <ClientHeader store={store} drawer={drawer}/>
+      {newSession && <NewSessionView store={store} newSession={newSession}/>}
       {!newSession && <>
         {session ? <SessionTimeline entries={timeline} olderCursor={state.olderCursors[session.sessionId]} paging={state.paging}
           loadOlder={() => store.getState().loadOlder()} presentTail={() => store.getState().presentTail()}/>
           : <section className="timeline" aria-label="Session Timeline"><div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div></section>}
-        {session && <Composer sessionId={session.sessionId} draft={draft}/>}
+        {session && <Composer store={store} sessionId={session.sessionId} draft={draft}/>}
       </>}
     </main>
   </div>;
 }
 
-function Composer({ sessionId, draft }: { sessionId: string; draft: string }) {
+function Composer({ store, sessionId, draft }: { store: ClientStore; sessionId: string; draft: string }) {
   const state = useStore(store);
   const runs = state.runs[sessionId] ?? [];
   const executing = runs.find(run => run.state === "executing" && run.workerGeneration);
@@ -185,7 +119,7 @@ function describeProgress(progress: NewSessionProgress) {
   }
 }
 
-function NewSessionView({ newSession }: { newSession: NewSessionState }) {
+function NewSessionView({ store, newSession }: { store: ClientStore; newSession: NewSessionState }) {
   const editable = newSession.progress.phase === "editing";
   const description = describeProgress(newSession.progress);
   const submit = () => void store.getState().submitNewSession();
