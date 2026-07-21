@@ -131,6 +131,18 @@ export interface ManifestHost extends CompositionOwner {
   readonly health: HostHealthGraph;
 }
 
+export interface PortableCompositionEvidence {
+  readonly tier: "portable";
+  readonly substitutedCapabilities: readonly ("windows" | "process")[];
+  readonly nativeContainment: "not-claimed";
+  readonly profileAccess: "synthetic-only";
+  readonly providerTraffic: "disabled";
+}
+
+export interface PortableManifestHost extends ManifestHost {
+  readonly evidence: PortableCompositionEvidence;
+}
+
 const SCOPES: readonly HealthScope[] = [
   "local-control", "authority", "lan", "tls-origin", "firewall",
   "private-interfaces", "mdns", "pi-configuration", "durability-coverage",
@@ -149,6 +161,51 @@ export async function composeManifestHost(
   if (manifest.execution.implementation !== "real") {
     throw new Error("product Host requires a real resolved launch manifest");
   }
+  assertCompleteFactories(factories);
+  return composeValidatedManifestHost(manifest, factories);
+}
+
+/**
+ * Portable evidence runs the production ordering and ownership root with an
+ * isolated manifest. Its result is deliberately incapable of claiming native
+ * containment, a real Pi profile, provider traffic, or product readiness.
+ */
+export async function composePortableManifestHost(
+  input: ResolvedLaunchManifest,
+  factories: ManifestHostFactories,
+  options: { readonly substitutedCapabilities: readonly ("windows" | "process")[] },
+): Promise<PortableManifestHost> {
+  const manifest = parseResolvedLaunchManifest(input);
+  if (
+    manifest.execution.implementation !== "deterministic" ||
+    manifest.execution.evidenceClass !== "deterministic-test" ||
+    manifest.piProfile.policy !== "synthetic-isolated"
+  ) {
+    throw new Error("portable composition requires an isolated deterministic manifest");
+  }
+  if (options.substitutedCapabilities.some(capability =>
+    capability !== "windows" && capability !== "process"
+  )) {
+    throw new Error("portable composition may substitute only windows and process capabilities");
+  }
+  assertCompleteFactories(factories);
+  const host = await composeValidatedManifestHost(manifest, factories);
+  return {
+    ...host,
+    evidence: Object.freeze({
+      tier: "portable",
+      substitutedCapabilities: Object.freeze([...options.substitutedCapabilities]),
+      nativeContainment: "not-claimed",
+      profileAccess: "synthetic-only",
+      providerTraffic: "disabled",
+    }),
+  };
+}
+
+async function composeValidatedManifestHost(
+  manifest: ResolvedLaunchManifest,
+  factories: ManifestHostFactories,
+): Promise<ManifestHost> {
   const health = new HostHealthGraph(SCOPES);
   const owners: CompositionOwner[] = [];
   try {
@@ -185,6 +242,18 @@ export async function composeManifestHost(
   } catch (cause) {
     await closeOwners(owners);
     throw cause;
+  }
+}
+
+function assertCompleteFactories(factories: ManifestHostFactories): void {
+  for (const component of [
+    "proveLauncherContainment", "openAuthenticatedLocalControl",
+    "verifyReleaseAndNativeIdentity", "openAuthority", "probePi", "openLan",
+    "openRunAdmission",
+  ] as const) {
+    if (typeof factories[component] !== "function") {
+      throw new Error(`missing production composition component: ${component}`);
+    }
   }
 }
 
