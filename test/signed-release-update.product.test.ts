@@ -185,3 +185,49 @@ test(
     }
   },
 );
+
+test("activation rejects a release when a current Pi artifact head has no declared converter path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-artifact-gate-"));
+  const release: StagedRelease = {
+    state: "ready",
+    directory: "unused",
+    manifest: {
+      releaseId: "2.0.0",
+      protocolGeneration: "2",
+      daemonGeneration: "2",
+      workerGeneration: "2",
+      dataSchema: 2,
+      piArtifactGeneration: 2,
+      piArtifactCompatibility: [
+        { from: 1, to: 2, converterArtifact: "maintenance" },
+      ],
+      files: [{ path: "x", size: 1, sha256: "0".repeat(64) }],
+      sbom: { path: "x", sha256: "0".repeat(64), format: "cyclonedx-json-1.5" },
+    },
+  };
+  let drained = false;
+  const hooks: ActivationHooks = {
+    currentPiArtifactHeads: () => [
+      { sessionId: "supported", generation: 1 },
+      { sessionId: "blocked", generation: 0 },
+    ],
+    stopAcceptingMutations: () => { drained = true; },
+    resumeAcceptingMutations() {},
+    isQuiescent: () => true,
+    stopAffectedSessions() {},
+    flushAndStopWorkers() {},
+    activateData: async () => async () => {},
+    startMatchingRelease: async () => {},
+    hasAcceptedNewMutations: () => false,
+  };
+  try {
+    await assert.rejects(
+      activateSignedRelease({ root, release, hooks }),
+      (error: unknown) => error instanceof ReleaseUpdateError &&
+        error.code === "pi-artifact-incompatible" && /blocked/.test(error.message),
+    );
+    assert.equal(drained, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

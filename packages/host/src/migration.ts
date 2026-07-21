@@ -207,6 +207,18 @@ export interface PiArtifactMetadata {
 export class PiArtifactMigrationManager {
   constructor(readonly root: string) {}
 
+  /** Advances Host authority only after the copied target manifest is durable and validated. */
+  async wakeAndAdvance(
+    source: PiArtifactMetadata,
+    target: PiArtifactTarget,
+    worker: PiAdapter,
+    advanceUsableHead: (head: PiArtifactMetadata) => Promise<void> | void,
+  ): Promise<PiArtifactMetadata> {
+    const migrated = await this.wake(source, target, worker);
+    await advanceUsableHead(migrated);
+    return migrated;
+  }
+
   async wake(
     source: PiArtifactMetadata,
     target: PiArtifactTarget,

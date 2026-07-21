@@ -29,6 +29,12 @@ const sbomReferenceSchema = z.object({
   format: z.literal("cyclonedx-json-1.5"),
 });
 
+const piArtifactCompatibilitySchema = z.strictObject({
+  from: z.number().int().nonnegative(),
+  to: z.number().int().nonnegative(),
+  converterArtifact: z.literal("maintenance"),
+});
+
 const cycloneDxSbomSchema = z
   .object({
     bomFormat: z.literal("CycloneDX"),
@@ -46,6 +52,8 @@ export const releaseManifestSchema = z
     daemonGeneration: z.string().min(1),
     workerGeneration: z.string().min(1),
     dataSchema: z.number().int().nonnegative(),
+    piArtifactGeneration: z.number().int().nonnegative().optional(),
+    piArtifactCompatibility: z.array(piArtifactCompatibilitySchema).optional(),
     files: z.array(fileSchema).min(1),
     sbom: sbomReferenceSchema,
   })
@@ -164,6 +172,8 @@ function validateSbom(
 }
 
 export interface ActivationHooks {
+  /** Returns only the current usable checkpoint head for each Session. */
+  currentPiArtifactHeads?(): Promise<readonly PiArtifactHead[]> | readonly PiArtifactHead[];
   stopAcceptingMutations(): Promise<void> | void;
   resumeAcceptingMutations(): Promise<void> | void;
   isQuiescent(): Promise<boolean> | boolean;
@@ -175,6 +185,11 @@ export interface ActivationHooks {
   hasAcceptedNewMutations(): Promise<boolean> | boolean;
   sleep?(milliseconds: number): Promise<void>;
   now?(): number;
+}
+
+export interface PiArtifactHead {
+  sessionId: string;
+  generation: number;
 }
 
 export interface ActivateSignedReleaseOptions {
@@ -197,6 +212,9 @@ export async function activateSignedRelease(
     (milliseconds =>
       new Promise(resolve => setTimeout(resolve, milliseconds)));
   const previousReleaseId = readActiveRelease(options.root);
+
+  const currentHeads = await hooks.currentPiArtifactHeads?.() ?? [];
+  assertPiArtifactCompatibility(options.release.manifest, currentHeads);
 
   await hooks.stopAcceptingMutations();
   let rollbackData: (() => Promise<void> | void) | undefined;
@@ -236,6 +254,25 @@ export async function activateSignedRelease(
     throw cause;
   } finally {
     await hooks.resumeAcceptingMutations();
+  }
+}
+
+function assertPiArtifactCompatibility(
+  manifest: ReleaseManifest,
+  heads: readonly PiArtifactHead[],
+): void {
+  if (heads.length === 0) return;
+  const target = manifest.piArtifactGeneration;
+  const paths = manifest.piArtifactCompatibility ?? [];
+  const unsupported = heads.filter(head =>
+    target === undefined || (head.generation !== target &&
+      !paths.some(path => path.from === head.generation && path.to === target)),
+  );
+  if (unsupported.length > 0) {
+    throw new ReleaseUpdateError(
+      "pi-artifact-incompatible",
+      `pi-artifact-incompatible:${unsupported.map(head => head.sessionId).join(",")}`,
+    );
   }
 }
 
