@@ -54,6 +54,7 @@ import { AuthorityGenerationStore } from "./authority-generation.js";
 import {
   AuthorityStore,
   type InitialCatalog,
+  type MarkReadResult,
   type RenameOutcome,
   type SubmitOutcome,
 } from "./store.js";
@@ -1084,16 +1085,41 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       });
       return;
     }
-
-    // Authority transitions are introduced by issue #129. The protocol seam
-    // still returns an authoritative rejection rather than fabricating state.
-    sendServerMessage(client, {
-      type: "command.outcome",
-      commandId: command.commandId,
-      outcome: "rejected",
-      error: "unknown-session",
-      reconciliationCursor: status().synchronization.cursor,
-    });
+    const deviceId = clientDeviceIds.get(client);
+    if (!deviceId) return;
+    try {
+      const result = store.markSessionRead(
+        deviceId,
+        command,
+        adapters.clock.now(),
+      );
+      const outcome = result.kind === "replayed" ? result.outcome : result;
+      sendServerMessage(
+        client,
+        markReadOutcomeMessage(command.commandId, outcome),
+      );
+      if (result.kind === "accepted" && result.effect === "advanced") {
+        const changeSet: ServerMessage = {
+          type: "host.change-set",
+          cursor: result.cursor,
+          changes: [{
+            type: "session.read-state-changed",
+            sessionId: command.sessionId,
+            readState: result.readState,
+          }],
+        };
+        for (const socket of admittedClients) {
+          sendServerMessage(socket, changeSet);
+        }
+      }
+    } catch {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "commit-failed",
+      });
+    }
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
@@ -2092,6 +2118,51 @@ function runOutcomeMessage(
     error: outcome.error,
     receipt,
   };
+}
+
+function markReadOutcomeMessage(
+  commandId: string,
+  outcome: Exclude<MarkReadResult, { kind: "replayed" }>,
+): ServerMessage {
+  if (outcome.kind === "accepted") {
+    return {
+      type: "command.outcome",
+      commandId,
+      outcome: "accepted",
+      effect: outcome.effect,
+      readState: outcome.readState,
+      receipt: {
+        digest: outcome.digest,
+        commitCursor: outcome.cursor,
+      },
+    };
+  }
+
+  if (outcome.error === "command-id-conflict") {
+    return {
+      type: "command.outcome",
+      commandId,
+      outcome: "rejected",
+      error: outcome.error,
+      reconciliationCursor: outcome.cursor,
+    };
+  }
+
+  const rejected: ServerMessage = {
+    type: "command.outcome",
+    commandId,
+    outcome: "rejected",
+    error: outcome.error,
+    receipt: {
+      digest: outcome.digest,
+      commitCursor: outcome.cursor,
+    },
+    reconciliationCursor: outcome.cursor,
+  };
+  if (outcome.error === "invalid-revision") {
+    rejected.readState = outcome.readState;
+  }
+  return rejected;
 }
 
 function renameOutcomeMessage(

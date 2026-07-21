@@ -15,6 +15,7 @@ import {
   interactionSchema,
   projectSummarySchema,
   runRecordSchema,
+  sessionReadStateSchema,
   sessionSummarySchema,
   terminalRunSchema,
   timelineEntrySchema,
@@ -113,9 +114,40 @@ const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
 const sessionResidencyRowSchema = sessionSummarySchema.pick({ residency: true });
 const sessionAvailabilitySchema = z.enum(["available", "archived"]);
+const storedReadStateBasisSchema = z.object({
+  readThroughTimelineRevision: z.number().int().nonnegative(),
+  readStateRevision: z.number().int().positive(),
+  latestUnreadMilestoneTimelineRevision: z.number().int().nonnegative().nullable(),
+});
 const sessionRowSchema = sessionSummarySchema.omit({ readState: true }).extend({
   availability: sessionAvailabilitySchema,
+  ...storedReadStateBasisSchema.shape,
 });
+const markReadSessionStateSchema = storedReadStateBasisSchema.extend({
+  timelineRevision: z.number().int().positive(),
+});
+const markReadOutcomeSchema = z.union([
+  z.object({
+    kind: z.literal("accepted"),
+    effect: z.enum(["advanced", "no-op"]),
+    readState: sessionReadStateSchema,
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.literal("invalid-revision"),
+    readState: sessionReadStateSchema,
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.literal("unknown-session"),
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+]);
 const forkPointSchema = z.object({
   entryId: z.string(),
   checkpoint: z.string(),
@@ -192,6 +224,18 @@ const RUN_RECORD_PROJECTION = `
   session_order AS sessionOrder, prompt, state
 `;
 
+const SESSION_RECORD_PROJECTION = `
+  session_id AS sessionId, name, project_id AS projectId,
+  workspace_id AS workspaceId, retention, availability, residency,
+  metadata_revision AS metadataRevision,
+  timeline_revision AS timelineRevision,
+  read_through_timeline_revision AS readThroughTimelineRevision,
+  read_state_revision AS readStateRevision,
+  latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision,
+  parent_session_id AS parentSessionId,
+  fork_point_entry_id AS forkPointEntryId
+`;
+
 export type SubmitOutcome = z.infer<typeof submitOutcomeSchema>;
 
 export type SubmitResult =
@@ -235,6 +279,23 @@ export interface SessionAvailabilityCommand {
   sessionId: string;
   observedMetadataRevision: number;
 }
+
+export interface MarkReadCommand {
+  commandId: string;
+  sessionId: string;
+  presentedTimelineRevision: number;
+  requiredCapabilityBasis: readonly [{
+    readonly id: "session.read-state";
+    readonly version: 1;
+  }];
+}
+
+export type MarkReadOutcome = z.infer<typeof markReadOutcomeSchema>;
+
+export type MarkReadResult =
+  | MarkReadOutcome
+  | { kind: "replayed"; outcome: MarkReadOutcome; digest: string }
+  | { kind: "rejected"; error: "command-id-conflict"; cursor: string };
 
 type SessionAvailability = z.infer<typeof sessionAvailabilitySchema>;
 
@@ -350,6 +411,7 @@ export class AuthorityStore {
     this.#storage = adapters.storage;
     this.#db = new DatabaseSync(path);
     initializeAuthoritySchema(this.#db);
+    this.assertReadStateIntegrity();
     const existingHost = this.#db
       .prepare("SELECT 1 FROM host WHERE singleton=1")
       .get();
@@ -410,22 +472,16 @@ export class AuthorityStore {
       .all();
     const sessionRows = this.#db
       .prepare(
-        `SELECT session_id AS sessionId, name, project_id AS projectId,
-                workspace_id AS workspaceId, retention, availability, residency,
-                metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision,
-                parent_session_id AS parentSessionId,
-                fork_point_entry_id AS forkPointEntryId
+        `SELECT ${SESSION_RECORD_PROJECTION}
          FROM sessions ORDER BY created_at`,
       )
       .all();
     const sessions: SessionSummary[] = [];
     const archivedSessions: SessionSummary[] = [];
     for (const row of sessionRowSchema.array().parse(sessionRows)) {
-      const { availability, ...storedSession } = row;
-      const session = withInitialReadState(storedSession);
-      if (availability === "archived") {
-        archivedSessions.push({ ...session, availability });
+      const session = sessionFromRow(row);
+      if (session.availability === "archived") {
+        archivedSessions.push(session);
       } else {
         sessions.push(session);
       }
@@ -463,8 +519,9 @@ export class AuthorityStore {
         .prepare(
           `INSERT INTO sessions
            (session_id, project_id, workspace_id, name, retention, residency,
-            metadata_revision, timeline_revision, created_at)
-           VALUES (?, ?, ?, 'Untitled Session', 'available', 'sleeping', 1, 1, ?)`,
+            metadata_revision, timeline_revision, read_through_timeline_revision,
+            read_state_revision, latest_unread_milestone_timeline_revision, created_at)
+           VALUES (?, ?, ?, 'Untitled Session', 'available', 'sleeping', 1, 1, 1, 1, NULL, ?)`,
         )
         .run(session.sessionId, projectId, workspaceId, now);
       this.#db
@@ -527,10 +584,12 @@ export class AuthorityStore {
         .prepare(
           `INSERT INTO sessions
            (session_id, project_id, workspace_id, name, retention, availability,
-            residency, metadata_revision, timeline_revision, created_at,
+            residency, metadata_revision, timeline_revision,
+            read_through_timeline_revision, read_state_revision,
+            latest_unread_milestone_timeline_revision, created_at,
             parent_session_id, fork_point_entry_id)
            VALUES (?, ?, ?, 'Untitled Session', 'available', 'available',
-                   'sleeping', 1, 1, ?, ?, ?)`,
+                   'sleeping', 1, 1, 1, 1, NULL, ?, ?, ?)`,
         )
         .run(
           childSessionId,
@@ -617,9 +676,13 @@ export class AuthorityStore {
 
       this.#db
         .prepare(
-          "UPDATE sessions SET timeline_revision = ? WHERE session_id = ?",
+          `UPDATE sessions SET timeline_revision = ?, read_through_timeline_revision = ?,
+             latest_unread_milestone_timeline_revision = (
+               SELECT MAX(entry_order + 1) FROM timeline_entries
+               WHERE session_id = ? AND kind IN ('response','outcome','interaction')
+             ) WHERE session_id = ?`,
         )
-        .run(entries.length + 1, childSessionId);
+        .run(entries.length + 1, entries.length + 1, childSessionId, childSessionId);
       this.#db
         .prepare(
           `UPDATE host SET sequence = sequence + 1, committed_at = ?
@@ -742,6 +805,107 @@ export class AuthorityStore {
           result.cursor,
           now,
         );
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  markSessionRead(
+    deviceId: string,
+    command: MarkReadCommand,
+    now: number,
+  ): MarkReadResult {
+    const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      const receipt = this.#db.prepare(
+        `SELECT envelope_digest, outcome_json FROM command_receipts
+         WHERE device_id = ? AND command_id = ?`,
+      ).get(deviceId, command.commandId);
+      if (receipt) {
+        this.#db.exec("COMMIT");
+        if (receipt.envelope_digest !== digest) {
+          return {
+            kind: "rejected",
+            error: "command-id-conflict",
+            cursor: this.status("").synchronization.cursor,
+          };
+        }
+        const outcome = markReadOutcomeSchema.parse(
+          JSON.parse(String(receipt.outcome_json)),
+        );
+        return { kind: "replayed", outcome, digest };
+      }
+
+      const sessionState = markReadSessionStateSchema.optional().parse(
+        this.#db.prepare(
+          `SELECT timeline_revision AS timelineRevision,
+                  read_through_timeline_revision AS readThroughTimelineRevision,
+                  read_state_revision AS readStateRevision,
+                  latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision
+           FROM sessions WHERE session_id = ?`,
+        ).get(command.sessionId),
+      );
+      const cursor = this.status("").synchronization.cursor;
+      let result: MarkReadOutcome;
+      if (!sessionState) {
+        result = { kind: "rejected", error: "unknown-session", cursor, digest };
+      } else {
+        const current = readStateFromBasis(sessionState);
+        if (
+          command.presentedTimelineRevision < 1 ||
+          command.presentedTimelineRevision > sessionState.timelineRevision
+        ) {
+          result = {
+            kind: "rejected",
+            error: "invalid-revision",
+            readState: current,
+            cursor,
+            digest,
+          };
+        } else if (
+          command.presentedTimelineRevision <=
+          sessionState.readThroughTimelineRevision
+        ) {
+          result = {
+            kind: "accepted",
+            effect: "no-op",
+            readState: current,
+            cursor,
+            digest,
+          };
+        } else {
+          this.#db.prepare(
+            `UPDATE sessions SET read_through_timeline_revision = ?, read_state_revision = read_state_revision + 1
+             WHERE session_id = ?`,
+          ).run(command.presentedTimelineRevision, command.sessionId);
+          this.#db.prepare(
+            `UPDATE host SET sequence = sequence + 1, committed_at = ?
+             WHERE singleton = 1`,
+          ).run(now);
+          const readState = this.loadSession(command.sessionId).readState;
+          const nextCursor = this.recordSynchronizationChange({
+            type: "session.read-state-changed",
+            sessionId: command.sessionId,
+            readState,
+          });
+          result = {
+            kind: "accepted",
+            effect: "advanced",
+            readState,
+            cursor: nextCursor,
+            digest,
+          };
+        }
+      }
+      this.#db.prepare(
+        `INSERT INTO command_receipts (device_id, command_id, envelope_digest, outcome_json, commit_cursor, committed_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(deviceId, command.commandId, digest, JSON.stringify(result), result.cursor, now);
+      this.#storage.beforeCommit();
       this.#db.exec("COMMIT");
       return result;
     } catch (error) {
@@ -1548,6 +1712,8 @@ export class AuthorityStore {
            WHERE session_id = ?`,
         )
         .run(acceptedRun.sessionId);
+      const milestoneRevision = this.loadSession(acceptedRun.sessionId).timelineRevision;
+      this.recordUnreadMilestone(acceptedRun.sessionId, milestoneRevision, now);
       this.#db.prepare(
         "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
       ).run(now);
@@ -1768,6 +1934,7 @@ export class AuthorityStore {
         session.timelineRevision,
         entryId,
       );
+      this.recordUnreadMilestone(interaction.sessionId, timelineChange.revision, interaction.createdAt);
       this.#db.exec("COMMIT");
       return { interaction, timelineChange };
     } catch (error) {
@@ -2239,6 +2406,36 @@ export class AuthorityStore {
     };
   }
 
+  private recordUnreadMilestone(sessionId: string, revision: number, now: number): void {
+    const before = this.loadSession(sessionId).readState;
+    this.#db.prepare(
+      `UPDATE sessions SET latest_unread_milestone_timeline_revision = ?,
+         read_state_revision = read_state_revision + ? WHERE session_id = ?`,
+    ).run(revision, before.readStatus === "read" ? 1 : 0, sessionId);
+    if (before.readStatus === "read") {
+      this.#db.prepare("UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1").run(now);
+      const readState = this.loadSession(sessionId).readState;
+      this.recordSynchronizationChange({ type: "session.read-state-changed", sessionId, readState });
+    }
+  }
+
+  private assertReadStateIntegrity(): void {
+    const invalid = this.#db.prepare(
+      `SELECT 1 FROM sessions s WHERE
+         read_through_timeline_revision IS NULL OR read_state_revision IS NULL OR
+         read_state_revision < 1 OR read_through_timeline_revision < 0 OR
+         read_through_timeline_revision > timeline_revision OR
+         latest_unread_milestone_timeline_revision > timeline_revision OR
+         (latest_unread_milestone_timeline_revision IS NOT NULL AND NOT EXISTS (
+           SELECT 1 FROM timeline_entries te LEFT JOIN runs r ON r.run_id = te.run_id
+           WHERE te.session_id = s.session_id
+             AND te.entry_order + 1 = s.latest_unread_milestone_timeline_revision
+             AND (te.kind = 'interaction' OR r.state IN ('completed','failed','cancelled','interrupted'))
+         )) LIMIT 1`,
+    ).get();
+    if (invalid) throw new Error("invalid-session-read-state");
+  }
+
   private loadTimelineEntry(entryId: string): TimelineEntry {
     const row = this.#db
       .prepare(
@@ -2263,20 +2460,11 @@ export class AuthorityStore {
   private loadSession(sessionId: string): SessionSummary {
     const row = this.#db
       .prepare(
-        `SELECT session_id AS sessionId, name, project_id AS projectId,
-                workspace_id AS workspaceId, retention, availability, residency,
-                metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision,
-                parent_session_id AS parentSessionId,
-                fork_point_entry_id AS forkPointEntryId
+        `SELECT ${SESSION_RECORD_PROJECTION}
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
-    const { availability, ...storedSession } = sessionRowSchema.parse(row);
-    const session = withInitialReadState(storedSession);
-    return availability === "archived"
-      ? { ...session, availability }
-      : session;
+    return sessionFromRow(sessionRowSchema.parse(row));
   }
 
   checkpointAt(sessionId: string, entryId: string): string | undefined {
@@ -2618,12 +2806,45 @@ export class AuthorityStore {
   }
 }
 
-function withInitialReadState(
-  session: Omit<SessionSummary, "readState">,
-): SessionSummary {
-  return {
+type SessionRow = z.infer<typeof sessionRowSchema>;
+type StoredReadStateBasis = z.infer<typeof storedReadStateBasisSchema>;
+
+function sessionFromRow(row: SessionRow): SessionSummary {
+  const {
+    availability,
+    readThroughTimelineRevision,
+    readStateRevision,
+    latestUnreadMilestoneTimelineRevision,
+    ...session
+  } = row;
+  const readStateBasis: StoredReadStateBasis = {
+    readThroughTimelineRevision,
+    readStateRevision,
+    latestUnreadMilestoneTimelineRevision,
+  };
+  const summary: SessionSummary = {
     ...session,
-    readState: initialReadState(session.timelineRevision),
+    readState: readStateFromBasis(readStateBasis),
+  };
+  return availability === "archived"
+    ? { ...summary, availability }
+    : summary;
+}
+
+function readStateFromBasis(
+  basis: StoredReadStateBasis,
+): SessionReadState {
+  const {
+    readThroughTimelineRevision,
+    readStateRevision,
+    latestUnreadMilestoneTimelineRevision,
+  } = basis;
+  return {
+    readThroughTimelineRevision,
+    readStatus: latestUnreadMilestoneTimelineRevision !== null &&
+        latestUnreadMilestoneTimelineRevision > readThroughTimelineRevision
+      ? "unread" : "read",
+    readStateRevision,
   };
 }
 
