@@ -314,6 +314,115 @@ export class SessionWorkerProtocol {
   }
 }
 
+type GenerationRunState =
+  | "idle"
+  | "executing"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "interrupted";
+type GenerationInteractionState = "open" | "applying" | "responded" | "withdrawn";
+
+/**
+ * Host-side state machine for one immutable child generation. It deliberately
+ * has no replay operation: a lost executing Run can only become interrupted.
+ */
+export class SessionGenerationLifecycle {
+  readonly #identity: WorkerGenerationIdentity;
+  readonly #requiredCapabilities: readonly string[];
+  #capabilities = new Set<string>();
+  #configGeneration?: string;
+  #runCorrelationId?: string;
+  #usedCorrelations = new Set<string>();
+  #runState: GenerationRunState = "idle";
+  #failed = false;
+  readonly #interactions = new Map<string, GenerationInteractionState>();
+
+  constructor(
+    identity: WorkerGenerationIdentity,
+    options: { requiredCapabilities?: readonly string[] } = {},
+  ) {
+    this.#identity = Object.freeze({ ...identity });
+    this.#requiredCapabilities = options.requiredCapabilities ?? [];
+  }
+
+  get runState(): GenerationRunState { return this.#runState; }
+  get shouldReplay(): false { return false; }
+
+  ready(capabilities: readonly { id: string; version: number }[], configGeneration: string): void {
+    if (this.#failed || this.#configGeneration) throw new WorkerGenerationFailure("duplicate-readiness", this.#identity);
+    this.#capabilities = new Set(capabilities.map(capability => capability.id));
+    const missing = this.#requiredCapabilities.filter(id => !this.#capabilities.has(id));
+    if (missing.length) throw new WorkerGenerationFailure("missing-required-capability", this.#identity, missing);
+    this.#configGeneration = configGeneration;
+  }
+
+  execute(correlationId: string): void {
+    if (!this.#configGeneration) throw new WorkerGenerationFailure("generation-not-ready", this.#identity);
+    if (this.#failed) throw new WorkerGenerationFailure("generation-failed", this.#identity);
+    if (this.#usedCorrelations.has(correlationId)) throw new WorkerGenerationFailure("run-correlation-reused", this.#identity);
+    if (this.#runState === "executing" || this.#runState === "cancelling") throw new WorkerGenerationFailure("generation-busy", this.#identity);
+    this.#usedCorrelations.add(correlationId);
+    this.#runCorrelationId = correlationId;
+    this.#runState = "executing";
+  }
+
+  stop(correlationId: string): "requested" {
+    this.#assertActive(correlationId);
+    if (!this.#capabilities.has("runtime.cancel")) throw new WorkerGenerationFailure("cancellation-unsupported", this.#identity);
+    this.#runState = "cancelling";
+    return "requested";
+  }
+
+  settle(correlationId: string, outcome: "completed" | "failed" | "cancelled" | "interrupted", checkpointId?: string): void {
+    this.#assertActive(correlationId);
+    if ((outcome === "completed" || outcome === "cancelled") && !checkpointId) throw new WorkerGenerationFailure("terminal-proof-missing", this.#identity);
+    this.#runState = outcome;
+    this.#runCorrelationId = undefined;
+  }
+
+  configurationChanged(configGeneration: string): void {
+    if (configGeneration !== this.#configGeneration) throw new WorkerGenerationFailure("generation-replacement-required", this.#identity);
+  }
+
+  openInteraction(interactionId: string, runCorrelationId: string): void {
+    this.#assertActive(runCorrelationId);
+    if (!this.#capabilities.has("interaction.basic")) throw new WorkerGenerationFailure("interaction-unsupported", this.#identity);
+    if (this.#interactions.has(interactionId)) throw new WorkerGenerationFailure("interaction-correlation-reused", this.#identity);
+    this.#interactions.set(interactionId, "open");
+  }
+
+  respondInteraction(interactionId: string): void {
+    if (this.#interactions.get(interactionId) !== "open") throw new WorkerGenerationFailure("interaction-not-open", this.#identity);
+    this.#interactions.set(interactionId, "applying");
+  }
+
+  acknowledgeInteraction(interactionId: string): void {
+    if (this.#interactions.get(interactionId) !== "applying") throw new WorkerGenerationFailure("interaction-not-applying", this.#identity);
+    this.#interactions.set(interactionId, "responded");
+  }
+
+  interactionState(interactionId: string): GenerationInteractionState | undefined {
+    return this.#interactions.get(interactionId);
+  }
+
+  fail(code: string): void {
+    this.#failed = true;
+    if (this.#runState === "executing" || this.#runState === "cancelling") this.#runState = "interrupted";
+    this.#runCorrelationId = undefined;
+    for (const [id, state] of this.#interactions) {
+      if (state === "open" || state === "applying") this.#interactions.set(id, "withdrawn");
+    }
+  }
+
+  #assertActive(correlationId: string): void {
+    if (this.#runCorrelationId !== correlationId || (this.#runState !== "executing" && this.#runState !== "cancelling")) {
+      throw new WorkerGenerationFailure("stale-run-correlation", this.#identity);
+    }
+  }
+}
+
 export class WorkerProtocolError extends Error {
   constructor(
     readonly code: "oversized-worker-frame" | "malformed-worker-frame",

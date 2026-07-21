@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_WORKER_FRAME_BYTES,
+  SessionGenerationLifecycle,
   SessionWorkerProtocol,
   WorkerGenerationFailure,
   decodeWorkerFrame,
@@ -127,4 +128,52 @@ test("one protocol owner fails only its generation on identity, ordering, pressu
         error instanceof WorkerGenerationFailure && error.generation === 7,
     );
   }
+});
+
+test("a generation lifecycle cancels cooperatively and never replays uncertain work", () => {
+  const lifecycle = new SessionGenerationLifecycle(identity, {
+    requiredCapabilities: ["run.execute", "input.text", "model.select", "mode.select", "checkpoint.durable"],
+  });
+  lifecycle.ready([
+    { id: "run.execute", version: 1 },
+    { id: "input.text", version: 1 },
+    { id: "model.select", version: 1 },
+    { id: "mode.select", version: 1 },
+    { id: "checkpoint.durable", version: 1 },
+    { id: "runtime.cancel", version: 1 },
+  ], "config-a");
+  lifecycle.execute("run-1");
+  assert.equal(lifecycle.stop("run-1"), "requested");
+  lifecycle.settle("run-1", "cancelled", "checkpoint-1");
+  assert.equal(lifecycle.runState, "cancelled");
+
+  assert.throws(() => lifecycle.execute("run-1"), /run-correlation-reused/);
+  assert.throws(() => lifecycle.configurationChanged("config-b"), /generation-replacement-required/);
+
+  const lost = new SessionGenerationLifecycle(identity);
+  lost.ready([{ id: "run.execute", version: 1 }], "config-a");
+  lost.execute("run-uncertain");
+  lost.fail("worker-disconnected");
+  assert.equal(lost.runState, "interrupted");
+  assert.equal(lost.shouldReplay, false);
+});
+
+test("Interaction values require worker acknowledgement and generation loss withdraws them", () => {
+  const lifecycle = new SessionGenerationLifecycle(identity);
+  lifecycle.ready([
+    { id: "run.execute", version: 1 },
+    { id: "interaction.basic", version: 1 },
+  ], "config-a");
+  lifecycle.execute("run-1");
+  lifecycle.openInteraction("interaction-1", "run-1");
+  lifecycle.respondInteraction("interaction-1");
+  assert.equal(lifecycle.interactionState("interaction-1"), "applying");
+  lifecycle.acknowledgeInteraction("interaction-1");
+  assert.equal(lifecycle.interactionState("interaction-1"), "responded");
+
+  lifecycle.openInteraction("interaction-2", "run-1");
+  lifecycle.respondInteraction("interaction-2");
+  lifecycle.fail("heartbeat-lost");
+  assert.equal(lifecycle.interactionState("interaction-2"), "withdrawn");
+  assert.throws(() => lifecycle.acknowledgeInteraction("interaction-2"), /interaction-not-applying/);
 });
