@@ -5,24 +5,33 @@ import { join } from "node:path";
 import test from "node:test";
 import { DurableOperationRouter } from "../packages/launcher/src/operations.js";
 
-test("exact invocation retries return the durably accepted operation receipt", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pidex-operations-"));
-  const journal = join(directory, "operations.jsonl");
-  const invocation = {
-    invocationId: "invocation-1",
-    policyOwner: "daemon" as const,
-    operation: "backup",
-    argumentsDigest: "ab".repeat(32),
-  };
-
+async function withOperationJournal(
+  run: (journalPath: string) => Promise<void> | void,
+): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), "pidex-operation-"));
+  const journalPath = join(directory, "operations.jsonl");
   try {
-    const firstRouter = new DurableOperationRouter(journal);
+    await run(journalPath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("exact invocation retries return the durably accepted operation receipt", async () => {
+  await withOperationJournal(journalPath => {
+    const invocation = {
+      invocationId: "invocation-1",
+      policyOwner: "daemon" as const,
+      operation: "backup",
+      argumentsDigest: "ab".repeat(32),
+    };
+    const firstRouter = new DurableOperationRouter(journalPath);
     const accepted = firstRouter.accept(invocation, {
       phase: "queued",
       cancellable: false,
     });
 
-    const restartedRouter = new DurableOperationRouter(journal);
+    const restartedRouter = new DurableOperationRouter(journalPath);
     assert.deepEqual(
       restartedRouter.accept(invocation, {
         phase: "ignored-on-retry",
@@ -39,16 +48,12 @@ test("exact invocation retries return the durably accepted operation receipt", a
         ),
       /invocation-id-conflict/,
     );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  });
 });
 
 test("progress, follow, cancellation, and reconnect reconcile operation state", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pidex-operation-follow-"));
-  const journal = join(directory, "operations.jsonl");
-  try {
-    const router = new DurableOperationRouter(journal);
+  await withOperationJournal(journalPath => {
+    const router = new DurableOperationRouter(journalPath);
     const accepted = router.accept(
       {
         invocationId: "invocation-2",
@@ -74,7 +79,7 @@ test("progress, follow, cancellation, and reconnect reconcile operation state", 
       "cancelled",
     );
 
-    const reconnected = new DurableOperationRouter(journal);
+    const reconnected = new DurableOperationRouter(journalPath);
     assert.deepEqual(reconnected.follow(accepted.operationId), {
       receipt: {
         ...accepted,
@@ -100,21 +105,17 @@ test("progress, follow, cancellation, and reconnect reconcile operation state", 
         }),
       /operation-not-cancellable/,
     );
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  });
 });
 
 test("accepted work routes to its exact policy owner independently of the caller", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "pidex-operation-route-"));
-  const journal = join(directory, "operations.jsonl");
-  let releaseRoute: (() => void) | undefined;
-  const routed = new Promise<void>(resolve => {
-    releaseRoute = resolve;
+  let finishSelectedRoute: (() => void) | undefined;
+  const selectedRouteBlocked = new Promise<void>(resolve => {
+    finishSelectedRoute = resolve;
   });
-  const calls: string[] = [];
-  try {
-    const router = new DurableOperationRouter(journal);
+  const invokedPolicyOwners: string[] = [];
+  await withOperationJournal(async journalPath => {
+    const router = new DurableOperationRouter(journalPath);
     const receipt = router.route(
       {
         invocationId: "invocation-3",
@@ -124,21 +125,22 @@ test("accepted work routes to its exact policy owner independently of the caller
       },
       { phase: "accepted", cancellable: false },
       {
-        launcher: () => { calls.push("launcher"); },
-        daemon: () => { calls.push("daemon"); },
-        maintenance: () => { calls.push("maintenance"); },
+        launcher: () => { invokedPolicyOwners.push("launcher"); },
+        daemon: () => { invokedPolicyOwners.push("daemon"); },
+        maintenance: () => { invokedPolicyOwners.push("maintenance"); },
         "source-driver": async () => {
-          calls.push("source-driver");
-          await routed;
+          invokedPolicyOwners.push("source-driver");
+          await selectedRouteBlocked;
         },
       },
     );
 
-    assert.deepEqual(new DurableOperationRouter(journal).lookup(receipt.operationId), receipt);
-    releaseRoute?.();
+    assert.deepEqual(
+      new DurableOperationRouter(journalPath).lookup(receipt.operationId),
+      receipt,
+    );
+    finishSelectedRoute?.();
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(calls, ["source-driver"]);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+    assert.deepEqual(invokedPolicyOwners, ["source-driver"]);
+  });
 });
