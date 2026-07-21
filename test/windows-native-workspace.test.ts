@@ -179,29 +179,49 @@ test("the per-instance pipe reports a failed impersonation revert before token e
 });
 
 test("the resident native launcher owns control before supervising the daemon", async () => {
-  const [workspaceCmake, launcherCmake, launcherSource] = await Promise.all([
+  const [
+    workspaceCmake,
+    launcherCmake,
+    launcherSource,
+    localControlSource,
+    supervisionSource,
+    historySource,
+  ] = await Promise.all([
     readNativeFile("CMakeLists.txt"),
     readNativeFile("launcher/CMakeLists.txt"),
     readNativeFile("launcher/src/main.cpp"),
+    readNativeFile("launcher/src/local_control.cpp"),
+    readNativeFile("launcher/src/supervision.cpp"),
+    readNativeFile("launcher/src/history.cpp"),
   ]);
 
   assert.match(workspaceCmake, /add_subdirectory\(launcher\)/);
   assert.match(launcherCmake, /add_executable\(pidex-launcher/);
   assert.match(launcherCmake, /OUTPUT_NAME "pidex-launcher"/);
   assert.match(launcherSource, /create_instance_pipe/);
-  assert.match(launcherSource, /spawn_contained/);
   const compositionRoot = launcherSource.slice(launcherSource.indexOf("int wmain"));
   assert.ok(
     compositionRoot.indexOf("create_instance_pipe") <
-      compositionRoot.indexOf("start_daemon"),
+      compositionRoot.indexOf("start_supervised_daemon"),
   );
-  assert.match(launcherSource, /ConnectNamedPipe/);
-  assert.match(launcherSource, /authenticate_pipe_peer/);
-  assert.match(launcherSource, /STARTUP_BACKOFF_MS/);
-  assert.match(launcherSource, /READINESS_DEADLINE_MS/);
-  assert.match(launcherSource, /write_launcher_history/);
+  assert.match(localControlSource, /ConnectNamedPipe/);
+  assert.match(localControlSource, /authenticate_pipe_peer/);
+  assert.match(supervisionSource, /spawn_contained/);
+  assert.match(supervisionSource, /STARTUP_BACKOFF_MS/);
+  assert.match(supervisionSource, /READINESS_DEADLINE_MS/);
+  assert.match(historySource, /append_launcher_history/);
   assert.match(launcherSource, /CreateMutexW/);
-  assert.match(launcherSource, /WaitForSingleObject/);
+  assert.match(launcherSource, /Sleep\(INFINITE\)/);
+});
+
+test("the resident native launcher has no shutdown cleanup after an infinite wait", async () => {
+  const launcherSource = await readNativeFile("launcher/src/main.cpp");
+  const waitForShutdown = launcherSource.indexOf(
+    "WaitForSingleObject(stopping.get(), INFINITE)",
+  );
+  const signalShutdown = launcherSource.indexOf("SetEvent(stopping.get())");
+
+  assert.ok(waitForShutdown < 0 || signalShutdown < waitForShutdown);
 });
 
 test("the Windows addon has one raw Node-API entry point without V8 or libuv", async () => {

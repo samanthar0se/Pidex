@@ -1,4 +1,9 @@
-add_executable(pidex-launcher src/main.cpp)
+add_executable(pidex-launcher
+  src/history.cpp
+  src/local_control.cpp
+  src/main.cpp
+  src/supervision.cpp
+)
 
 target_link_libraries(pidex-launcher PRIVATE pidex_windows_common)
 target_compile_features(pidex-launcher PRIVATE cxx_std_20)
