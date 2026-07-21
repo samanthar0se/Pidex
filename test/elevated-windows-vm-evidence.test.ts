@@ -42,6 +42,7 @@ test("elevated Windows VM evidence binds both exact lanes and always cleans each
   const campaign = new ElevatedWindowsVmCampaign(candidate, [
     passingScenario("native-capabilities", "a".repeat(64), recordCall),
     passingScenario("two-checkout-source-lifecycle", "a".repeat(64), recordCall),
+    passingScenario("launcher-cli-maintenance-states", "a".repeat(64), recordCall),
   ]);
 
   const evidence = await campaign.run({
@@ -59,8 +60,10 @@ test("elevated Windows VM evidence binds both exact lanes and always cleans each
   assert.deepEqual(calls, [
     "run:primary:native-capabilities", "cleanup:primary:native-capabilities",
     "run:primary:two-checkout-source-lifecycle", "cleanup:primary:two-checkout-source-lifecycle",
+    "run:primary:launcher-cli-maintenance-states", "cleanup:primary:launcher-cli-maintenance-states",
     "run:secondary:native-capabilities", "cleanup:secondary:native-capabilities",
     "run:secondary:two-checkout-source-lifecycle", "cleanup:secondary:two-checkout-source-lifecycle",
+    "run:secondary:launcher-cli-maintenance-states", "cleanup:secondary:launcher-cli-maintenance-states",
   ]);
 });
 
@@ -76,6 +79,7 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
       async run() { return { artifactSha256: "b".repeat(64), passedChecks: requiredChecks["two-checkout-source-lifecycle"] }; },
       async cleanup() {},
     },
+    passingScenario("launcher-cli-maintenance-states", "b".repeat(64)),
   ]);
   const input = {
     vm: { os: "Windows 11" as const, architecture: "x64" as const, elevated: true, disposable: true },
@@ -85,6 +89,7 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
   const diagnosticRetry = await new ElevatedWindowsVmCampaign(candidate, [
     passingScenario("native-capabilities", "c".repeat(64)),
     passingScenario("two-checkout-source-lifecycle", "d".repeat(64)),
+    passingScenario("launcher-cli-maintenance-states", "e".repeat(64)),
   ]).run(input);
   const attempts = new FirstAttemptEvidence();
 
@@ -97,4 +102,34 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
     "Job assignment failed; cleanup failed: handle remained open",
   );
   assert.equal(attempts.authoritative(candidate.candidate), failed);
+});
+
+test("launcher, CLI, and maintenance evidence requires every supported Host state and contract", async () => {
+  const campaign = new ElevatedWindowsVmCampaign(candidate, [
+    passingScenario("native-capabilities", "a".repeat(64)),
+    passingScenario("two-checkout-source-lifecycle", "b".repeat(64)),
+    {
+      name: "launcher-cli-maintenance-states",
+      async run() {
+        return {
+          artifactSha256: "c".repeat(64),
+          passedChecks: requiredChecks["launcher-cli-maintenance-states"].filter(
+            check => check !== "durable-receipts-and-conservative-reconciliation",
+          ),
+        };
+      },
+      async cleanup() {},
+    },
+  ]);
+
+  const evidence = await campaign.run({
+    vm: { os: "Windows 11", architecture: "x64", elevated: true, disposable: true },
+    attemptedAt: "2026-07-21T12:00:00.000Z",
+  });
+
+  assert.equal(evidence.status, "failed");
+  assert.match(
+    evidence.lanes[0]!.scenarios[2]!.failure ?? "",
+    /durable-receipts-and-conservative-reconciliation/,
+  );
 });

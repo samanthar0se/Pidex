@@ -25,7 +25,7 @@ export interface ElevatedWindowsVmIdentity {
 }
 
 export interface ElevatedWindowsVmScenario {
-  name: "native-capabilities" | "two-checkout-source-lifecycle";
+  name: "native-capabilities" | "two-checkout-source-lifecycle" | "launcher-cli-maintenance-states";
   run(context: ElevatedWindowsVmContext): Promise<{
     artifactSha256: string;
     passedChecks?: readonly string[];
@@ -128,6 +128,22 @@ export const requiredChecks = {
     "fixed-origin-collision-rejection",
     "unconditional-fixture-cleanup",
   ],
+  "launcher-cli-maintenance-states": [
+    "ready-state",
+    "degraded-state",
+    "stopped-state",
+    "circuit-state",
+    "recovery-only-state",
+    "incompatible-state",
+    "interrupted-operation-state",
+    "update-state",
+    "rollback-state",
+    "stopped-only-key-repair-state",
+    "every-launcher-cli-lifecycle-repair-update-backup-and-maintenance-family",
+    "durable-receipts-and-conservative-reconciliation",
+    "stable-exits-secret-channels-and-output-separation",
+    "redacted-logs-diagnostics-and-support-artifacts",
+  ],
 } as const satisfies Record<ElevatedWindowsVmScenario["name"], readonly string[]>;
 
 export { FirstAttemptEvidence } from "./first-attempt-evidence.js";
@@ -137,8 +153,13 @@ function validateCampaign(candidate: WindowsNativeCandidate, scenarios: readonly
   const lanes = candidate.nodeLanes.map(lane => lane.lane);
   if (lanes.length !== 2 || lanes[0] !== "primary" || lanes[1] !== "secondary") throw new Error("campaign requires exact primary and secondary Node lanes");
   const names = scenarios.map(scenario => scenario.name);
-  if (names.length !== 2 || !names.includes("native-capabilities") || !names.includes("two-checkout-source-lifecycle")) {
-    throw new Error("campaign requires native capabilities and two-checkout source lifecycle scenarios");
+  const requiredScenarios: readonly ElevatedWindowsVmScenario["name"][] = [
+    "native-capabilities",
+    "two-checkout-source-lifecycle",
+    "launcher-cli-maintenance-states",
+  ];
+  if (names.length !== requiredScenarios.length || requiredScenarios.some(name => !names.includes(name))) {
+    throw new Error("campaign requires native capabilities, two-checkout source lifecycle, and launcher/CLI/maintenance state scenarios");
   }
 }
 
