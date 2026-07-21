@@ -7,3 +7,4 @@ export * from "./ports.js";
 export * from "./process.js";
 export * from "./storage.js";
 export * from "./diagnostics.js";
+export * from "./elevated-vm-evidence.js";
