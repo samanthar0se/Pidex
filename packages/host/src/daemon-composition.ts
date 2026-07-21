@@ -11,36 +11,42 @@ export type Availability = "pending" | "available" | "degraded" | "unavailable" 
 export type HealthFreshness = "current" | "stale";
 export type HealthSeverity = "info" | "warning" | "error" | "critical";
 export type HealthRetryability = "automatic" | "manual" | "not-retryable";
+export type HealthCode = string;
+export type HealthStage = string;
+export type HealthObservationTime = string;
+export type HealthInstanceId = string;
+export type HealthReleaseId = string;
+export type HealthConfigGeneration = number;
 
 export interface HealthState {
   readonly scope: HealthScope;
   readonly availability: Availability;
   readonly freshness: HealthFreshness;
-  readonly code: string;
-  readonly stage?: string;
+  readonly code: HealthCode;
+  readonly stage?: HealthStage;
   readonly severity?: HealthSeverity;
   readonly retryability?: HealthRetryability;
-  readonly firstObservedAt?: string;
-  readonly latestObservedAt?: string;
-  readonly instanceId?: string;
-  readonly releaseId?: string;
-  readonly configGeneration?: number;
+  readonly firstObservedAt?: HealthObservationTime;
+  readonly latestObservedAt?: HealthObservationTime;
+  readonly instanceId?: HealthInstanceId;
+  readonly releaseId?: HealthReleaseId;
+  readonly configGeneration?: HealthConfigGeneration;
   readonly evidence?: Readonly<Record<string, string | number | boolean>>;
   readonly remediation?: string;
 }
 
 export interface HealthFinding {
-  readonly code: string;
+  readonly code: HealthCode;
   readonly scope: HealthScope;
-  readonly stage: string;
+  readonly stage: HealthStage;
   readonly severity: HealthSeverity;
   readonly availability: Availability;
   readonly retryability: HealthRetryability;
-  readonly observedAt: string;
+  readonly observedAt: HealthObservationTime;
   readonly freshness?: HealthFreshness;
-  readonly instanceId?: string;
-  readonly releaseId?: string;
-  readonly configGeneration?: number;
+  readonly instanceId?: HealthInstanceId;
+  readonly releaseId?: HealthReleaseId;
+  readonly configGeneration?: HealthConfigGeneration;
   /** Redacted, bounded evidence only. */
   readonly evidence?: Readonly<Record<string, string | number | boolean>>;
   readonly remediation?: string;
@@ -60,7 +66,7 @@ export class HostHealthGraph {
   }
   states(): readonly HealthState[] { return [...this.#states.values()]; }
   findings(): readonly HealthState[] { return [...this.#findings.values()]; }
-  set(scope: HealthScope, availability: Availability, code: string, remediation?: string): void {
+  set(scope: HealthScope, availability: Availability, code: HealthCode, remediation?: string): void {
     const state = Object.freeze({ scope, availability, freshness: "current" as const, code, ...(remediation ? { remediation } : {}) });
     this.#baselines.set(scope, state);
     if (![...this.#findings.values()].some(finding => finding.scope === scope)) this.#states.set(scope, state);
@@ -91,7 +97,7 @@ export class HostHealthGraph {
     this.#findings.set(key, state);
     this.#states.set(finding.scope, state);
   }
-  resolve(scope: HealthScope, code: string): void {
+  resolve(scope: HealthScope, code: HealthCode): void {
     const key = findingKey(scope, code);
     const finding = this.#findings.get(key);
     if (!finding) return;
@@ -101,7 +107,7 @@ export class HostHealthGraph {
   }
 }
 
-function findingKey(scope: HealthScope, code: string): string {
+function findingKey(scope: HealthScope, code: HealthCode): string {
   return `${scope}\0${code}`;
 }
 

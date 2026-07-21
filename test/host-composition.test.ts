@@ -4,6 +4,7 @@ import { parseResolvedLaunchManifest } from "../packages/launch-manifest/src/ind
 import {
   composeManifestHost,
   HostHealthGraph,
+  type HealthFinding,
   type ManifestHostFactories,
 } from "../packages/host/src/daemon-composition.js";
 
@@ -143,31 +144,28 @@ test("a stable finding degrades only its decided service scope and can recover",
 test("Session generation findings are independent and preserve observation history", () => {
   const health = new HostHealthGraph(["authority"]);
   health.set("authority", "available", "normal");
-
-  health.report({
+  const workerGenerationLost = {
     code: "worker-generation-lost",
     scope: "session:one",
     stage: "worker",
     severity: "error",
     availability: "unavailable",
+    releaseId: "r1",
+    configGeneration: 1,
+  } as const satisfies Partial<HealthFinding>;
+
+  health.report({
+    ...workerGenerationLost,
     retryability: "manual",
     remediation: "Wake the Session to create a new worker generation",
     observedAt: "2026-07-21T12:00:00.000Z",
-    releaseId: "r1",
-    configGeneration: 1,
   });
   health.report({
-    code: "worker-generation-lost",
-    scope: "session:one",
-    stage: "worker",
-    severity: "error",
-    availability: "unavailable",
+    ...workerGenerationLost,
     retryability: "automatic",
     remediation: "Retry worker generation readiness",
     observedAt: "2026-07-21T12:00:30.000Z",
     freshness: "stale",
-    releaseId: "r1",
-    configGeneration: 1,
   });
 
   assert.equal(health.scope("authority").availability, "available");
