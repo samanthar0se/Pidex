@@ -285,24 +285,20 @@ export interface HostAdapters {
   windows: WindowsPlatformAdapter;
 }
 
-export type AdapterMode = "product" | "deterministic";
+export type AdapterMode = "deterministic";
 
 const DETERMINISTIC_DPAPI_HEADER = Buffer.from("PIDEX-DPAPI-V1\0");
 
-export function adaptersFor(mode: AdapterMode = "product"): HostAdapters {
-  const deterministic = mode === "deterministic";
-  const windows = deterministic
-    ? deterministicWindowsAdapter()
-    : productWindowsAdapter();
-
+export function adaptersFor(mode: AdapterMode): HostAdapters {
+  if (mode !== "deterministic") {
+    throw new Error("legacy adapters are restricted to deterministic development evidence");
+  }
   return {
-    clock: {
-      now: () => (deterministic ? 1_700_000_000_000 : Date.now()),
-    },
-    pi: deterministic ? deterministicPiAdapter() : { kind: "real" },
+    clock: { now: () => 1_700_000_000_000 },
+    pi: deterministicPiAdapter(),
     network: { beforeSend() {} },
     storage: { beforeCommit() {} },
-    windows,
+    windows: deterministicWindowsAdapter(),
   };
 }
 
@@ -388,76 +384,5 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
       driveType: "fixed",
     }),
     observeVolumeChanges: () => () => {},
-  };
-}
-
-function productWindowsAdapter(): WindowsPlatformAdapter {
-  if (process.platform !== "win32") {
-    throw new Error("The product Windows adapter requires Windows");
-  }
-
-  // Native operations are deliberately concentrated here. The packaged Windows
-  // build supplies the signed native bridge; no privileged daemon is required.
-  return {
-    kind: "windows",
-    protectForCurrentUser() {
-      throw new Error("Pidex Windows native DPAPI bridge is not bundled");
-    },
-    unprotectForCurrentUser() {
-      throw new Error("Pidex Windows native DPAPI bridge is not bundled");
-    },
-    restrictToCurrentUser() {
-      throw new Error("Pidex Windows native ACL bridge is not bundled");
-    },
-    trustCurrentUserCertificate() {
-      throw new Error("Pidex Windows certificate bridge is not bundled");
-    },
-    removeCurrentUserCertificate() {
-      throw new Error("Pidex Windows certificate bridge is not bundled");
-    },
-    registerLogonTask() {
-      throw new Error("Pidex Windows Task Scheduler bridge is not bundled");
-    },
-    privateInterfaces() {
-      throw new Error("Pidex Windows network-profile bridge is not bundled");
-    },
-    advertisePidex() {
-      throw new Error("Pidex Windows mDNS bridge is not bundled");
-    },
-    inspectPidexFirewall() {
-      return {
-        state: "unverifiable",
-        detail: "Windows Firewall bridge is not bundled",
-      };
-    },
-    applyPidexFirewall(operation) {
-      if (
-        operation.operation !== "ensure-private-rule" &&
-        operation.operation !== "remove-rule"
-      ) {
-        throw new Error("Invalid privileged operation");
-      }
-      throw new Error("Pidex Windows Firewall bridge is not bundled");
-    },
-    writeCoarseEvent() {},
-    createContainedSessionWorker() {
-      // The packaged native bridge uses CREATE_SUSPENDED, a Job configured
-      // with KILL_ON_JOB_CLOSE and no breakaway flags, AssignProcessToJobObject,
-      // then ResumeThread. Never fall back to an escapable child.
-      throw new SessionContainmentError(
-        "Pidex Windows Session Job bridge is not bundled",
-      );
-    },
-    async classifyStorage() {
-      throw new Error("Pidex Windows volume classification bridge is not bundled");
-    },
-    async classifyStorageRoot() {
-      throw new Error(
-        "Pidex Windows storage classification bridge is not bundled",
-      );
-    },
-    observeVolumeChanges() {
-      return () => {};
-    },
   };
 }

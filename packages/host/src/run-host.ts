@@ -11,15 +11,9 @@ export async function runHost(
   adapterMode: AdapterMode,
   certificateProvisioner?: HostCertificateProvisioner,
 ): Promise<void> {
-  if (adapterMode === "product") {
-    throw new Error(
-      "product Host startup requires the verified manifest composition root",
-    );
-  }
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
   const port = Number(process.env.PIDEX_PORT ?? 7443);
-  const hostname =
-    adapterMode === "deterministic" ? process.env.PIDEX_HOSTNAME : undefined;
+  const hostname = process.env.PIDEX_HOSTNAME;
   const host = await startHost({
     dataDir,
     port,
@@ -29,10 +23,8 @@ export async function runHost(
   });
 
   console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
-  if (adapterMode === "deterministic") {
-    console.log(`Pair this device: ${host.createPairing().qrPayload}`);
-    printCertificateTrustGuidance();
-  }
+  console.log(`Pair this device: ${host.createPairing().qrPayload}`);
+  printCertificateTrustGuidance();
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, async () => {

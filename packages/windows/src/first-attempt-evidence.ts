@@ -13,4 +13,15 @@ export class FirstAttemptEvidence {
   authoritative(candidate: string): ElevatedWindowsVmEvidence | undefined {
     return this.attempts.get(candidate);
   }
+
+  requirePassing(candidate: string): ElevatedWindowsVmEvidence {
+    const evidence = this.authoritative(candidate);
+    if (!evidence) {
+      throw new Error("authoritative first attempt is missing");
+    }
+    if (evidence.status !== "passed") {
+      throw new Error("authoritative first attempt did not pass");
+    }
+    return evidence;
+  }
 }

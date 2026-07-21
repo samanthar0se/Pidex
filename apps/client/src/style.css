@@ -23,7 +23,10 @@ nav { min-height: 0; overflow: auto; margin-top: 14px; flex: 1; }
 .no-results { padding: 12px; color: #77736a; }
 .archived { margin-top: 10px; margin-bottom: 0; background: transparent; }
 main { min-width: 0; position: relative; }
-header { height: 70px; padding: 18px 32px; border-bottom: 1px solid #e4e0d6; }
+header { height: 70px; display: flex; align-items: center; gap: 8px; padding: 12px 32px; border-bottom: 1px solid #e4e0d6; }
+.header-title { min-width: 0; flex: 1; }
+.header-title h1, .header-title small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-stop { flex: 0 0 auto; min-height: 40px; padding: 8px 14px; border: 1px solid #b45b4c; border-radius: 99px; background: transparent; color: #8b2d21; }
 h1 { font-size: 18px; margin: 0; }
 small { display: block; color: #77736a; }
 .menu { display: none; }
@@ -78,7 +81,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .drawer-open .drawer-backdrop { display: block; }
   .close-drawer { display: block; min-width: 44px; min-height: 44px; border: 0; background: transparent; }
   .menu { display: inline-flex; float: left; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; margin-right: 8px; border: 0; background: transparent; }
-  header { padding: 12px; }
+  header { position: sticky; z-index: 1; top: 0; padding: 8px 12px; background: #fbfaf7; }
   .timeline, .new-session { padding: 20px 18px max(120px, calc(90px + env(safe-area-inset-bottom))); }
   .jump-latest { right: 18px; bottom: 140px; }
   .scope-controls { grid-template-columns: 1fr; }
