@@ -134,7 +134,7 @@ test("forks stable history into an inert, independently scoped child with durabl
   }
 });
 
-test("fork command validates the runtime checkpoint and publishes the child session", async () => {
+test("fork command publishes validated child genesis and closes its bootstrap on publication or commit failure", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-fork-command-"));
   const baseAdapters = adaptersFor("deterministic");
   let forkRequest:
@@ -211,6 +211,21 @@ test("fork command validates the runtime checkpoint and publishes the child sess
     const forkPointEntryId = completed.timeline.at(-1)?.entryId;
     assert.ok(forkPointEntryId);
 
+    async function expectForkRejected(commandId: string): Promise<void> {
+      socket.send(JSON.stringify({
+        type: "session.fork",
+        commandId,
+        parentSessionId,
+        forkPointEntryId,
+      }));
+      const failure = await nextControlMessage(socket);
+      assert.equal(
+        failure.type === "command.outcome" && failure.outcome,
+        "rejected",
+      );
+      assert.equal(bootstrapLifecycle.at(-1), "close");
+    }
+
     socket.send(
       JSON.stringify({
         type: "session.fork",
@@ -262,29 +277,11 @@ test("fork command validates the runtime checkpoint and publishes the child sess
     childStore.close();
 
     forkFailure = "publication";
-    socket.send(JSON.stringify({
-      type: "session.fork", commandId: "fork-publication-failure",
-      parentSessionId, forkPointEntryId,
-    }));
-    const publicationFailure = await nextControlMessage(socket);
-    assert.equal(
-      publicationFailure.type === "command.outcome" && publicationFailure.outcome,
-      "rejected",
-    );
-    assert.equal(bootstrapLifecycle.at(-1), "close");
+    await expectForkRejected("fork-publication-failure");
 
     forkFailure = null;
     baseAdapters.storage.beforeCommit = () => { throw new Error("commit-interrupted"); };
-    socket.send(JSON.stringify({
-      type: "session.fork", commandId: "fork-commit-failure",
-      parentSessionId, forkPointEntryId,
-    }));
-    const commitFailure = await nextControlMessage(socket);
-    assert.equal(
-      commitFailure.type === "command.outcome" && commitFailure.outcome,
-      "rejected",
-    );
-    assert.equal(bootstrapLifecycle.at(-1), "close");
+    await expectForkRejected("fork-commit-failure");
 
     const afterFailures = new AuthorityStore(
       join(dataDir, "authority.sqlite"), adaptersFor("deterministic"),
