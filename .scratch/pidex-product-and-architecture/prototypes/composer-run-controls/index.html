@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pidex Composer prototype</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside>
+    <button class="new">＋ New Session</button>
+    <div class="search">⌕ Search Sessions</div>
+    <h2>Pidex</h2>
+    <p class="workspace">main</p>
+    <button class="session selected"><span>Reconnect receipt race</span><small>● Working · unread</small></button>
+    <button class="session"><span>Release pipeline review</span><small>◆ Needs response · unread</small></button>
+    <button class="session"><span>Index corruption diagnosis</span><small>◆ Held work</small></button>
+    <button class="session"><span>PWA cache boundaries</span><small>Quiet</small></button>
+    <footer><b>Current</b><br><small>Host synced just now · This Device</small></footer>
+  </aside>
+  <main>
+    <header><div><strong>Reconnect receipt race</strong><small>Pidex / main</small></div><button>•••</button></header>
+    <section class="timeline">
+      <article class="prompt">Make reconnect command receipts impossible to replay twice.</article>
+      <article><p class="working">◉ Working for 2m 14s</p><p>I’m tracing command identity through reconnection and the authoritative receipt lookup.</p><div class="tool">✓ Read <code>packages/host/src/commands.ts</code></div><div class="tool running">◌ Running product tests…</div></article>
+      <div class="spacer"></div>
+    </section>
+    <section id="control-surface"></section>
+  </main>
+  <nav id="switcher" aria-label="Prototype variants"></nav>
+  <script type="module" src="prototype.js"></script>
+</body>
+</html>
