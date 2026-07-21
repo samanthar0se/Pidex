@@ -124,6 +124,7 @@ function publish(
         areEquivalent(stagedPath, request.target, kind) &&
         passesValidation(request, request.target);
       if (targetIsReusable) {
+        flushParentDirectory(parentDirectory, adapter);
         return { target: request.target, outcome: "already-published" };
       }
 
@@ -179,6 +180,13 @@ function publishStagedCandidate(
   validate(request, request.target);
   adapter.step("validated-after-publication", request.target);
 
+  flushParentDirectory(parentDirectory, adapter);
+}
+
+function flushParentDirectory(
+  parentDirectory: string,
+  adapter: PublicationAdapter,
+): void {
   const flushResult = adapter.flushDirectory(parentDirectory);
   if (flushResult === "flushed") {
     adapter.step("parent-directory-flushed", parentDirectory);

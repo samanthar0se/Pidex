@@ -9,6 +9,10 @@ import {
 } from "./index.js";
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const checkpointIdSchema = z
+  .string()
+  .regex(/^sha256:[a-f0-9]{64}$/)
+  .brand<"PiCheckpointId">();
 const checkpointManifestSchema = z.strictObject({
   schemaVersion: z.literal(1),
   sessionId: z.string().min(1),
@@ -31,6 +35,7 @@ export interface PiCheckpointExport {
 }
 
 export type PiCheckpointManifest = z.infer<typeof checkpointManifestSchema>;
+export type PiCheckpointId = z.infer<typeof checkpointIdSchema>;
 
 /** Publishes worker-private state as immutable objects and returns only its opaque identity. */
 export class PiCheckpointPublisher {
@@ -42,10 +47,10 @@ export class PiCheckpointPublisher {
     this.#adapter = adapter;
   }
 
-  publish(input: PiCheckpointExport): string {
+  publish(input: PiCheckpointExport): PiCheckpointId {
     if (input.chunks.length === 0) throw new Error("checkpoint-has-no-chunks");
-    const chunks = input.chunks.map(value => {
-      const bytes = Buffer.from(value);
+    const chunks = input.chunks.map(chunk => {
+      const bytes = Buffer.from(chunk);
       const digest = sha256(bytes);
       publishImmutableFile({
         target: join(this.#root, "chunks", digest),
@@ -64,7 +69,7 @@ export class PiCheckpointPublisher {
       chunks,
       integrity: {
         algorithm: "sha256",
-        chunksDigest: sha256(Buffer.from(JSON.stringify(chunks))),
+        chunksDigest: digestChunkList(chunks),
       },
       publicationState: "published",
     });
@@ -78,14 +83,14 @@ export class PiCheckpointPublisher {
     // Verify the final publication, including every referenced chunk, before
     // permitting Host authority to learn its identity.
     this.#validateManifest(join(this.#root, "manifests", digest), digest);
-    return `sha256:${digest}`;
+    return checkpointIdSchema.parse(`sha256:${digest}`);
   }
 
   #validateManifest(path: string, expectedDigest: string): void {
     const bytes = readFileSync(path);
     if (sha256(bytes) !== expectedDigest) throw new Error("checkpoint-manifest-integrity-failed");
     const manifest = checkpointManifestSchema.parse(JSON.parse(bytes.toString("utf8")));
-    if (sha256(Buffer.from(JSON.stringify(manifest.chunks))) !== manifest.integrity.chunksDigest) {
+    if (digestChunkList(manifest.chunks) !== manifest.integrity.chunksDigest) {
       throw new Error("checkpoint-chunk-list-integrity-failed");
     }
     for (const chunk of manifest.chunks) {
@@ -101,4 +106,10 @@ export class PiCheckpointPublisher {
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function digestChunkList(
+  chunks: readonly { sha256: string; bytes: number }[],
+): string {
+  return sha256(Buffer.from(JSON.stringify(chunks)));
 }
