@@ -1,6 +1,7 @@
 add_library(pidex_windows_common STATIC
   src/error.cpp
   src/identity.cpp
+  src/process.cpp
 )
 
 target_include_directories(pidex_windows_common PUBLIC include)

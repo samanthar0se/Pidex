@@ -94,3 +94,31 @@ test("the Windows common library exposes identity, error, and lifetime primitive
   assert.match(raiiHeader, /unique_com/);
   assert.match(raiiHeader, /unique_registration/);
 });
+
+test("a managed process cannot run before its fresh kill-on-close Job contains it", async () => {
+  const [commonCmake, processHeader, processSource] = await Promise.all([
+    readNativeFile("common/CMakeLists.txt"),
+    readNativeFile("common/include/pidex/windows/process.hpp"),
+    readNativeFile("common/src/process.cpp"),
+  ]);
+
+  assert.match(commonCmake, /src\/process\.cpp/);
+  assert.match(processHeader, /spawn_contained/);
+  assert.match(processHeader, /class managed_process/);
+  assert.match(processHeader, /process_exit_evidence/);
+  assert.match(processHeader, /job_empty/);
+
+  const create = processSource.indexOf("CreateProcessW");
+  const job = processSource.indexOf("CreateJobObjectW");
+  const configure = processSource.indexOf("SetInformationJobObject");
+  const assign = processSource.indexOf("AssignProcessToJobObject");
+  const resume = processSource.indexOf("ResumeThread");
+  assert.ok(create >= 0 && job > create && configure > job);
+  assert.ok(assign > configure && resume > assign);
+  assert.match(processSource, /CREATE_SUSPENDED/);
+  assert.match(processSource, /JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE/);
+  assert.doesNotMatch(processSource, /JOB_OBJECT_LIMIT_(?:SILENT_)?BREAKAWAY_OK/);
+  assert.match(processSource, /TerminateProcess/);
+  assert.match(processSource, /terminate_partial_process/);
+  assert.match(processSource, /std::call_once/);
+});
