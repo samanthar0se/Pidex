@@ -23,7 +23,11 @@ export interface TimelineFact {
   blobId?: string | null;
   toolCallId?: string | null;
 }
-export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; olderCursor?: string | null; }
+export type RunState = "queued" | "executing" | "cancelling" | "held" | "completed" | "failed" | "cancelled" | "interrupted";
+export interface RunFact {
+  runId: string; sessionId: string; sessionOrder: number; prompt: string; state: RunState; workerGeneration?: string;
+}
+export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; runs?: RunFact[]; olderCursor?: string | null; }
 export interface TimelineChange { baseRevision: number; revision: number; entry: TimelineFact }
 export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
 export interface DiscoveryProjection {
@@ -52,6 +56,16 @@ export interface NewSessionState extends NewSessionScope {
   progress: NewSessionProgress;
 }
 
+type ComposerRunAction = "steer" | "stop" | "release" | "cancel";
+type ComposerCommandTarget =
+  | { action: "submit" }
+  | { action: ComposerRunAction; runId: string };
+type ComposerCommand = ComposerCommandTarget & {
+  commandId: string;
+  phase: "pending" | "accepted-awaiting-projection" | "rejected" | "uncertain";
+  reason?: string;
+};
+
 export interface ClientAdapters {
   host: {
     readCatalog?(): Promise<DiscoveryProjection>;
@@ -59,7 +73,11 @@ export interface ClientAdapters {
     restoreSession?(session: SessionFact): Promise<void>;
     createSession?(command: { commandId: string } & NewSessionScope): Promise<SessionCreateResult>;
     submitRun?(command: { commandId: string; sessionId: string; prompt: string }): Promise<CommandResult>;
+    steerRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedTimelineRevision: number; text: string }): Promise<CommandResult>;
+    stopRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedState: "executing"; observedTimelineRevision: number }): Promise<CommandResult>;
+    actOnHeldRun?(command: { commandId: string; runId: string; action: "release" | "cancel" }): Promise<CommandResult>;
     watchSession?(sessionId: string, listener: (change: TimelineChange) => void): () => void;
+    watchRuns?(sessionId: string, listener: (runs: RunFact[]) => void): () => void;
     readOlder?(sessionId: string, cursor: string): Promise<TimelinePage>;
     markRead?(sessionId: string, timelineRevision: number): Promise<void>;
   };
@@ -84,6 +102,7 @@ export interface ClientState {
   archivedSessions: Readonly<Record<string, SessionFact>>;
   archivedOrder: readonly string[];
   timelines: Readonly<Record<string, readonly TimelineFact[]>>;
+  runs: Readonly<Record<string, readonly RunFact[]>>;
   olderCursors: Readonly<Record<string, string | null>>;
   paging: "idle" | "loading" | "error";
   drafts: Readonly<Record<string, string>>;
@@ -99,6 +118,10 @@ export interface ClientState {
   setNewSessionDraft(value: string): Promise<void>;
   submitNewSession(createEmpty?: boolean): Promise<void>;
   setDraft(value: string): Promise<void>;
+  composerCommand?: ComposerCommand;
+  commandOutcomes: readonly ComposerCommand[];
+  submitComposer(): Promise<void>;
+  actOnHeldRun(runId: string, action: "release" | "cancel"): Promise<void>;
   setSearchQuery(query: string): void;
   setDiscoveryMode(mode: "available" | "archived"): void;
   toggleProject(projectId: string): Promise<void>;
@@ -113,7 +136,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
   return createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
-    timelines: {}, olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
+    timelines: {}, runs: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     async loadDiscovery() {
       if (!adapters.host.readCatalog) return;
@@ -192,6 +215,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       set(state => ({
         sessions: { ...state.sessions, [sessionId]: projection.session },
         timelines: { ...state.timelines, [sessionId]: projection.timeline },
+        runs: { ...state.runs, [sessionId]: projection.runs ?? [] },
         olderCursors: { ...state.olderCursors, [sessionId]: projection.olderCursor ?? null },
         drafts: { ...state.drafts, [sessionId]: draft }, isSessionCurrent: true,
       }));
@@ -216,12 +240,58 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
           };
         });
       });
+      adapters.host.watchRuns?.(sessionId, runs => {
+        if (get().selectedSessionId === sessionId) set(state => ({ runs: { ...state.runs, [sessionId]: runs } }));
+      });
     },
     async setDraft(value) {
       const sessionId = get().selectedSessionId;
       if (!sessionId) return;
       set(state => ({ drafts: { ...state.drafts, [sessionId]: value } }));
       await adapters.drafts.write(sessionId, value);
+    },
+    async submitComposer() {
+      const state = get();
+      const sessionId = state.selectedSessionId;
+      const session = sessionId ? state.sessions[sessionId] : undefined;
+      if (!sessionId || !session || !state.isSessionCurrent) return;
+      const executing = state.runs[sessionId]?.find(run => run.state === "executing" && run.workerGeneration);
+      const text = state.drafts[sessionId] ?? "";
+      const id = commandId();
+      let target: ComposerCommandTarget;
+      let result: CommandResult;
+      if (executing && text.trim() && adapters.host.steerRun) {
+        target = { action: "steer", runId: executing.runId };
+        set({ composerCommand: pendingCommand(id, target) });
+        result = await adapters.host.steerRun({ commandId: id, sessionId, runId: executing.runId, workerGeneration: executing.workerGeneration!, observedTimelineRevision: session.timelineRevision, text });
+      } else if (executing && !text.trim() && adapters.host.stopRun) {
+        target = { action: "stop", runId: executing.runId };
+        set({ composerCommand: pendingCommand(id, target) });
+        result = await adapters.host.stopRun({ commandId: id, sessionId, runId: executing.runId, workerGeneration: executing.workerGeneration!, observedState: "executing", observedTimelineRevision: session.timelineRevision });
+      } else if (text.trim() && adapters.host.submitRun) {
+        target = { action: "submit" };
+        set({ composerCommand: pendingCommand(id, target) });
+        result = await adapters.host.submitRun({ commandId: id, sessionId, prompt: text });
+      } else return;
+      const outcome = commandState(id, target, result);
+      set(current => ({ composerCommand: outcome, commandOutcomes: [...current.commandOutcomes, outcome] }));
+      if (result.kind === "accepted" && text) await get().setDraft("");
+    },
+    async actOnHeldRun(runId, action) {
+      const state = get();
+      const sessionId = state.selectedSessionId;
+      const run = sessionId ? state.runs[sessionId]?.find(item => item.runId === runId) : undefined;
+      if (!sessionId || run?.state !== "held" || !adapters.host.actOnHeldRun) return;
+      const id = commandId();
+      const target = { action, runId };
+      set({ composerCommand: pendingCommand(id, target) });
+      const result = await adapters.host.actOnHeldRun({ commandId: id, runId, action });
+      const outcome = commandState(id, target, result);
+      set(current => ({
+        composerCommand: outcome,
+        commandOutcomes: [...current.commandOutcomes, outcome],
+        runs: result.kind === "accepted" ? { ...current.runs, [sessionId]: current.runs[sessionId]!.map(item => item.runId === runId ? { ...item, state: action === "release" ? "executing" : "cancelled" } : item) } : current.runs,
+      }));
     },
     setSearchQuery(searchQuery) { set({ searchQuery }); },
     setDiscoveryMode(discoveryMode) {
@@ -285,6 +355,19 @@ function compareTimelineEntries(left: TimelineFact, right: TimelineFact): number
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }
 function omit(items: Readonly<Record<string, SessionFact>>, id: string) {
   const next = { ...items }; delete next[id]; return next;
+}
+
+function pendingCommand(commandId: string, target: ComposerCommandTarget): ComposerCommand {
+  return { commandId, ...target, phase: "pending" };
+}
+
+function commandState(
+  commandId: string,
+  target: ComposerCommandTarget,
+  result: CommandResult,
+): ComposerCommand {
+  if (result.kind === "accepted") return { commandId, ...target, phase: "accepted-awaiting-projection" };
+  return { commandId, ...target, phase: result.kind, reason: result.reason };
 }
 
 export function selectDiscoveryGroups(state: ClientState): DiscoveryGroup[] {

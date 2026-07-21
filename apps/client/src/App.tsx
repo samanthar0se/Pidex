@@ -91,10 +91,39 @@ export function App() {
         {session ? <SessionTimeline entries={timeline} olderCursor={state.olderCursors[session.sessionId]} paging={state.paging}
           loadOlder={() => store.getState().loadOlder()} presentTail={() => store.getState().presentTail()}/>
           : <section className="timeline" aria-label="Session Timeline"><div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div></section>}
-        {session && <footer><textarea aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"/><button>Run</button></footer>}
+        {session && <Composer sessionId={session.sessionId} draft={draft}/>}
       </>}
     </main>
   </div>;
+}
+
+function Composer({ sessionId, draft }: { sessionId: string; draft: string }) {
+  const state = useStore(store);
+  const runs = state.runs[sessionId] ?? [];
+  const executing = runs.find(run => run.state === "executing" && run.workerGeneration);
+  const held = runs.filter(run => run.state === "held");
+  const action = executing ? (draft.trim() ? "Send" : "Stop") : "Run";
+  const submit = () => void store.getState().submitComposer();
+  return <footer className="composer-dock">
+    {held.length > 0 && <section className="held-work" aria-label="Recovery-held follow-ups">
+      {held.map(run => <div key={run.runId}><span>{run.prompt}</span>
+        <button onClick={() => void store.getState().actOnHeldRun(run.runId, "release")}>Release</button>
+        <button onClick={() => void store.getState().actOnHeldRun(run.runId, "cancel")}>Cancel</button>
+      </div>)}
+    </section>}
+    <div className="next-run-controls" aria-label="Next Run configuration">
+      <select disabled aria-label="Model for next Run"><option>Host default model</option></select>
+      <select disabled aria-label="Mode for next Run"><option>Host default mode</option></select>
+    </div>
+    <div className="composer-row">
+      <textarea aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"
+        onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}/>
+      <button aria-label={executing && !draft.trim() ? `Stop Run ${executing.runId}` : action} onClick={submit}>{action}</button>
+    </div>
+    {state.commandOutcomes.map(outcome => <p key={outcome.commandId} className={`command-outcome ${outcome.phase}`} role="status">
+      {outcome.action} · {outcome.phase}{outcome.reason ? `: ${outcome.reason}` : ""}
+    </p>)}
+  </footer>;
 }
 
 function describeProgress(progress: NewSessionProgress) {

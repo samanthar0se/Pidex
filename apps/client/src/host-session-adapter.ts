@@ -1,8 +1,10 @@
-import type { ClientAdapters, CommandResult, DiscoveryProjection, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
+import type { ClientAdapters, CommandResult, DiscoveryProjection, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
 
-const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "session.read-state", "session.archive", "session.restore"];
+const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore"];
 const sockets = new Map<string, WebSocket>();
 const listeners = new Map<string, Set<(change: TimelineChange) => void>>();
+const runListeners = new Map<string, Set<(runs: RunFact[]) => void>>();
+const runsBySession = new Map<string, RunFact[]>();
 
 function socketFor(onMessage: (message: any, socket: WebSocket, finish: <T>(value: T) => void) => void) {
   return new Promise<any>((resolve, reject) => {
@@ -54,13 +56,19 @@ function readSession(sessionId: string): Promise<SessionProjection> {
       } else if (message.type === "scope.reset" && message.barrier?.scope?.kind === "session" && message.barrier.scope.sessionId === sessionId) {
         window.clearTimeout(timeout);
         sockets.set(sessionId, socket);
+        runsBySession.set(sessionId, message.snapshot.runs ?? []);
         resolve({
           session: message.snapshot.session,
           timeline: message.snapshot.timelineWindow.entries,
           olderCursor: message.snapshot.timelineWindow.olderCursor,
+          runs: message.snapshot.runs ?? [],
         });
       } else if (message.type === "timeline.change" && message.sessionId === sessionId) {
         listeners.get(sessionId)?.forEach(listener => listener(message));
+      } else if (message.type === "run.execution" && message.sessionId === sessionId) {
+        updateRun(sessionId, message.runId, { state: message.state, workerGeneration: message.workerGeneration });
+      } else if (message.type === "run.completed" && message.run.sessionId === sessionId) {
+        updateRun(sessionId, message.run.runId, message.run);
       }
     };
   });
@@ -123,14 +131,31 @@ function createSession(command: Parameters<NonNullable<ClientAdapters["host"]["c
 }
 
 function submitRun(command: Parameters<NonNullable<ClientAdapters["host"]["submitRun"]>>[0]): Promise<CommandResult> {
+  return sendRunCommand(
+    { type: "run.submit", requiredCapability: "run.submit", ...command },
+    "run-rejected",
+  );
+}
+
+function sendRunCommand(
+  message: Record<string, unknown> & { commandId: string },
+  rejectionReason = "command-rejected",
+): Promise<CommandResult> {
   return new Promise(resolve => {
     let settled = false; let close = () => {};
     const finish = (result: CommandResult) => { if (settled) return; settled = true; close(); resolve(result); };
-    close = connect(socket => socket.send(JSON.stringify({ type: "run.submit", requiredCapability: "run.submit", ...command })), message => {
-      if (message.type !== "command.outcome" || message.commandId !== command.commandId) return;
-      finish(message.outcome === "rejected" ? { kind: "rejected", reason: message.error ?? "run-rejected" } : { kind: "accepted" });
+    close = connect(socket => socket.send(JSON.stringify(message)), incoming => {
+      if (incoming.type !== "command.outcome" || incoming.commandId !== message.commandId) return;
+      finish(incoming.outcome === "rejected" ? { kind: "rejected", reason: incoming.error ?? rejectionReason } : { kind: "accepted" });
     }, () => finish({ kind: "uncertain", reason: "transport-lost" }));
   });
+}
+
+function updateRun(sessionId: string, runId: string, change: Partial<RunFact>) {
+  const runs = runsBySession.get(sessionId) ?? [];
+  const next = runs.map(run => run.runId === runId ? { ...run, ...change } : run);
+  runsBySession.set(sessionId, next);
+  runListeners.get(sessionId)?.forEach(listener => listener(next));
 }
 
 export const hostSessionAdapter: ClientAdapters["host"] = {
@@ -139,10 +164,19 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   restoreSession,
   createSession,
   submitRun,
+  steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
+  stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
+  actOnHeldRun: command => sendRunCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
   watchSession(sessionId, listener) {
     const sessionListeners = listeners.get(sessionId) ?? new Set();
     sessionListeners.add(listener);
     listeners.set(sessionId, sessionListeners);
+    return () => sessionListeners.delete(listener);
+  },
+  watchRuns(sessionId, listener) {
+    const sessionListeners = runListeners.get(sessionId) ?? new Set();
+    sessionListeners.add(listener);
+    runListeners.set(sessionId, sessionListeners);
     return () => sessionListeners.delete(listener);
   },
   async readOlder(sessionId, cursor) {

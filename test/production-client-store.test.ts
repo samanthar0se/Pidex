@@ -48,6 +48,74 @@ test("FX-COMP-01/06: New Session creates durable scope before accepting its init
   assert.equal(store.getState().newSession?.draft, "keep this exact prompt");
 });
 
+test("FX-COMP-02/03 FX-STATE-03/05 FX-RESP-05/06: Composer commands retain the exact observed Run context", async () => {
+  const commands: unknown[] = [];
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "Exact work", metadataRevision: 1, timelineRevision: 12 },
+          timeline: [],
+          runs: [
+            { runId: "run-exact", sessionId, sessionOrder: 1, prompt: "work", state: "executing", workerGeneration: "worker-7" },
+            { runId: "run-held", sessionId, sessionOrder: 2, prompt: "later", state: "held" },
+          ],
+        };
+      },
+      async steerRun(command) { commands.push(command); return { kind: "accepted" }; },
+      async stopRun(command) { commands.push(command); return { kind: "uncertain", reason: "transport-lost" }; },
+      async actOnHeldRun(command) { commands.push(command); return { kind: "accepted" }; },
+    },
+    drafts: { async read() { return "also test"; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: (() => { let id = 0; return () => `command-${++id}`; })(),
+  });
+
+  await store.getState().openSession("session-one");
+  await store.getState().submitComposer();
+  await store.getState().setDraft("");
+  await store.getState().submitComposer();
+  await store.getState().actOnHeldRun("run-held", "release");
+
+  assert.deepEqual(commands, [
+    { commandId: "command-1", sessionId: "session-one", runId: "run-exact", workerGeneration: "worker-7", observedTimelineRevision: 12, text: "also test" },
+    { commandId: "command-2", sessionId: "session-one", runId: "run-exact", workerGeneration: "worker-7", observedState: "executing", observedTimelineRevision: 12 },
+    { commandId: "command-3", runId: "run-held", action: "release" },
+  ]);
+  assert.equal(store.getState().drafts["session-one"], "");
+  assert.deepEqual(store.getState().commandOutcomes.find(outcome => outcome.commandId === "command-2"), {
+    commandId: "command-2", runId: "run-exact", action: "stop", phase: "uncertain", reason: "transport-lost",
+  });
+  assert.equal(store.getState().runs["session-one"]?.find(run => run.runId === "run-held")?.state, "executing");
+});
+
+test("Composer submission records no Run identity until the Host projects one", async () => {
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "New work", metadataRevision: 1, timelineRevision: 3 },
+          timeline: [],
+          runs: [],
+        };
+      },
+      async submitRun() { return { kind: "accepted" }; },
+    },
+    drafts: { async read() { return "start this"; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "command-submit",
+  });
+
+  await store.getState().openSession("session-one");
+  await store.getState().submitComposer();
+
+  assert.deepEqual(store.getState().composerCommand, {
+    commandId: "command-submit",
+    action: "submit",
+    phase: "accepted-awaiting-projection",
+  });
+});
+
 test("FX-RESP-01/02/03: partial and uncertain creation outcomes preserve the exact draft and prevent replay", async () => {
   let creates = 0;
   let submissions = 0;
