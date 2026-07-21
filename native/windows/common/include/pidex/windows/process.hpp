@@ -37,6 +37,8 @@ class managed_process final {
   managed_process& operator=(managed_process&&) noexcept;
 
   [[nodiscard]] DWORD process_id() const noexcept;
+  // Returns true only when the process exited during the bounded wait.
+  [[nodiscard]] bool wait_for_exit(unsigned int timeout_ms) const noexcept;
   [[nodiscard]] std::variant<process_exit_evidence, native_error> evidence()
       const noexcept;
   [[nodiscard]] std::optional<native_error> terminate(

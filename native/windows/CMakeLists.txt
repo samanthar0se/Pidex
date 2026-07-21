@@ -22,3 +22,4 @@ endif()
 
 add_subdirectory(common)
 add_subdirectory(addon)
+add_subdirectory(launcher)

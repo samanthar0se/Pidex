@@ -108,6 +108,13 @@ DWORD managed_process::process_id() const noexcept {
   return state_ == nullptr ? 0 : state_->id;
 }
 
+bool managed_process::wait_for_exit(const unsigned int timeout_ms) const noexcept {
+  if (state_ == nullptr) return true;
+  std::scoped_lock lock(state_->mutex);
+  return state_->process &&
+         WaitForSingleObject(state_->process.get(), timeout_ms) == WAIT_OBJECT_0;
+}
+
 std::variant<process_exit_evidence, native_error> managed_process::evidence()
     const noexcept {
   if (state_ == nullptr) {
