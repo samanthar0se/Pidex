@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Archive, ChevronDown, ChevronRight, Menu, Plus, Search, X } from "lucide-react";
 import { useStore } from "zustand";
-import { store } from "./main.js";
+import { store as productionStore } from "./client-instance.js";
+import type { ClientStore } from "./client-store.js";
 import {
   selectCurrentSession,
   selectCurrentTimeline,
@@ -14,7 +15,7 @@ import {
 import { InteractionControl } from "./InteractionControl.js";
 import { SessionTimeline } from "./SessionTimeline.js";
 
-function applyPath(path: string) {
+function applyPath(store: ClientStore, path: string) {
   if (path === "/new") {
     void store.getState().openNewSession();
     return;
@@ -34,23 +35,37 @@ function describeSessionCues(session: SessionFact) {
   return { unread, attention, accessibleName: [session.name, ...labels].join(", ") };
 }
 
-export function App() {
-  const session = useStore(store, selectCurrentSession);
-  const timeline = useStore(store, selectCurrentTimeline);
-  const draft = useStore(store, selectDraft);
-  const groups = useStore(store, selectDiscoveryGroups);
+export function App({ clientStore = productionStore }: { clientStore?: ClientStore } = {}) {
+  const store = clientStore;
   const state = useStore(store);
+  const session = selectCurrentSession(state);
+  const timeline = selectCurrentTimeline(state);
+  const draft = selectDraft(state);
+  const groups = selectDiscoveryGroups(state);
   const newSession = state.newSession;
+  const headerRun = session && (state.runs[session.sessionId] ?? []).find(run => run.state === "executing" && run.workerGeneration);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerToggle = useRef<HTMLButtonElement>(null);
+  const drawerClose = useRef<HTMLButtonElement>(null);
+  const search = useRef<HTMLInputElement>(null);
   useEffect(() => {
     void store.getState().loadDiscovery();
-    applyPath(location.pathname);
+    applyPath(store, location.pathname);
   }, []);
   useEffect(() => {
-    const listener = () => applyPath(location.pathname);
+    const listener = () => applyPath(store, location.pathname);
     addEventListener("popstate", listener);
     return () => removeEventListener("popstate", listener);
+  }, []);
+  useEffect(() => {
+    const keyboard = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        search.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", keyboard);
+    return () => document.removeEventListener("keydown", keyboard);
   }, []);
   useEffect(() => {
     const offline = () => store.getState().authorityChanged({ status: "offline" });
@@ -67,10 +82,26 @@ export function App() {
   return <div className={`shell ${drawerOpen ? "drawer-open" : ""}`}>
     <button className="drawer-backdrop" aria-label="Close Session drawer" onClick={closeDrawer}/>
     <aside aria-label="Session drawer" onKeyDown={event => { if (event.key === "Escape") closeDrawer(); }}>
-      <div className="brand"><strong>PIDEX</strong><button className="close-drawer" aria-label="Close Session drawer" onClick={closeDrawer}><X/></button></div>
+      <div className="brand"><strong>PIDEX</strong><button ref={drawerClose} className="close-drawer" aria-label="Close Session drawer" onClick={closeDrawer}><X/></button></div>
       <button className="new-session-button" onClick={() => { void store.getState().openNewSession(); closeDrawer(); }}><Plus size={16}/> New Session</button>
-      <label className="search"><Search size={15}/><input aria-label="Search Sessions" placeholder="Search Sessions" value={state.searchQuery} onChange={event => store.getState().setSearchQuery(event.target.value)}/></label>
-      <nav aria-label={state.discoveryMode === "archived" ? "Archived Sessions" : "Sessions"}>
+      <label className="search"><Search size={15}/><input ref={search} aria-label="Search Sessions" placeholder="Search Sessions" value={state.searchQuery} onChange={event => store.getState().setSearchQuery(event.target.value)} onKeyDown={event => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        if (state.searchQuery) store.getState().setSearchQuery("");
+        else document.querySelector<HTMLButtonElement>('.session-link[aria-current="page"]')?.focus();
+      }}/></label>
+      <nav aria-label={state.discoveryMode === "archived" ? "Archived Sessions" : "Sessions"} onKeyDown={event => {
+        const controls = [...event.currentTarget.querySelectorAll<HTMLButtonElement>(".group-heading, .session-link")];
+        const index = controls.indexOf(document.activeElement as HTMLButtonElement);
+        if ((event.key === "ArrowDown" || event.key === "ArrowUp") && index >= 0) {
+          event.preventDefault();
+          controls[Math.max(0, Math.min(controls.length - 1, index + (event.key === "ArrowDown" ? 1 : -1)))]?.focus();
+        }
+        const focused = controls[index];
+        if (focused?.classList.contains("group-heading") && ((event.key === "ArrowRight" && focused.getAttribute("aria-expanded") === "false") || (event.key === "ArrowLeft" && focused.getAttribute("aria-expanded") === "true"))) {
+          event.preventDefault(); focused.click();
+        }
+      }}>
         {groups.map(group => {
           const expanded = searching || group.id === "chats" || state.expandedProjectIds.includes(group.id);
           return <section className="discovery-group" key={group.id}>
@@ -95,19 +126,19 @@ export function App() {
     </aside>
     <main>
       <AuthorityBanner authority={state.authority}/>
-      <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu/></button><div><h1>{newSession ? "New Session" : session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{newSession ? "Nothing is created until you submit" : session && (state.isSessionCurrent ? "Current" : "Reconciling current Host data")}</small></div></header>
-      {newSession && <NewSessionView newSession={newSession}/>}
+      <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => { setDrawerOpen(true); requestAnimationFrame(() => drawerClose.current?.focus()); }}><Menu/></button><div className="header-title"><h1>{newSession ? "New Session" : session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{newSession ? "Nothing is created until you submit" : session && (state.isSessionCurrent ? `Current${session.projectId ? ` · Project ${session.projectId}` : ""}` : "Reconciling current Host data")}</small></div>{headerRun && <button className="header-stop" disabled={state.authority.status !== "current" || !state.isSessionCurrent} aria-label={`Stop Run ${headerRun.runId} from Session header`} onClick={() => void store.getState().stopRun(headerRun.runId)}>Stop</button>}</header>
+      {newSession && <NewSessionView store={store} newSession={newSession}/>}
       {!newSession && <>
         {session ? <SessionTimeline entries={timeline} olderCursor={state.olderCursors[session.sessionId]} paging={state.paging}
           loadOlder={() => store.getState().loadOlder()} presentTail={() => store.getState().presentTail()}/>
           : <section className="timeline" aria-label="Session Timeline"><div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div></section>}
-        {session && <Composer sessionId={session.sessionId} draft={draft}/>}
+        {session && <Composer store={store} sessionId={session.sessionId} draft={draft}/>}
       </>}
     </main>
   </div>;
 }
 
-function Composer({ sessionId, draft }: { sessionId: string; draft: string }) {
+function Composer({ store, sessionId, draft }: { store: ClientStore; sessionId: string; draft: string }) {
   const state = useStore(store);
   const runs = state.runs[sessionId] ?? [];
   const executing = runs.find(run => run.state === "executing" && run.workerGeneration);
@@ -185,7 +216,7 @@ function describeProgress(progress: NewSessionProgress) {
   }
 }
 
-function NewSessionView({ newSession }: { newSession: NewSessionState }) {
+function NewSessionView({ store, newSession }: { store: ClientStore; newSession: NewSessionState }) {
   const editable = newSession.progress.phase === "editing";
   const description = describeProgress(newSession.progress);
   const submit = () => void store.getState().submitNewSession();
