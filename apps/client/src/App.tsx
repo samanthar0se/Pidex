@@ -52,6 +52,14 @@ export function App() {
     addEventListener("popstate", listener);
     return () => removeEventListener("popstate", listener);
   }, []);
+  useEffect(() => {
+    const offline = () => store.getState().authorityChanged({ status: "offline" });
+    const online = () => void store.getState().recoverAuthority();
+    const visible = () => { if (document.visibilityState === "visible") void store.getState().recoverAuthority(); };
+    addEventListener("offline", offline); addEventListener("online", online); document.addEventListener("visibilitychange", visible);
+    if (!navigator.onLine) offline();
+    return () => { removeEventListener("offline", offline); removeEventListener("online", online); document.removeEventListener("visibilitychange", visible); };
+  }, []);
   const closeDrawer = () => { setDrawerOpen(false); requestAnimationFrame(() => drawerToggle.current?.focus()); };
   const choose = (id: string) => { void store.getState().openSession(id, "push"); closeDrawer(); };
   const searching = state.searchQuery.trim() !== "";
@@ -86,6 +94,7 @@ export function App() {
       <button className="archived" aria-pressed={state.discoveryMode === "archived"} onClick={() => store.getState().setDiscoveryMode(state.discoveryMode === "archived" ? "available" : "archived")}><Archive size={16}/>{state.discoveryMode === "archived" ? "Back to Sessions" : "Archived"}</button>
     </aside>
     <main>
+      <AuthorityBanner authority={state.authority}/>
       <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu/></button><div><h1>{newSession ? "New Session" : session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{newSession ? "Nothing is created until you submit" : session && (state.isSessionCurrent ? "Current" : "Reconciling current Host data")}</small></div></header>
       {newSession && <NewSessionView newSession={newSession}/>}
       {!newSession && <>
@@ -141,7 +150,7 @@ function Composer({ sessionId, draft }: { sessionId: string; draft: string }) {
     /> : <div className="composer-row">
       <textarea ref={composer} aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}/>
-      <button aria-label={executing && !draft.trim() ? `Stop Run ${executing.runId}` : action} onClick={submit}>{action}</button>
+      <button disabled={state.authority.status !== "current" || !state.isSessionCurrent} aria-label={executing && !draft.trim() ? `Stop Run ${executing.runId}` : action} onClick={submit}>{action}</button>
     </div>}
     {state.commandOutcomes.map(outcome => <p key={outcome.commandId} className={`command-outcome ${outcome.phase}`} role="status">
       {outcome.action} · {outcome.phase}{outcome.reason ? `: ${outcome.reason}` : ""}
@@ -193,6 +202,18 @@ function NewSessionView({ newSession }: { newSession: NewSessionState }) {
     </label>
     {description.reason && <p className="creation-outcome" role="alert">{description.uncertain ? "Outcome uncertain; do not retry. " : ""}{description.reason}</p>}
     {description.sessionCreated && <p>{description.sessionCreated}</p>}
-    <div className="new-actions"><button disabled={!editable} onClick={() => void store.getState().submitNewSession(true)}>Create empty Session</button><button disabled={!editable} onClick={submit}>Create &amp; Run</button></div>
+    <div className="new-actions"><button disabled={!editable || store.getState().authority.status !== "current"} onClick={() => void store.getState().submitNewSession(true)}>Create empty Session</button><button disabled={!editable || store.getState().authority.status !== "current"} onClick={submit}>Create &amp; Run</button></div>
+  </section>;
+}
+
+function AuthorityBanner({ authority }: { authority: import("./client-store.js").AuthorityState }) {
+  if (authority.status === "current") return null;
+  const labels = { offline: "Offline", reconnecting: "Reconnecting", "update-required": "Update required", revoked: "Device revoked" } as const;
+  return <section className={`authority-banner ${authority.status}`} role="status" aria-live="polite">
+    <strong>{labels[authority.status]}</strong>
+    <span>{authority.lastSynchronizedAt
+      ? `Cached facts are not current. Last authoritative synchronization: ${authority.lastSynchronizedAt}`
+      : "Host authority is unavailable. No cached authoritative facts are available."}</span>
+    {authority.reason && <span>{authority.reason}</span>}
   </section>;
 }

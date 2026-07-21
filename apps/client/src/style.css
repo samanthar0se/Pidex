@@ -87,3 +87,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .new-session-button, .archived, .group-heading, .session-link, .restore { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) { .shell aside { transition: none; } }
+/* Authority loss is deliberately louder than cached content at every width. */
+.authority-banner { display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; padding:.65rem 1rem; background:#fff3cd; border-bottom:1px solid #d8b44b; color:#5f4700; font-size:.8rem; }
+.authority-banner.update-required,.authority-banner.revoked { background:#fde8e8; border-color:#d66; color:#711; }
+.authority-banner strong { text-transform:uppercase; letter-spacing:.06em; }
