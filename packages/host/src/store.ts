@@ -15,6 +15,7 @@ import {
   interactionSchema,
   projectSummarySchema,
   runRecordSchema,
+  sessionReadStateSchema,
   sessionSummarySchema,
   terminalRunSchema,
   timelineEntrySchema,
@@ -109,12 +110,40 @@ const timelineOrderSchema = z.object({ value: z.number() });
 const timelineRevisionSchema = z.object({ timelineRevision: z.number() });
 const sessionResidencyRowSchema = sessionSummarySchema.pick({ residency: true });
 const sessionAvailabilitySchema = z.enum(["available", "archived"]);
-const sessionRowSchema = sessionSummarySchema.omit({ readState: true }).extend({
-  availability: sessionAvailabilitySchema,
+const storedReadStateBasisSchema = z.object({
   readThroughTimelineRevision: z.number().int().nonnegative(),
   readStateRevision: z.number().int().positive(),
   latestUnreadMilestoneTimelineRevision: z.number().int().nonnegative().nullable(),
 });
+const sessionRowSchema = sessionSummarySchema.omit({ readState: true }).extend({
+  availability: sessionAvailabilitySchema,
+  ...storedReadStateBasisSchema.shape,
+});
+const markReadSessionStateSchema = storedReadStateBasisSchema.extend({
+  timelineRevision: z.number().int().positive(),
+});
+const markReadOutcomeSchema = z.union([
+  z.object({
+    kind: z.literal("accepted"),
+    effect: z.enum(["advanced", "no-op"]),
+    readState: sessionReadStateSchema,
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.literal("invalid-revision"),
+    readState: sessionReadStateSchema,
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.literal("unknown-session"),
+    cursor: z.string(),
+    digest: z.string(),
+  }),
+]);
 const forkPointSchema = z.object({
   entryId: z.string(),
   checkpoint: z.string(),
@@ -191,6 +220,18 @@ const RUN_RECORD_PROJECTION = `
   session_order AS sessionOrder, prompt, state
 `;
 
+const SESSION_RECORD_PROJECTION = `
+  session_id AS sessionId, name, project_id AS projectId,
+  workspace_id AS workspaceId, retention, availability, residency,
+  metadata_revision AS metadataRevision,
+  timeline_revision AS timelineRevision,
+  read_through_timeline_revision AS readThroughTimelineRevision,
+  read_state_revision AS readStateRevision,
+  latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision,
+  parent_session_id AS parentSessionId,
+  fork_point_entry_id AS forkPointEntryId
+`;
+
 export type SubmitOutcome = z.infer<typeof submitOutcomeSchema>;
 
 export type SubmitResult =
@@ -239,13 +280,18 @@ export interface MarkReadCommand {
   commandId: string;
   sessionId: string;
   presentedTimelineRevision: number;
-  requiredCapabilityBasis: readonly [{ readonly id: "session.read-state"; readonly version: 1 }];
+  requiredCapabilityBasis: readonly [{
+    readonly id: "session.read-state";
+    readonly version: 1;
+  }];
 }
 
+export type MarkReadOutcome = z.infer<typeof markReadOutcomeSchema>;
+
 export type MarkReadResult =
-  | { kind: "accepted" | "replayed"; effect: "advanced" | "no-op"; readState: SessionReadState; cursor: string; digest: string }
-  | { kind: "rejected"; error: "invalid-revision"; readState: SessionReadState; cursor: string; digest: string }
-  | { kind: "rejected"; error: "unknown-session" | "command-id-conflict"; cursor: string; digest?: string };
+  | MarkReadOutcome
+  | { kind: "replayed"; outcome: MarkReadOutcome; digest: string }
+  | { kind: "rejected"; error: "command-id-conflict"; cursor: string };
 
 type SessionAvailability = z.infer<typeof sessionAvailabilitySchema>;
 
@@ -418,27 +464,16 @@ export class AuthorityStore {
       .all();
     const sessionRows = this.#db
       .prepare(
-        `SELECT session_id AS sessionId, name, project_id AS projectId,
-                workspace_id AS workspaceId, retention, availability, residency,
-                metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision,
-                read_through_timeline_revision AS readThroughTimelineRevision,
-                read_state_revision AS readStateRevision,
-                latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision,
-                parent_session_id AS parentSessionId,
-                fork_point_entry_id AS forkPointEntryId
+        `SELECT ${SESSION_RECORD_PROJECTION}
          FROM sessions ORDER BY created_at`,
       )
       .all();
     const sessions: SessionSummary[] = [];
     const archivedSessions: SessionSummary[] = [];
     for (const row of sessionRowSchema.array().parse(sessionRows)) {
-      const { availability, readThroughTimelineRevision, readStateRevision,
-        latestUnreadMilestoneTimelineRevision, ...storedSession } = row;
-      const session = withStoredReadState(storedSession, readThroughTimelineRevision,
-        readStateRevision, latestUnreadMilestoneTimelineRevision);
-      if (availability === "archived") {
-        archivedSessions.push({ ...session, availability });
+      const session = sessionFromRow(row);
+      if (session.availability === "archived") {
+        archivedSessions.push(session);
       } else {
         sessions.push(session);
       }
@@ -785,37 +820,77 @@ export class AuthorityStore {
       if (receipt) {
         this.#db.exec("COMMIT");
         if (receipt.envelope_digest !== digest) {
-          return { kind: "rejected", error: "command-id-conflict", cursor: this.status("").synchronization.cursor };
+          return {
+            kind: "rejected",
+            error: "command-id-conflict",
+            cursor: this.status("").synchronization.cursor,
+          };
         }
-        return { ...JSON.parse(String(receipt.outcome_json)) as MarkReadResult, kind: "replayed" } as MarkReadResult;
+        const outcome = markReadOutcomeSchema.parse(
+          JSON.parse(String(receipt.outcome_json)),
+        );
+        return { kind: "replayed", outcome, digest };
       }
 
-      const row = this.#db.prepare(
-        `SELECT timeline_revision AS timelineRevision,
-                read_through_timeline_revision AS readThroughTimelineRevision,
-                read_state_revision AS readStateRevision,
-                latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision
-         FROM sessions WHERE session_id = ?`,
-      ).get(command.sessionId) as Record<string, number | null> | undefined;
+      const sessionState = markReadSessionStateSchema.optional().parse(
+        this.#db.prepare(
+          `SELECT timeline_revision AS timelineRevision,
+                  read_through_timeline_revision AS readThroughTimelineRevision,
+                  read_state_revision AS readStateRevision,
+                  latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision
+           FROM sessions WHERE session_id = ?`,
+        ).get(command.sessionId),
+      );
       const cursor = this.status("").synchronization.cursor;
-      let result: MarkReadResult;
-      if (!row) {
+      let result: MarkReadOutcome;
+      if (!sessionState) {
         result = { kind: "rejected", error: "unknown-session", cursor, digest };
       } else {
-        const current = readStateFromValues(row.readThroughTimelineRevision!, row.readStateRevision!, row.latestUnreadMilestoneTimelineRevision);
-        if (command.presentedTimelineRevision > row.timelineRevision!) {
-          result = { kind: "rejected", error: "invalid-revision", readState: current, cursor, digest };
-        } else if (command.presentedTimelineRevision <= row.readThroughTimelineRevision!) {
-          result = { kind: "accepted", effect: "no-op", readState: current, cursor, digest };
+        const current = readStateFromBasis(sessionState);
+        if (
+          command.presentedTimelineRevision < 1 ||
+          command.presentedTimelineRevision > sessionState.timelineRevision
+        ) {
+          result = {
+            kind: "rejected",
+            error: "invalid-revision",
+            readState: current,
+            cursor,
+            digest,
+          };
+        } else if (
+          command.presentedTimelineRevision <=
+          sessionState.readThroughTimelineRevision
+        ) {
+          result = {
+            kind: "accepted",
+            effect: "no-op",
+            readState: current,
+            cursor,
+            digest,
+          };
         } else {
           this.#db.prepare(
             `UPDATE sessions SET read_through_timeline_revision = ?, read_state_revision = read_state_revision + 1
              WHERE session_id = ?`,
           ).run(command.presentedTimelineRevision, command.sessionId);
-          this.#db.prepare("UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1").run(now);
+          this.#db.prepare(
+            `UPDATE host SET sequence = sequence + 1, committed_at = ?
+             WHERE singleton = 1`,
+          ).run(now);
           const readState = this.loadSession(command.sessionId).readState;
-          const nextCursor = this.recordSynchronizationChange({ type: "session.read-state-changed", sessionId: command.sessionId, readState });
-          result = { kind: "accepted", effect: "advanced", readState, cursor: nextCursor, digest };
+          const nextCursor = this.recordSynchronizationChange({
+            type: "session.read-state-changed",
+            sessionId: command.sessionId,
+            readState,
+          });
+          result = {
+            kind: "accepted",
+            effect: "advanced",
+            readState,
+            cursor: nextCursor,
+            digest,
+          };
         }
       }
       this.#db.prepare(
@@ -2361,25 +2436,11 @@ export class AuthorityStore {
   private loadSession(sessionId: string): SessionSummary {
     const row = this.#db
       .prepare(
-        `SELECT session_id AS sessionId, name, project_id AS projectId,
-                workspace_id AS workspaceId, retention, availability, residency,
-                metadata_revision AS metadataRevision,
-                timeline_revision AS timelineRevision,
-                read_through_timeline_revision AS readThroughTimelineRevision,
-                read_state_revision AS readStateRevision,
-                latest_unread_milestone_timeline_revision AS latestUnreadMilestoneTimelineRevision,
-                parent_session_id AS parentSessionId,
-                fork_point_entry_id AS forkPointEntryId
+        `SELECT ${SESSION_RECORD_PROJECTION}
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
-    const { availability, readThroughTimelineRevision, readStateRevision,
-      latestUnreadMilestoneTimelineRevision, ...storedSession } = sessionRowSchema.parse(row);
-    const session = withStoredReadState(storedSession, readThroughTimelineRevision,
-      readStateRevision, latestUnreadMilestoneTimelineRevision);
-    return availability === "archived"
-      ? { ...session, availability }
-      : session;
+    return sessionFromRow(sessionRowSchema.parse(row));
   }
 
   checkpointAt(sessionId: string, entryId: string): string | undefined {
@@ -2721,24 +2782,39 @@ export class AuthorityStore {
   }
 }
 
-function withStoredReadState(
-  session: Omit<SessionSummary, "readState">,
-  readThroughTimelineRevision: number,
-  readStateRevision: number,
-  latestUnreadMilestoneTimelineRevision: number | null,
-): SessionSummary {
-  return {
-    ...session,
-    readState: readStateFromValues(readThroughTimelineRevision, readStateRevision,
-      latestUnreadMilestoneTimelineRevision),
+type SessionRow = z.infer<typeof sessionRowSchema>;
+type StoredReadStateBasis = z.infer<typeof storedReadStateBasisSchema>;
+
+function sessionFromRow(row: SessionRow): SessionSummary {
+  const {
+    availability,
+    readThroughTimelineRevision,
+    readStateRevision,
+    latestUnreadMilestoneTimelineRevision,
+    ...session
+  } = row;
+  const readStateBasis: StoredReadStateBasis = {
+    readThroughTimelineRevision,
+    readStateRevision,
+    latestUnreadMilestoneTimelineRevision,
   };
+  const summary: SessionSummary = {
+    ...session,
+    readState: readStateFromBasis(readStateBasis),
+  };
+  return availability === "archived"
+    ? { ...summary, availability }
+    : summary;
 }
 
-function readStateFromValues(
-  readThroughTimelineRevision: number,
-  readStateRevision: number,
-  latestUnreadMilestoneTimelineRevision: number | null,
+function readStateFromBasis(
+  basis: StoredReadStateBasis,
 ): SessionReadState {
+  const {
+    readThroughTimelineRevision,
+    readStateRevision,
+    latestUnreadMilestoneTimelineRevision,
+  } = basis;
   return {
     readThroughTimelineRevision,
     readStatus: latestUnreadMilestoneTimelineRevision !== null &&

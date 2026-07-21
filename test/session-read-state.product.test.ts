@@ -3,8 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
+import { startHost } from "../packages/host/src/host.js";
 import { AuthorityStore, type MarkReadCommand } from "../packages/host/src/store.js";
+import { negotiateControl, nextControlMessage } from "./control-client.js";
 
 const basis = [{ id: "session.read-state", version: 1 }] as const;
 
@@ -53,11 +56,70 @@ test("Session authority persists milestones and serializes Device-scoped max mar
       readStatus: "read", readStateRevision: 3,
     });
     const invalid = store.markSessionRead("device-a", {
-      ...command, commandId: "ahead", presentedTimelineRevision: unread.timelineRevision + 1,
+      ...command,
+      commandId: "ahead",
+      presentedTimelineRevision: unread.timelineRevision + 1,
     }, 8);
-    assert.deepEqual([invalid.kind, "error" in invalid && invalid.error], ["rejected", "invalid-revision"]);
+    assert.deepEqual(
+      [invalid.kind, "error" in invalid && invalid.error],
+      ["rejected", "invalid-revision"],
+    );
+    const zero = store.markSessionRead("device-a", {
+      ...command,
+      commandId: "zero",
+      presentedTimelineRevision: 0,
+    }, 9);
+    assert.deepEqual(
+      [zero.kind, "error" in zero && zero.error],
+      ["rejected", "invalid-revision"],
+    );
   } finally {
     store.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("replaying a rejected mark-read preserves the authoritative rejection", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-mark-read-rejection-"));
+  const host = await startHost({
+    dataDir,
+    port: 0,
+    authorization: "device-a",
+    adapters: adaptersFor("deterministic"),
+  });
+  const client = new WebSocket(
+    `${host.origin.replace("https:", "wss:")}/control`,
+    {
+      rejectUnauthorized: false,
+      headers: { authorization: "Bearer device-a" },
+    },
+  );
+  try {
+    await negotiateControl(client);
+    const command = {
+      type: "session.mark-read",
+      commandId: "missing-session",
+      sessionId: "session_missing",
+      presentedTimelineRevision: 1,
+      requiredCapabilityBasis: basis,
+    };
+    client.send(JSON.stringify(command));
+    const rejected = await nextControlMessage(client);
+    assert.equal(rejected.type, "command.outcome");
+    assert.equal(
+      rejected.type === "command.outcome" && rejected.outcome,
+      "rejected",
+    );
+    assert.equal(
+      rejected.type === "command.outcome" && rejected.error,
+      "unknown-session",
+    );
+
+    client.send(JSON.stringify(command));
+    assert.deepEqual(await nextControlMessage(client), rejected);
+  } finally {
+    client.close();
+    await host.close();
+    await rm(dataDir, { recursive: true, force: true });
   }
 });
