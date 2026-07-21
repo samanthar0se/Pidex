@@ -34,11 +34,6 @@ export async function superviseStartup(
     throw new Error("Pidex Host is already running");
   }
 
-  const supervisionJob = await operations.createDaemonSupervisionJob?.();
-  if (supervisionJob) {
-    await supervisionJob.assignDaemon();
-  }
-
   const totalAttempts = STARTUP_BACKOFF_MS.length + 1;
   let lastFailureCause = "Unknown startup failure";
 
@@ -47,7 +42,10 @@ export async function superviseStartup(
     attemptNumber <= totalAttempts;
     attemptNumber += 1
   ) {
+    let supervisionJob: DaemonSupervisionJob | undefined;
     try {
+      supervisionJob = await operations.createDaemonSupervisionJob?.();
+      await supervisionJob?.assignDaemon();
       await operations.startRelease(READINESS_DEADLINE_MS, supervisionJob);
       const status: StartupState = {
         state: "ready",
@@ -57,6 +55,9 @@ export async function superviseStartup(
       return status;
     } catch (error) {
       lastFailureCause = error instanceof Error ? error.message : String(error);
+      // A retry is a new daemon generation. Destroy the failed generation and
+      // all of its descendants before waiting or creating its successor.
+      supervisionJob?.close();
       const retryDelay = STARTUP_BACKOFF_MS[attemptNumber - 1];
       if (retryDelay !== undefined) {
         await operations.sleep(retryDelay);
@@ -69,7 +70,6 @@ export async function superviseStartup(
     attempts: totalAttempts,
     cause: lastFailureCause,
   };
-  supervisionJob?.close();
   await operations.reportStatus?.(status);
   return status;
 }

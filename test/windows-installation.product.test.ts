@@ -211,12 +211,71 @@ test("launcher contains the daemon before readiness and closes its Job after rep
   assert.deepEqual(events, [
     "assigned",
     "started",
-    "started",
-    "started",
-    "started",
-    "started",
+    "closed",
+    "assigned",
     "started",
     "closed",
+    "assigned",
+    "started",
+    "closed",
+    "assigned",
+    "started",
+    "closed",
+    "assigned",
+    "started",
+    "closed",
+    "assigned",
+    "started",
+    "closed",
+  ]);
+});
+
+test("each retry supervises one fresh daemon generation and tears it down before backoff", async () => {
+  const events: string[] = [];
+  let generation = 0;
+
+  const state = await superviseStartup({
+    acquireUserLock: async () => true,
+    createDaemonSupervisionJob: async () => {
+      generation += 1;
+      const current = generation;
+      events.push(`created:${current}`);
+      return {
+        assignDaemon: async () => {
+          events.push(`assigned:${current}`);
+        },
+        close: () => {
+          events.push(`closed:${current}`);
+        },
+      };
+    },
+    startRelease: async (_deadline, supervisionJob) => {
+      assert.ok(supervisionJob);
+      events.push(`started:${generation}`);
+      if (generation < 3) {
+        throw new Error(`generation ${generation} crashed`);
+      }
+    },
+    sleep: async delay => {
+      events.push(`sleep:${delay}`);
+    },
+  });
+
+  assert.deepEqual(state, { state: "ready", attempts: 3 });
+  assert.deepEqual(events, [
+    "created:1",
+    "assigned:1",
+    "started:1",
+    "closed:1",
+    "sleep:1000",
+    "created:2",
+    "assigned:2",
+    "started:2",
+    "closed:2",
+    "sleep:2000",
+    "created:3",
+    "assigned:3",
+    "started:3",
   ]);
 });
 
