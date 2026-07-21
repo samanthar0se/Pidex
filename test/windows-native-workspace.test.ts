@@ -164,3 +164,17 @@ test("the Windows addon has one raw Node-API entry point without V8 or libuv", a
   assert.match(addonSource, /napi_create_promise/);
   assert.doesNotMatch(addonSource, /\bv8\b|uv\.h|node-addon-api/i);
 });
+
+test("storage topology follows Windows volume facts and Event Log diagnostics remain coarse", async () => {
+  const addonSource = await readNativeFile("addon/src/addon.cpp");
+
+  assert.match(addonSource, /GetVolumePathNameW/);
+  assert.match(addonSource, /GetVolumeInformationW/);
+  assert.match(addonSource, /GetDriveTypeW/);
+  assert.match(addonSource, /DRIVE_FIXED/);
+  assert.match(addonSource, /DRIVE_REMOTE/);
+  assert.match(addonSource, /RegisterEventSourceW\(nullptr, L"Pidex"\)/);
+  assert.match(addonSource, /ReportEventW/);
+  assert.match(addonSource, /DeregisterEventSource/);
+  assert.doesNotMatch(addonSource, /FormatMessage|event.*path|event.*detail/i);
+});
