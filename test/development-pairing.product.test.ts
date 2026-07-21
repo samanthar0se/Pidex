@@ -10,7 +10,7 @@ import { setupDevelopmentCa } from "../packages/host/src/development-ca.js";
 const HOST_STARTUP_TIMEOUT_MS = 10_000;
 
 test(
-  "development entry point defaults to deterministic adapters and prints launch guidance",
+  "development entry point is explicitly deterministic and ignores generic adapter selection",
   { timeout: HOST_STARTUP_TIMEOUT_MS + 5_000 },
   async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "pidex-development-pairing-"));
@@ -26,7 +26,7 @@ test(
         cwd: process.cwd(),
         env: {
           ...process.env,
-          PIDEX_ADAPTERS: undefined,
+          PIDEX_ADAPTERS: "product",
           PIDEX_DATA_DIR: dataDir,
           PIDEX_HOSTNAME: "192.0.2.10",
           PIDEX_PORT: "0",

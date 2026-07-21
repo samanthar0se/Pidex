@@ -109,10 +109,10 @@ and repeat LAN-client trust. A missing OpenSSL executable is a prerequisite
 failure, not unusable CA state: install OpenSSL, verify `openssl version`, and
 rerun setup rather than resetting valid CA state.
 
-The deterministic adapter returns predictable Pi responses and avoids the
-unbundled native Windows bridge. Optional environment variables are
-`PIDEX_ADAPTERS`, `PIDEX_DATA_DIR`, `PIDEX_PORT`, and deterministic-only
-`PIDEX_HOSTNAME`; explicit values override the development defaults.
+The development entry point explicitly uses deterministic adapters and cannot
+select product composition through an environment switch. Optional fixture
+environment variables are `PIDEX_DATA_DIR`, `PIDEX_PORT`, and `PIDEX_HOSTNAME`;
+explicit values override the development defaults.
 
 ```bash
 npm run typecheck
