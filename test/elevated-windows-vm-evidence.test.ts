@@ -155,6 +155,27 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
     "Job assignment failed; cleanup failed: handle remained open",
   );
   assert.equal(attempts.authoritative(candidate.candidate), failed);
+  assert.throws(
+    () => attempts.requirePassing(candidate.candidate),
+    /authoritative first attempt did not pass/,
+  );
+});
+
+test("the two-lane gate returns only a passing authoritative first attempt", async () => {
+  const passing = await new ElevatedWindowsVmCampaign(candidate, completeScenarioSet({
+    artifactSha256: "a".repeat(64),
+  })).run({
+    vm: { os: "Windows 11", architecture: "x64", elevated: true, disposable: true },
+    attemptedAt: "2026-07-21T12:00:00.000Z",
+  });
+  const attempts = new FirstAttemptEvidence();
+
+  assert.throws(
+    () => attempts.requirePassing(candidate.candidate),
+    /authoritative first attempt is missing/,
+  );
+  attempts.record(passing);
+  assert.equal(attempts.requirePassing(candidate.candidate), passing);
 });
 
 test("launcher, CLI, and maintenance evidence requires every supported Host state and contract", async () => {
