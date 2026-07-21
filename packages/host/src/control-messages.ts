@@ -1,3 +1,4 @@
+import { sessionReadStateCapability } from "../../protocol/src/status.js";
 import type {
   SteerCommand,
   StopCommand,
@@ -85,7 +86,12 @@ export interface SessionMarkReadMessage {
   commandId: string;
   sessionId: string;
   presentedTimelineRevision: number;
-  requiredCapabilityBasis: [{ id: "session.read-state"; version: 1 }];
+  requiredCapabilityBasis: [typeof sessionReadStateCapability];
+}
+
+export interface ParsedSessionMarkReadMessage {
+  commandId: string;
+  command?: SessionMarkReadMessage;
 }
 
 export interface RunQueueActionMessage {
@@ -250,7 +256,20 @@ export function isSessionAvailabilityMessage(
   );
 }
 
-export function isSessionMarkReadMessage(
+export function parseSessionMarkReadMessage(
+  value: unknown,
+): ParsedSessionMarkReadMessage | undefined {
+  if (!isObject(value) || value.type !== "session.mark-read") {
+    return undefined;
+  }
+
+  return {
+    commandId: typeof value.commandId === "string" ? value.commandId : "",
+    command: isSessionMarkReadMessage(value) ? value : undefined,
+  };
+}
+
+function isSessionMarkReadMessage(
   value: unknown,
 ): value is SessionMarkReadMessage {
   return (
@@ -264,8 +283,9 @@ export function isSessionMarkReadMessage(
     Array.isArray(value.requiredCapabilityBasis) &&
     value.requiredCapabilityBasis.length === 1 &&
     isObject(value.requiredCapabilityBasis[0]) &&
-    value.requiredCapabilityBasis[0].id === "session.read-state" &&
-    value.requiredCapabilityBasis[0].version === 1
+    value.requiredCapabilityBasis[0].id === sessionReadStateCapability.id &&
+    value.requiredCapabilityBasis[0].version ===
+      sessionReadStateCapability.version
   );
 }
 

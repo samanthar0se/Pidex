@@ -20,6 +20,8 @@ import {
   protocolMajor,
   protocolMinor,
   protocolVersion,
+  sessionReadStateCapability,
+  sessionReadStateCapabilityKey,
   type ClientHello,
   type DurabilityCoverage,
   type HostStatus,
@@ -71,12 +73,13 @@ import {
   isSessionAvailabilityMessage,
   isSessionCreateMessage,
   isSessionForkMessage,
-  isSessionMarkReadMessage,
   isSessionRenameMessage,
   isSessionSleepMessage,
   isViewObserveMessage,
+  parseSessionMarkReadMessage,
   supportsCapabilityBasis,
   type InteractionResolveMessage,
+  type ParsedSessionMarkReadMessage,
   type RunQueueActionMessage,
   type RunSteerMessage,
   type RunStopMessage,
@@ -108,7 +111,11 @@ const FORCED_CANCELLATION_DETAIL =
 const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
-const REQUIRED_CLIENT_CAPABILITIES = ["scope.host", "session.create", "session.read-state"];
+const REQUIRED_CLIENT_CAPABILITIES = [
+  "scope.host",
+  "session.create",
+  sessionReadStateCapability.id,
+];
 const PRESENTATION_EFFECTS_CAPABILITY = "presentation.effects@1";
 const DURABILITY_COVERAGE_CAPABILITY = "durability.coverage@1";
 const INTERNAL_WORKER_CAPABILITIES = new Set([
@@ -519,6 +526,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     webSocket.on("message", bytes => {
       try {
         const message: unknown = JSON.parse(bytes.toString());
+        const markReadMessage = parseSessionMarkReadMessage(message);
         if (!admittedClients.has(webSocket)) {
           const hello = clientHelloSchema.safeParse(message);
           if (hello.success) negotiate(webSocket, hello.data);
@@ -534,11 +542,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           void handleSessionSleep(webSocket, message);
         } else if (isSessionAvailabilityMessage(message)) {
           handleSessionAvailability(webSocket, message);
-        } else if (
-          typeof message === "object" && message !== null &&
-          "type" in message && message.type === "session.mark-read"
-        ) {
-          handleSessionMarkRead(webSocket, message);
+        } else if (markReadMessage) {
+          handleSessionMarkRead(webSocket, markReadMessage);
         } else if (isRunSubmitMessage(message)) {
           handleRunSubmit(webSocket, message);
         } else if (isRunSteerMessage(message)) {
@@ -697,7 +702,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             ]),
           ),
           protocolBasis: protocolVersion,
-          capabilities: ["session.create", "session.rename", "scope.session", "session.read-state@1"],
+          capabilities: [
+            "session.create",
+            "session.rename",
+            "scope.session",
+            sessionReadStateCapabilityKey,
+          ],
         },
         snapshot: projection,
       });
@@ -740,7 +750,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             readState: session.readState.readStateRevision,
           },
           protocolBasis: protocolVersion,
-          capabilities: ["session.rename", "session.read-state@1"],
+          capabilities: ["session.rename", sessionReadStateCapabilityKey],
         },
         snapshot: {
           session,
@@ -1056,12 +1066,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     workerGenerations.delete(sessionId);
   }
 
-  function handleSessionMarkRead(client: WebSocket, value: unknown): void {
-    const commandId = typeof value === "object" && value !== null &&
-      "commandId" in value && typeof value.commandId === "string"
-      ? value.commandId
-      : "";
-    const command = isSessionMarkReadMessage(value) ? value : undefined;
+  function handleSessionMarkRead(
+    client: WebSocket,
+    message: ParsedSessionMarkReadMessage,
+  ): void {
+    const { command, commandId } = message;
     const admittedBasis = admittedCapabilityBasisByClient.get(client);
     if (
       !command ||

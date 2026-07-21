@@ -26,6 +26,7 @@ import {
   type Interaction,
   type ProjectSummary,
   type RunRecord,
+  type SessionReadState,
   type SessionSummary,
   type TerminalRun,
   type TimelineChange,
@@ -448,11 +449,7 @@ export class AuthorityStore {
         residency: "sleeping",
         metadataRevision: 1,
         timelineRevision: 1,
-        readState: {
-          readThroughTimelineRevision: 1,
-          readStatus: "read",
-          readStateRevision: 1,
-        },
+        readState: initialReadState(1),
       };
       this.#db
         .prepare(
@@ -2602,11 +2599,15 @@ function withInitialReadState(
 ): SessionSummary {
   return {
     ...session,
-    readState: {
-      readThroughTimelineRevision: session.timelineRevision,
-      readStatus: "read",
-      readStateRevision: 1,
-    },
+    readState: initialReadState(session.timelineRevision),
+  };
+}
+
+function initialReadState(timelineRevision: number): SessionReadState {
+  return {
+    readThroughTimelineRevision: timelineRevision,
+    readStatus: "read",
+    readStateRevision: 1,
   };
 }
 

@@ -3,6 +3,12 @@ import { z } from "zod";
 export const protocolVersion = "1.2";
 export const protocolMajor = 1;
 export const protocolMinor = 2;
+export const sessionReadStateCapability = {
+  id: "session.read-state",
+  version: 1,
+} as const;
+export const sessionReadStateCapabilityKey =
+  `${sessionReadStateCapability.id}@${sessionReadStateCapability.version}` as const;
 
 export const protocolCapabilities = [
   { id: "scope.host", version: 1 },
@@ -20,7 +26,7 @@ export const protocolCapabilities = [
   { id: "run.cancel", version: 1 },
   { id: "run.stop", version: 1 },
   { id: "durability.coverage", version: 1 },
-  { id: "session.read-state", version: 1 },
+  sessionReadStateCapability,
 ] as const;
 
 const protocolSchema = z.object({
