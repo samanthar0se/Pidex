@@ -7,9 +7,18 @@ export interface SessionFact {
   timelineRevision: number;
 }
 
+export type TimelineKind =
+  | "assistant"
+  | "interaction"
+  | "lifecycle"
+  | "outcome"
+  | "prompt"
+  | "response"
+  | "tool";
+
 export interface TimelineFact {
   entryId: string;
-  kind: string;
+  kind: TimelineKind;
   text: string;
   runId?: string | null;
   order?: number;
@@ -67,7 +76,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     drafts: {},
     isSessionCurrent: false,
     async openSession(sessionId) {
-      set({ selectedSessionId: sessionId, isSessionCurrent: false });
+      set({ selectedSessionId: sessionId, isSessionCurrent: false, paging: "idle" });
       adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
       const [projection, draft] = await Promise.all([
         adapters.host.readSession(sessionId),
@@ -95,7 +104,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
             const incomingEntryRevision = change.entry.revision ?? 1;
             if (!current.finalized && incomingEntryRevision > currentEntryRevision) entries[index] = change.entry;
           }
-          entries.sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+          entries.sort(compareTimelineEntries);
           return {
             sessions: { ...state.sessions, [sessionId]: { ...session, timelineRevision: change.revision } },
             timelines: { ...state.timelines, [sessionId]: entries },
@@ -124,7 +133,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
           paging: "idle",
         }));
       } catch {
-        set({ paging: "error" });
+        if (get().selectedSessionId === sessionId) set({ paging: "error" });
       }
     },
     async presentTail() {
@@ -138,7 +147,11 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
 
 function mergeTimeline(older: readonly TimelineFact[], current: readonly TimelineFact[]): TimelineFact[] {
   const entries = new Map([...older, ...current].map(entry => [entry.entryId, entry]));
-  return [...entries.values()].sort((left, right) => (left.order ?? 0) - (right.order ?? 0));
+  return [...entries.values()].sort(compareTimelineEntries);
+}
+
+function compareTimelineEntries(left: TimelineFact, right: TimelineFact): number {
+  return (left.order ?? 0) - (right.order ?? 0);
 }
 
 export const selectCurrentSession = (state: ClientState) =>

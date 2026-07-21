@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { TimelineFact } from "./client-store.js";
+import { getTimelineEntryPresentation } from "./timeline-entry-presentation.js";
+import {
+  captureVisibleTimelineAnchor,
+  initialTailPosition,
+  restoreVisibleTimelineAnchor,
+  shouldFollowTimelineTail,
+  shouldShowJumpToLatest,
+  tailPositionFromVisibility,
+} from "./timeline-viewport.js";
 
 interface Props {
   entries: readonly TimelineFact[];
@@ -14,15 +23,14 @@ export function SessionTimeline({ entries, olderCursor, paging, loadOlder, prese
   const viewport = useRef<HTMLElement>(null);
   const older = useRef<HTMLDivElement>(null);
   const tail = useRef<HTMLDivElement>(null);
-  const [following, setFollowing] = useState(true);
+  const [tailPosition, setTailPosition] = useState(initialTailPosition);
 
   async function prepend() {
     const element = viewport.current;
-    const anchor = element?.querySelector<HTMLElement>("[data-entry-id]");
-    const before = anchor?.getBoundingClientRect().top;
+    const anchor = element ? captureVisibleTimelineAnchor(element) : undefined;
     await loadOlder();
     requestAnimationFrame(() => {
-      if (element && anchor && before !== undefined) element.scrollTop += anchor.getBoundingClientRect().top - before;
+      if (element) restoreVisibleTimelineAnchor(element, anchor);
     });
   }
 
@@ -39,7 +47,7 @@ export function SessionTimeline({ entries, olderCursor, paging, loadOlder, prese
     if (!tail.current) return;
     const observer = new IntersectionObserver(items => {
       const visible = items.some(item => item.isIntersecting);
-      setFollowing(visible);
+      setTailPosition(tailPositionFromVisibility(visible));
       if (visible) void presentTail();
     }, { root: viewport.current, threshold: 1 });
     observer.observe(tail.current);
@@ -47,8 +55,8 @@ export function SessionTimeline({ entries, olderCursor, paging, loadOlder, prese
   }, [entries.at(-1)?.entryId, entries.at(-1)?.revision]);
 
   useEffect(() => {
-    if (following) tail.current?.scrollIntoView({ block: "end" });
-  }, [entries, following]);
+    if (shouldFollowTimelineTail(tailPosition)) tail.current?.scrollIntoView({ block: "end" });
+  }, [entries, tailPosition]);
 
   return <>
     <section ref={viewport} className="timeline" aria-label="Session Timeline">
@@ -60,20 +68,20 @@ export function SessionTimeline({ entries, olderCursor, paging, loadOlder, prese
       {entries.map(entry => <TimelineEntry key={entry.entryId} entry={entry}/>)}
       <div ref={tail} className="timeline-tail" aria-hidden="true"/>
     </section>
-    {!following && <button className="jump-latest" onClick={() => tail.current?.scrollIntoView({ behavior: "smooth" })}>Jump to latest</button>}
+    {shouldShowJumpToLatest(tailPosition) && <button className="jump-latest" onClick={() => tail.current?.scrollIntoView({ behavior: "smooth" })}>Jump to latest</button>}
   </>;
 }
 
 function TimelineEntry({ entry }: { entry: TimelineFact }) {
-  const abnormal = entry.kind === "outcome" || entry.kind === "lifecycle" || entry.kind === "interaction";
-  if (entry.kind === "assistant" || entry.kind === "tool") {
+  const presentation = getTimelineEntryPresentation(entry.kind);
+  if (presentation.layout === "work") {
     return <details className="work" data-entry-id={entry.entryId} data-finalized={entry.finalized}>
-      <summary>{entry.kind === "tool" ? "Tool activity" : "Work"}{entry.finalized === false ? " · working" : ""}</summary>
+      <summary>{presentation.label}{entry.finalized === false ? " · working" : ""}</summary>
       <pre>{entry.text}</pre>
     </details>;
   }
-  return <article data-entry-id={entry.entryId} data-kind={entry.kind} className={abnormal ? "abnormal" : undefined}>
-    {entry.kind !== "response" && <small>{entry.kind}</small>}
+  return <article data-entry-id={entry.entryId} data-kind={entry.kind} className={presentation.abnormal ? "abnormal" : undefined}>
+    {presentation.label && <small>{presentation.label}</small>}
     {entry.text}
   </article>;
 }

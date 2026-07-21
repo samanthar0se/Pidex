@@ -86,3 +86,40 @@ test("FX-TL-04/05 FX-STATE-02/04: live facts reconcile by identity and older pag
   await store.getState().presentTail();
   assert.deepEqual(readThrough, [7]);
 });
+
+test("paging from a previously selected Session cannot leave the current Session loading or failed", async () => {
+  for (const outcome of ["success", "failure"] as const) {
+    let resolveOlderPage: ((result: { entries: []; olderCursor: null }) => void) | undefined;
+    let rejectOlderPage: ((reason: Error) => void) | undefined;
+    const olderPage = new Promise<{ entries: []; olderCursor: null }>((resolve, reject) => {
+      resolveOlderPage = resolve;
+      rejectOlderPage = reject;
+    });
+    const store = createClientStore({
+      host: {
+        async readSession(sessionId) {
+          return {
+            session: { sessionId, name: sessionId, metadataRevision: 1, timelineRevision: 1 },
+            timeline: [],
+            olderCursor: sessionId === "first" ? "older" : null,
+          };
+        },
+        async readOlder() { return olderPage; },
+      },
+      drafts: { async read() { return ""; }, async write() {} },
+      routing: { replace() {} },
+    });
+
+    await store.getState().openSession("first");
+    const stalePaging = store.getState().loadOlder();
+    assert.equal(store.getState().paging, "loading");
+
+    await store.getState().openSession("second");
+    if (outcome === "success") resolveOlderPage?.({ entries: [], olderCursor: null });
+    else rejectOlderPage?.(new Error("Host unavailable"));
+    await stalePaging;
+
+    assert.equal(store.getState().selectedSessionId, "second");
+    assert.equal(store.getState().paging, "idle");
+  }
+});
