@@ -89,6 +89,52 @@ test("FX-COMP-02/03 FX-STATE-03/05 FX-RESP-05/06: Composer commands retain the e
   assert.equal(store.getState().runs["session-one"]?.find(run => run.runId === "run-held")?.state, "executing");
 });
 
+test("FX-INT-02/04/05/06: Interaction resolution keeps authoritative order and exact identity without retaining plaintext", async () => {
+  const commands: unknown[] = [];
+  let publish: ((interactions: any[]) => void) | undefined;
+  const first = interaction("first", "input", 2, 40, "run-one");
+  const urgent = interaction("urgent", "editor", 7, 20, "run-one");
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "Needs response", metadataRevision: 1, timelineRevision: 4 },
+          timeline: [], runs: [], interactions: [urgent, first],
+        };
+      },
+      watchInteractions(_sessionId, listener) { publish = listener; return () => {}; },
+      async resolveInteraction(command) { commands.push(command); return { kind: "accepted" }; },
+    },
+    drafts: { async read() { return "preserve my draft"; }, async write() {} },
+    routing: { replace() {} }, commandIds: () => "resolve-command",
+  });
+
+  await store.getState().openSession("session-one");
+  await store.getState().resolveInteraction("urgent", false, "private response");
+
+  assert.deepEqual(commands, [{
+    type: "interaction.resolve", commandId: "resolve-command", interactionId: "urgent",
+    workerGeneration: 3, observedRevision: 7, dismiss: false, value: "private response",
+  }]);
+  assert.equal(store.getState().interactionIntents.urgent?.phase, "accepted-awaiting-projection");
+  assert.equal(JSON.stringify(store.getState()).includes("private response"), false);
+  assert.equal(selectDraft(store.getState()), "preserve my draft");
+  assert.deepEqual(store.getState().interactions["session-one"]?.map(item => item.interactionId), ["urgent", "first"]);
+
+  publish?.([{ ...urgent, state: "expired", revision: 8, terminalCause: "deadline" }, first]);
+  assert.equal(store.getState().interactionIntents.urgent, undefined);
+  assert.deepEqual(store.getState().interactions["session-one"]?.map(item => item.interactionId), ["first"]);
+});
+
+function interaction(id: string, kind: "input" | "editor", revision: number, deadlineAt: number, runId: string) {
+  return {
+    interactionId: id, sessionId: "session-one", runId, workerGeneration: 3,
+    correlationId: `correlation-${id}`, kind, payload: { message: id }, state: "open" as const,
+    revision, createdAt: deadlineAt - 5, deadlineAt, terminalCause: null, respondedAt: null,
+    respondingDeviceLabel: null, applicationProven: null,
+  };
+}
+
 test("Composer submission records no Run identity until the Host projects one", async () => {
   const store = createClientStore({
     host: {

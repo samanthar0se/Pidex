@@ -1,10 +1,12 @@
-import type { ClientAdapters, CommandResult, DiscoveryProjection, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
+import type { ClientAdapters, CommandResult, DiscoveryProjection, InteractionFact, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
 
-const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore"];
+const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.interaction.basic"];
 const sockets = new Map<string, WebSocket>();
 const listeners = new Map<string, Set<(change: TimelineChange) => void>>();
 const runListeners = new Map<string, Set<(runs: RunFact[]) => void>>();
 const runsBySession = new Map<string, RunFact[]>();
+const interactionListeners = new Map<string, Set<(interactions: InteractionFact[]) => void>>();
+const interactionsBySession = new Map<string, InteractionFact[]>();
 
 function socketFor(onMessage: (message: any, socket: WebSocket, finish: <T>(value: T) => void) => void) {
   return new Promise<any>((resolve, reject) => {
@@ -57,11 +59,13 @@ function readSession(sessionId: string): Promise<SessionProjection> {
         window.clearTimeout(timeout);
         sockets.set(sessionId, socket);
         runsBySession.set(sessionId, message.snapshot.runs ?? []);
+        interactionsBySession.set(sessionId, message.snapshot.interactions ?? []);
         resolve({
           session: message.snapshot.session,
           timeline: message.snapshot.timelineWindow.entries,
           olderCursor: message.snapshot.timelineWindow.olderCursor,
           runs: message.snapshot.runs ?? [],
+          interactions: message.snapshot.interactions ?? [],
         });
       } else if (message.type === "timeline.change" && message.sessionId === sessionId) {
         listeners.get(sessionId)?.forEach(listener => listener(message));
@@ -69,6 +73,13 @@ function readSession(sessionId: string): Promise<SessionProjection> {
         updateRun(sessionId, message.runId, { state: message.state, workerGeneration: message.workerGeneration });
       } else if (message.type === "run.completed" && message.run.sessionId === sessionId) {
         updateRun(sessionId, message.run.runId, message.run);
+      } else if (message.type === "interaction.change" && message.interaction.sessionId === sessionId) {
+        const current = interactionsBySession.get(sessionId) ?? [];
+        const next = current.filter(item => item.interactionId !== message.interaction.interactionId);
+        next.push(message.interaction);
+        next.sort(compareInteractions);
+        interactionsBySession.set(sessionId, next);
+        interactionListeners.get(sessionId)?.forEach(listener => listener(next));
       }
     };
   });
@@ -167,6 +178,7 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
   stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
   actOnHeldRun: command => sendRunCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
+  resolveInteraction: command => sendRunCommand(command),
   watchSession(sessionId, listener) {
     const sessionListeners = listeners.get(sessionId) ?? new Set();
     sessionListeners.add(listener);
@@ -177,6 +189,12 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
     const sessionListeners = runListeners.get(sessionId) ?? new Set();
     sessionListeners.add(listener);
     runListeners.set(sessionId, sessionListeners);
+    return () => sessionListeners.delete(listener);
+  },
+  watchInteractions(sessionId, listener) {
+    const sessionListeners = interactionListeners.get(sessionId) ?? new Set();
+    sessionListeners.add(listener);
+    interactionListeners.set(sessionId, sessionListeners);
     return () => sessionListeners.delete(listener);
   },
   async readOlder(sessionId, cursor) {
@@ -196,3 +214,10 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
     }));
   },
 };
+
+function compareInteractions(left: InteractionFact, right: InteractionFact) {
+  if (left.deadlineAt === null && right.deadlineAt !== null) return 1;
+  if (left.deadlineAt !== null && right.deadlineAt === null) return -1;
+  return (left.deadlineAt ?? left.createdAt) - (right.deadlineAt ?? right.createdAt)
+    || left.createdAt - right.createdAt || left.interactionId.localeCompare(right.interactionId);
+}

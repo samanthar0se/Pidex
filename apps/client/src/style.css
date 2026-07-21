@@ -49,6 +49,12 @@ footer button { align-self: end; padding: 9px 16px; }
 .held-work { display: grid; gap: 6px; padding: 8px; border: 1px solid #d5d0c5; border-radius: 8px; background: #f5f2eb; }
 .held-work span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .held-work button { align-self: center; padding: 5px 9px; }
+.interaction-control { display: grid; gap: 8px; padding: 10px; border: 1px solid #c9b98e; border-radius: 10px; background: #fffaf0; }
+.interaction-heading, .interaction-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.interaction-heading span { color: #706b61; font-size: 12px; }
+.interaction-actions button:first-child { margin-right: auto; }
+.interaction-control textarea { min-height: 92px; }
+.interaction-cue { align-self: flex-start; }
 .command-outcome { margin: 0; color: #6e685e; font-size: 12px; }
 .command-outcome.rejected, .command-outcome.uncertain { color: #8b2d21; }
 .scope-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }

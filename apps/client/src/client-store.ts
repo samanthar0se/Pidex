@@ -27,7 +27,15 @@ export type RunState = "queued" | "executing" | "cancelling" | "held" | "complet
 export interface RunFact {
   runId: string; sessionId: string; sessionOrder: number; prompt: string; state: RunState; workerGeneration?: string;
 }
-export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; runs?: RunFact[]; olderCursor?: string | null; }
+export type InteractionState = "open" | "resolving" | "responded" | "dismissed" | "expired" | "withdrawn";
+export interface InteractionFact {
+  interactionId: string; sessionId: string; runId: string | null; workerGeneration: number;
+  correlationId: string; kind: "select" | "confirm" | "input" | "editor";
+  payload: { message: string; options?: string[]; defaultValue?: string | boolean };
+  provenance?: string; state: InteractionState; revision: number; createdAt: number; deadlineAt: number | null;
+  terminalCause: string | null; respondedAt: number | null; respondingDeviceLabel: string | null; applicationProven: boolean | null;
+}
+export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; runs?: RunFact[]; interactions?: InteractionFact[]; olderCursor?: string | null; }
 export interface TimelineChange { baseRevision: number; revision: number; entry: TimelineFact }
 export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
 export interface DiscoveryProjection {
@@ -76,8 +84,10 @@ export interface ClientAdapters {
     steerRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedTimelineRevision: number; text: string }): Promise<CommandResult>;
     stopRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedState: "executing"; observedTimelineRevision: number }): Promise<CommandResult>;
     actOnHeldRun?(command: { commandId: string; runId: string; action: "release" | "cancel" }): Promise<CommandResult>;
+    resolveInteraction?(command: { type: "interaction.resolve"; commandId: string; interactionId: string; workerGeneration: number; observedRevision: number; dismiss: boolean; value?: string | boolean }): Promise<CommandResult>;
     watchSession?(sessionId: string, listener: (change: TimelineChange) => void): () => void;
     watchRuns?(sessionId: string, listener: (runs: RunFact[]) => void): () => void;
+    watchInteractions?(sessionId: string, listener: (interactions: InteractionFact[]) => void): () => void;
     readOlder?(sessionId: string, cursor: string): Promise<TimelinePage>;
     markRead?(sessionId: string, timelineRevision: number): Promise<void>;
   };
@@ -103,6 +113,8 @@ export interface ClientState {
   archivedOrder: readonly string[];
   timelines: Readonly<Record<string, readonly TimelineFact[]>>;
   runs: Readonly<Record<string, readonly RunFact[]>>;
+  interactions: Readonly<Record<string, readonly InteractionFact[]>>;
+  interactionIntents: Readonly<Record<string, { commandId: string; phase: ComposerCommand["phase"]; reason?: string }>>;
   olderCursors: Readonly<Record<string, string | null>>;
   paging: "idle" | "loading" | "error";
   drafts: Readonly<Record<string, string>>;
@@ -121,7 +133,9 @@ export interface ClientState {
   composerCommand?: ComposerCommand;
   commandOutcomes: readonly ComposerCommand[];
   submitComposer(): Promise<void>;
+  stopRun(runId: string): Promise<void>;
   actOnHeldRun(runId: string, action: "release" | "cancel"): Promise<void>;
+  resolveInteraction(interactionId: string, dismiss: boolean, value?: string | boolean): Promise<void>;
   setSearchQuery(query: string): void;
   setDiscoveryMode(mode: "available" | "archived"): void;
   toggleProject(projectId: string): Promise<void>;
@@ -136,7 +150,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
   return createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
-    timelines: {}, runs: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
+    timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     async loadDiscovery() {
       if (!adapters.host.readCatalog) return;
@@ -216,6 +230,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         sessions: { ...state.sessions, [sessionId]: projection.session },
         timelines: { ...state.timelines, [sessionId]: projection.timeline },
         runs: { ...state.runs, [sessionId]: projection.runs ?? [] },
+        interactions: { ...state.interactions, [sessionId]: activeInteractions(projection.interactions ?? []) },
         olderCursors: { ...state.olderCursors, [sessionId]: projection.olderCursor ?? null },
         drafts: { ...state.drafts, [sessionId]: draft }, isSessionCurrent: true,
       }));
@@ -242,6 +257,15 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       });
       adapters.host.watchRuns?.(sessionId, runs => {
         if (get().selectedSessionId === sessionId) set(state => ({ runs: { ...state.runs, [sessionId]: runs } }));
+      });
+      adapters.host.watchInteractions?.(sessionId, interactions => {
+        if (get().selectedSessionId !== sessionId) return;
+        const active = activeInteractions(interactions);
+        const activeIds = new Set(active.map(item => item.interactionId));
+        set(state => ({
+          interactions: { ...state.interactions, [sessionId]: active },
+          interactionIntents: Object.fromEntries(Object.entries(state.interactionIntents).filter(([id]) => activeIds.has(id))),
+        }));
       });
     },
     async setDraft(value) {
@@ -277,6 +301,19 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       set(current => ({ composerCommand: outcome, commandOutcomes: [...current.commandOutcomes, outcome] }));
       if (result.kind === "accepted" && text) await get().setDraft("");
     },
+    async stopRun(runId) {
+      const state = get();
+      const sessionId = state.selectedSessionId;
+      const session = sessionId ? state.sessions[sessionId] : undefined;
+      const run = sessionId ? state.runs[sessionId]?.find(item => item.runId === runId) : undefined;
+      if (!sessionId || !session || run?.state !== "executing" || !run.workerGeneration || !state.isSessionCurrent || !adapters.host.stopRun) return;
+      const id = commandId();
+      const target = { action: "stop" as const, runId };
+      set({ composerCommand: pendingCommand(id, target) });
+      const result = await adapters.host.stopRun({ commandId: id, sessionId, runId, workerGeneration: run.workerGeneration, observedState: "executing", observedTimelineRevision: session.timelineRevision });
+      const outcome = commandState(id, target, result);
+      set(current => ({ composerCommand: outcome, commandOutcomes: [...current.commandOutcomes, outcome] }));
+    },
     async actOnHeldRun(runId, action) {
       const state = get();
       const sessionId = state.selectedSessionId;
@@ -292,6 +329,23 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         commandOutcomes: [...current.commandOutcomes, outcome],
         runs: result.kind === "accepted" ? { ...current.runs, [sessionId]: current.runs[sessionId]!.map(item => item.runId === runId ? { ...item, state: action === "release" ? "executing" : "cancelled" } : item) } : current.runs,
       }));
+    },
+    async resolveInteraction(interactionId, dismiss, value) {
+      const state = get();
+      const sessionId = state.selectedSessionId;
+      const interaction = sessionId ? state.interactions[sessionId]?.find(item => item.interactionId === interactionId) : undefined;
+      if (!interaction || interaction.state !== "open" || !adapters.host.resolveInteraction || !state.isSessionCurrent) return;
+      const id = commandId();
+      set(current => ({ interactionIntents: { ...current.interactionIntents, [interactionId]: { commandId: id, phase: "pending" } } }));
+      const result = await adapters.host.resolveInteraction({
+        type: "interaction.resolve", commandId: id, interactionId,
+        workerGeneration: interaction.workerGeneration, observedRevision: interaction.revision,
+        dismiss, ...(dismiss ? {} : { value }),
+      });
+      set(current => ({ interactionIntents: { ...current.interactionIntents, [interactionId]: {
+        commandId: id, phase: result.kind === "accepted" ? "accepted-awaiting-projection" : result.kind,
+        ...(result.kind === "accepted" ? {} : { reason: result.reason }),
+      } } }));
     },
     setSearchQuery(searchQuery) { set({ searchQuery }); },
     setDiscoveryMode(discoveryMode) {
@@ -350,6 +404,10 @@ function mergeTimeline(older: readonly TimelineFact[], current: readonly Timelin
 
 function compareTimelineEntries(left: TimelineFact, right: TimelineFact): number {
   return (left.order ?? 0) - (right.order ?? 0);
+}
+
+function activeInteractions(interactions: readonly InteractionFact[]): InteractionFact[] {
+  return interactions.filter(item => item.state === "open" || item.state === "resolving");
 }
 
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }
