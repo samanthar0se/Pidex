@@ -17,6 +17,14 @@ const mappingSchema = sourceSchema.extend({
   observablePostcondition: z.string().min(1),
 });
 
+type TraceabilityMapping = z.infer<typeof mappingSchema>;
+type EvidenceTier = z.infer<typeof evidenceTierSchema>;
+
+interface EvidenceCase {
+  readonly evidenceTier: EvidenceTier;
+  readonly observablePostcondition: string;
+}
+
 export const traceabilityManifestSchema = z.strictObject({
   schemaVersion: z.literal(1),
   catalogRevision: z.string().min(1),
@@ -31,10 +39,7 @@ export interface TraceabilityCatalog {
   readonly revision: string;
   readonly requirements: readonly string[];
   readonly retiredScaffoldTests: readonly string[];
-  readonly cases: Readonly<Record<string, {
-    readonly evidenceTier: z.infer<typeof evidenceTierSchema>;
-    readonly observablePostcondition: string;
-  }>>;
+  readonly cases: Readonly<Record<string, EvidenceCase>>;
 }
 
 export interface TraceabilityResult {
@@ -54,7 +59,7 @@ export function evaluateTraceability(
 ): TraceabilityResult {
   const parsed = traceabilityManifestSchema.safeParse(input);
   if (!parsed.success) {
-    return failed([`malformed:${z.prettifyError(parsed.error)}`]);
+    return incompleteResult([`malformed:${z.prettifyError(parsed.error)}`]);
   }
 
   const manifest = parsed.data;
@@ -63,44 +68,56 @@ export function evaluateTraceability(
     failures.add("stale:catalog-revision");
   }
 
-  const expected = new Set([
+  const expectedSourceKeys = new Set([
     ...catalog.requirements.map((id) => `requirement:${id}`),
-    ...catalog.retiredScaffoldTests.map(
-      (id) => `retired-scaffold-test:${id}`,
-    ),
+    ...catalog.retiredScaffoldTests.map((id) => `retired-scaffold-test:${id}`),
   ]);
-  const seen = new Map<string, typeof manifest.mappings[number]>();
+  const mappingsBySourceKey = new Map<string, TraceabilityMapping>();
 
   for (const mapping of manifest.mappings) {
-    const key = `${mapping.kind}:${mapping.id}`;
-    if (!expected.has(key)) failures.add(`stale:source:${key}`);
-
-    const previous = seen.get(key);
-    if (previous) {
-      failures.add(`duplicate:${key}`);
-      if (
-        previous.case !== mapping.case ||
-        previous.evidenceTier !== mapping.evidenceTier ||
-        previous.observablePostcondition !== mapping.observablePostcondition
-      ) failures.add(`contradictory:${key}`);
+    const sourceKey = `${mapping.kind}:${mapping.id}`;
+    if (!expectedSourceKeys.has(sourceKey)) {
+      failures.add(`stale:source:${sourceKey}`);
     }
-    seen.set(key, mapping);
 
-    const evidenceCase = catalog.cases[mapping.case];
-    if (!evidenceCase) {
+    const previousMapping = mappingsBySourceKey.get(sourceKey);
+    if (previousMapping) {
+      failures.add(`duplicate:${sourceKey}`);
+      const mappingsContradict =
+        previousMapping.case !== mapping.case ||
+        previousMapping.evidenceTier !== mapping.evidenceTier ||
+        previousMapping.observablePostcondition !==
+          mapping.observablePostcondition;
+      if (mappingsContradict) {
+        failures.add(`contradictory:${sourceKey}`);
+      }
+    }
+    mappingsBySourceKey.set(sourceKey, mapping);
+
+    const catalogCase = catalog.cases[mapping.case];
+    if (!catalogCase) {
       failures.add(`stale:case:${mapping.case}`);
-    } else if (
-      evidenceCase.evidenceTier !== mapping.evidenceTier ||
-      evidenceCase.observablePostcondition !== mapping.observablePostcondition
-    ) {
+      continue;
+    }
+
+    const mappingContradictsCase =
+      catalogCase.evidenceTier !== mapping.evidenceTier ||
+      catalogCase.observablePostcondition !== mapping.observablePostcondition;
+    if (mappingContradictsCase) {
       failures.add(`contradictory:case:${mapping.case}`);
     }
   }
 
-  for (const key of expected) {
-    if (!seen.has(key)) failures.add(`missing:${key}`);
+  for (const sourceKey of expectedSourceKeys) {
+    if (!mappingsBySourceKey.has(sourceKey)) {
+      failures.add(`missing:${sourceKey}`);
+    }
   }
-  return failures.size === 0 ? passed() : failed([...failures].sort());
+
+  if (failures.size === 0) {
+    return completeResult();
+  }
+  return incompleteResult([...failures].sort());
 }
 
 export function assertCompleteTraceability(
@@ -109,15 +126,17 @@ export function assertCompleteTraceability(
 ): TraceabilityManifest {
   const result = evaluateTraceability(input, catalog);
   if (!result.complete) {
-    throw new Error(`incomplete requirement traceability: ${result.failures.join(", ")}`);
+    throw new Error(
+      `incomplete requirement traceability: ${result.failures.join(", ")}`,
+    );
   }
   return traceabilityManifestSchema.parse(input);
 }
 
-function passed(): TraceabilityResult {
+function completeResult(): TraceabilityResult {
   return { complete: true, supportsScaffoldReplacementClaim: true, failures: [] };
 }
 
-function failed(failures: readonly string[]): TraceabilityResult {
+function incompleteResult(failures: readonly string[]): TraceabilityResult {
   return { complete: false, supportsScaffoldReplacementClaim: false, failures };
 }
