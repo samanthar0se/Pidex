@@ -2,8 +2,13 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, 
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { verifyPublishedSourceClosure } from "./source-closure.js";
-
-const MARKER_FILE = ".pidex-source-instance.json";
+import {
+  isValidSourceInstanceMarker,
+  matchesSourceInstanceMarker,
+  SOURCE_CHECKOUT_MARKER_FILE,
+  SOURCE_PREPARATION_MARKER_FILE,
+  type SourceInstanceMarker,
+} from "./source-markers.js";
 
 export interface SourceLaunchRuntime {
   isLauncherStopped(): Promise<boolean> | boolean;
@@ -22,7 +27,6 @@ interface SelectSourceReleaseOptions extends SourceLaunchOptions {
   releaseDirectory: string;
 }
 
-interface Marker { schemaVersion: 1; instanceId: string }
 interface State { schemaVersion: 1; instanceId: string; owningSid: string }
 interface Selection { schemaVersion: 1; activeReleaseId: string; previousReleaseId?: string }
 
@@ -79,8 +83,8 @@ async function assertSafeToSelect(runtime: SourceLaunchRuntime): Promise<void> {
 }
 
 function resolvePreparedInstance(options: Pick<SourceLaunchOptions, "checkoutDirectory" | "profileDirectory" | "owningSid">) {
-  const marker = readJson<Marker>(join(resolve(options.checkoutDirectory), MARKER_FILE));
-  if (marker.schemaVersion !== 1 || !/^[0-9a-f-]{36}$/i.test(marker.instanceId)) {
+  const marker = readJson<SourceInstanceMarker>(join(resolve(options.checkoutDirectory), SOURCE_CHECKOUT_MARKER_FILE));
+  if (!isValidSourceInstanceMarker(marker)) {
     throw new Error("invalid source checkout marker");
   }
   const sourceRoot = join(resolve(options.profileDirectory), "Pidex", "Source", marker.instanceId);
@@ -88,8 +92,8 @@ function resolvePreparedInstance(options: Pick<SourceLaunchOptions, "checkoutDir
   if (state.schemaVersion !== 1 || state.instanceId !== marker.instanceId || state.owningSid !== options.owningSid) {
     throw new Error("source checkout is not prepared for the owning Windows identity");
   }
-  const preparation = readJson<Marker>(join(sourceRoot, "prepared.json"));
-  if (preparation.schemaVersion !== 1 || preparation.instanceId !== marker.instanceId) {
+  const preparation = readJson<SourceInstanceMarker>(join(sourceRoot, SOURCE_PREPARATION_MARKER_FILE));
+  if (!matchesSourceInstanceMarker(preparation, marker.instanceId)) {
     throw new Error("source checkout is not prepared");
   }
   return { sourceRoot, launcherDirectory: join(sourceRoot, "launcher") };

@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { publishImmutableSourceClosure, type SourceClosureFile } from "../packages/source/src/source-closure.js";
-import { prepareSourceInstance, unprepareSourceInstance } from "../packages/source/src/source-instance.js";
+import {
+  prepareSourceInstance,
+  unprepareSourceInstance,
+  type SourceInstanceOptions,
+} from "../packages/source/src/source-instance.js";
 import { startSourceRelease, updateSourceRelease, rollbackSourceRelease } from "../packages/source/src/source-launch.js";
 
 const owningSid = "S-1-5-21-100";
@@ -29,12 +33,12 @@ function plan(label: string) {
   };
 }
 
-function prepareTestSourceInstance(
+function createTestSourceInstanceOptions(
   checkoutDirectory: string,
   profileDirectory: string,
   recordIntegration: (integration: "certificate" | "firewall") => void = () => {},
-) {
-  return prepareSourceInstance({
+): SourceInstanceOptions {
+  return {
     checkoutDirectory,
     profileDirectory,
     identity: { owningSid, tokenSid: owningSid, administrator: true, elevated: true, appContainer: false },
@@ -47,6 +51,8 @@ function prepareTestSourceInstance(
         recordIntegration("firewall");
         return { changed: false, inspection: { state: "matches", reasons: [] } };
       },
+      removeCertificate: async () => {},
+      removeFirewallRule: async () => {},
     },
     createTlsMaterial: async () => ({
       caCertificate: "ca",
@@ -54,7 +60,19 @@ function prepareTestSourceInstance(
       hostCertificate: "host",
       hostPrivateKey: "host-key",
     }),
-  });
+  };
+}
+
+function prepareTestSourceInstance(
+  checkoutDirectory: string,
+  profileDirectory: string,
+  recordIntegration: (integration: "certificate" | "firewall") => void = () => {},
+) {
+  return prepareSourceInstance(createTestSourceInstanceOptions(
+    checkoutDirectory,
+    profileDirectory,
+    recordIntegration,
+  ));
 }
 
 test("two checkouts start, update, and roll back only through their stable stopped launcher", async () => {
@@ -122,22 +140,8 @@ test("unprepared source cannot start until re-prepare restores integration witho
   const root = mkdtempSync(join(tmpdir(), "pidex-source-launch-"));
   const checkoutDirectory = join(root, "checkout");
   const profileDirectory = join(root, "profile");
-  const integrations = {
-    ensureCertificate: async () => ({ changed: false, inspection: { state: "matches" as const, reasons: [] } }),
-    ensureFirewallRule: async () => ({ changed: false, inspection: { state: "matches" as const, reasons: [] } }),
-    removeCertificate: async () => {},
-    removeFirewallRule: async () => {},
-  };
-  const sourceOptions = {
-    checkoutDirectory,
-    profileDirectory,
-    identity: { owningSid, tokenSid: owningSid, administrator: true, elevated: true, appContainer: false },
-    integrations,
-  };
-  const prepared = await prepareSourceInstance({
-    ...sourceOptions,
-    createTlsMaterial: async () => ({ caCertificate: "ca", caPrivateKey: "ca-key", hostCertificate: "host", hostPrivateKey: "host-key" }),
-  });
+  const sourceOptions = createTestSourceInstanceOptions(checkoutDirectory, profileDirectory);
+  const prepared = await prepareSourceInstance(sourceOptions);
   const release = publishImmutableSourceClosure({ releasesDirectory: join(prepared.sourceRoot, "releases"), plan: plan("durable") });
   const controlKey = readFileSync(join(prepared.sourceRoot, "control", "control.key"));
   const invocations: string[] = [];

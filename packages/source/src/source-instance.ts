@@ -11,8 +11,13 @@ import type {
   FirewallIntegration,
   IntegrationInspection,
 } from "../../windows/src/index.js";
+import {
+  isValidSourceInstanceMarker,
+  SOURCE_CHECKOUT_MARKER_FILE,
+  SOURCE_PREPARATION_MARKER_FILE,
+  type SourceInstanceMarker,
+} from "./source-markers.js";
 
-const MARKER_FILE = ".pidex-source-instance.json";
 const CANONICAL_PORT = 47831 as const;
 const ROLE_DIRECTORIES = [
   "authority-generations", "generation-selectors", "blobs", "checkpoint-chunks",
@@ -62,11 +67,6 @@ export interface PreparedSourceInstance {
   created: boolean;
 }
 
-interface SourceMarker {
-  schemaVersion: 1;
-  instanceId: string;
-}
-
 interface PreparedState {
   schemaVersion: 1;
   instanceId: string;
@@ -81,8 +81,8 @@ export async function prepareSourceInstance(
 
   const checkout = resolve(options.checkoutDirectory);
   const profile = resolve(options.profileDirectory);
-  const markerPath = join(checkout, MARKER_FILE);
-  const existingMarker = readJsonIfPresent<SourceMarker>(markerPath);
+  const markerPath = join(checkout, SOURCE_CHECKOUT_MARKER_FILE);
+  const existingMarker = readJsonIfPresent<SourceInstanceMarker>(markerPath);
   const marker = existingMarker ?? { schemaVersion: 1, instanceId: randomUUID() };
   validateMarker(marker);
   const sourceRoot = join(profile, "Pidex", "Source", marker.instanceId);
@@ -118,10 +118,10 @@ export async function prepareSourceInstance(
 
   await options.integrations.ensureCertificate(certificateIntegration(sourceRoot, state));
   await options.integrations.ensureFirewallRule(firewallIntegration(state.instanceId));
-  const preparationPath = join(sourceRoot, "prepared.json");
-  const preparation = readJsonIfPresent<SourceMarker>(preparationPath);
+  const preparationPath = join(sourceRoot, SOURCE_PREPARATION_MARKER_FILE);
+  const preparation = readJsonIfPresent<SourceInstanceMarker>(preparationPath);
   if (preparation) validatePreparedMarker(preparation, state.instanceId);
-  else writeJsonExclusive(preparationPath, { schemaVersion: 1, instanceId: state.instanceId } satisfies SourceMarker);
+  else writeJsonExclusive(preparationPath, { schemaVersion: 1, instanceId: state.instanceId } satisfies SourceInstanceMarker);
   return { instanceId: state.instanceId, sourceRoot, markerPath, created: !existingState };
 }
 
@@ -130,8 +130,8 @@ export async function unprepareSourceInstance(
 ): Promise<PreparedSourceInstance> {
   assertSourceIdentity(options.identity);
   const checkout = resolve(options.checkoutDirectory);
-  const markerPath = join(checkout, MARKER_FILE);
-  const marker = readJsonIfPresent<SourceMarker>(markerPath);
+  const markerPath = join(checkout, SOURCE_CHECKOUT_MARKER_FILE);
+  const marker = readJsonIfPresent<SourceInstanceMarker>(markerPath);
   if (!marker) throw new Error("source checkout is not prepared");
   validateMarker(marker);
   const sourceRoot = join(resolve(options.profileDirectory), "Pidex", "Source", marker.instanceId);
@@ -143,7 +143,7 @@ export async function unprepareSourceInstance(
   }
   // Once integration removal begins, start must fail even if a native removal
   // reports a partial failure. A later explicit prepare inspects and repairs it.
-  rmSync(join(sourceRoot, "prepared.json"), { force: true });
+  rmSync(join(sourceRoot, SOURCE_PREPARATION_MARKER_FILE), { force: true });
   await options.integrations.removeCertificate(certificateIntegration(sourceRoot, state));
   await options.integrations.removeFirewallRule(firewallIntegration(state.instanceId));
   return { instanceId: state.instanceId, sourceRoot, markerPath, created: false };
@@ -156,11 +156,11 @@ function assertSourceIdentity(identity: SourceExecutionIdentity): void {
   if (identity.appContainer) throw new Error("source lifecycle rejects AppContainer tokens");
 }
 
-function validateMarker(marker: SourceMarker): void {
-  if (marker.schemaVersion !== 1 || !/^[0-9a-f-]{36}$/i.test(marker.instanceId)) throw new Error("invalid source checkout marker");
+function validateMarker(marker: SourceInstanceMarker): void {
+  if (!isValidSourceInstanceMarker(marker)) throw new Error("invalid source checkout marker");
 }
 
-function validatePreparedMarker(marker: SourceMarker, instanceId: string): void {
+function validatePreparedMarker(marker: SourceInstanceMarker, instanceId: string): void {
   validateMarker(marker);
   if (marker.instanceId !== instanceId) throw new Error("source preparation identity mismatch");
 }
