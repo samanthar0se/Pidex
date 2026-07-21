@@ -118,6 +118,8 @@ export interface AuthorityOwner extends CompositionOwner { readonly mode: "norma
 export interface ManifestOwnerContext {
   readonly manifest: ResolvedLaunchManifest;
   readonly health: HostHealthGraph;
+  /** Present only for portable evidence; factories must consume these instead of ambient switches. */
+  readonly portableInputs?: PortableCompositionInputs;
 }
 
 /** Runtime construction ports. Each returned owner has one lexical owner in this composition root. */
@@ -159,7 +161,31 @@ const PORTABLE_SUBSTITUTED_CAPABILITIES: ReadonlySet<PortableSubstitutedCapabili
 
 export type PortableCompositionEvidence = typeof PORTABLE_EVIDENCE_BOUNDARIES & {
   readonly substitutedCapabilities: readonly PortableSubstitutedCapability[];
+  readonly inputs: PortableCompositionInputs;
 };
+
+export interface PortableFaultInput {
+  readonly target: "time" | "entropy" | "network" | "storage" | "windows" | "process";
+  readonly operation: string;
+  readonly occurrence: number;
+}
+
+export interface PortableCompositionInputs {
+  readonly time: { readonly now: number };
+  readonly entropy: { readonly seed: string };
+  readonly network: { readonly mode: "disabled" | "synthetic" };
+  readonly storage: { readonly root: string };
+  readonly faults: readonly PortableFaultInput[];
+}
+
+const PORTABLE_FAULT_TARGETS: ReadonlySet<PortableFaultInput["target"]> = new Set([
+  "time",
+  "entropy",
+  "network",
+  "storage",
+  "windows",
+  "process",
+]);
 
 export interface PortableManifestHost extends ManifestHost {
   readonly evidence: PortableCompositionEvidence;
@@ -195,7 +221,10 @@ export async function composeManifestHost(
 export async function composePortableManifestHost(
   manifestInput: ResolvedLaunchManifest,
   factories: ManifestHostFactories,
-  options: { readonly substitutedCapabilities: readonly PortableSubstitutedCapability[] },
+  options: {
+    readonly substitutedCapabilities: readonly PortableSubstitutedCapability[];
+    readonly inputs: PortableCompositionInputs;
+  },
 ): Promise<PortableManifestHost> {
   const manifest = parseResolvedLaunchManifest(manifestInput);
   if (
@@ -210,13 +239,15 @@ export async function composePortableManifestHost(
   )) {
     throw new Error("portable composition may substitute only windows and process capabilities");
   }
+  const inputs = validatePortableInputs(options.inputs);
   assertCompleteFactories(factories);
-  const host = await composeValidatedManifestHost(manifest, factories);
+  const host = await composeValidatedManifestHost(manifest, factories, inputs);
   return {
     ...host,
     evidence: Object.freeze({
       ...PORTABLE_EVIDENCE_BOUNDARIES,
       substitutedCapabilities: Object.freeze([...options.substitutedCapabilities]),
+      inputs,
     }),
   };
 }
@@ -224,9 +255,10 @@ export async function composePortableManifestHost(
 async function composeValidatedManifestHost(
   manifest: ResolvedLaunchManifest,
   factories: ManifestHostFactories,
+  portableInputs?: PortableCompositionInputs,
 ): Promise<ManifestHost> {
   const health = new HostHealthGraph(SCOPES);
-  const ownerContext: ManifestOwnerContext = { manifest, health };
+  const ownerContext: ManifestOwnerContext = { manifest, health, ...(portableInputs ? { portableInputs } : {}) };
   const owners: CompositionOwner[] = [];
   try {
     await factories.proveLauncherContainment(manifest);
@@ -272,6 +304,32 @@ async function composeValidatedManifestHost(
     await closeOwners(owners);
     throw cause;
   }
+}
+
+function validatePortableInputs(input: PortableCompositionInputs | undefined): PortableCompositionInputs {
+  if (
+    !input || !Number.isFinite(input.time?.now) || !input.entropy?.seed ||
+    !["disabled", "synthetic"].includes(input.network?.mode) ||
+    !input.storage?.root || !Array.isArray(input.faults)
+  ) {
+    throw new Error("portable composition requires explicit time, entropy, network, storage, and fault inputs");
+  }
+  const faults = input.faults.map(fault => {
+    if (!PORTABLE_FAULT_TARGETS.has(fault.target)) {
+      throw new Error("portable composition fault inputs require a supported target");
+    }
+    if (!fault.operation || !Number.isInteger(fault.occurrence) || fault.occurrence < 1) {
+      throw new Error("portable composition fault inputs require an operation and positive occurrence");
+    }
+    return Object.freeze({ ...fault });
+  });
+  return Object.freeze({
+    time: Object.freeze({ ...input.time }),
+    entropy: Object.freeze({ ...input.entropy }),
+    network: Object.freeze({ ...input.network }),
+    storage: Object.freeze({ ...input.storage }),
+    faults: Object.freeze(faults),
+  });
 }
 
 function assertCompleteFactories(factories: ManifestHostFactories): void {
