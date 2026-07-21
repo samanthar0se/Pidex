@@ -22,6 +22,7 @@ The source decisions remain the rationale and detailed decision record:
 - [Define the human interaction and approval model](issues/13-define-human-interaction-and-approval-model.md)
 - [Define offline cache and background behavior](issues/14-define-offline-cache-and-background-behavior.md)
 - [Define backup and data recovery operations](issues/15-define-backup-and-data-recovery-operations.md)
+- [Specify Host-global Session read tracking](https://github.com/samanthar0se/Pidex/issues/132)
 
 ## 2. Product definition
 
@@ -340,6 +341,26 @@ A slow, disconnected, crashed, backgrounded, revoked, or incompatible Client mus
 
 Resumable synchronization changes remain available for at least seven days. Older or incompatible cursors receive authoritative resets without affecting Timeline retention.
 
+### 8.8 Host-global Session read tracking
+
+Every Session has one monotonic **Session read-through position** shared by all paired Devices. The Host derives **Session read status** by comparing that position with the nullable **unread-milestone basis**. Only an Interaction opening or a Run becoming Completed, Failed, Cancelled, or Interrupted is an **unread-producing milestone**. Streaming output, intermediate Run progress, user-originated actions, and other Timeline activity do not produce unread status.
+
+`SessionReadState` is one atomic projection containing `readThroughTimelineRevision`, Host-derived `readStatus`, and a positive `readStateRevision`. Every catalog and Session projection, snapshot, reset barrier, and independent resource basis must include it. The read-state revision advances exactly when the exposed read state changes and is independent of Timeline and metadata revisions. Read status and Session attention summary remain independent facts.
+
+A new empty Session starts read through its initial Timeline revision at read-state revision 1. A forked child starts read through its copied tail at revision 1; copied history is read and the parent is unchanged. Archive, restore, residency changes, and non-producing Timeline activity preserve read state.
+
+A current View may create mark-read intent only after committing and visibly presenting an exact authoritative Timeline tail while the Client is current, active, foreground, and scrolled to a visible tail sentinel. A loading View, another View, a background or hidden Client, content above the tail, and cached or offline presentation are ineligible. The command carries only Device-scoped Command ID, Session ID, exact `presentedTimelineRevision`, and exact `session.read-state` capability basis; View identity, presentation grants, and observed read state are not Host contracts.
+
+The Host validates that exact presented revision and atomically sets read-through to the maximum of it and the current position. It never substitutes a newer Host tail, clamps a future revision, or defers an invalid command. A covered valid revision is an accepted no-op; an unknown Session or invalid revision is rejected. Therefore a View that presents revision R cannot acknowledge a later milestone that races with it.
+
+Mark-read uses authenticated Device identity plus Command ID for durable idempotency. Its receipt, effect, synchronization record, and authority commit are atomic. An exact retry replays its recorded outcome byte-for-byte; changed-envelope reuse is `command-id-conflict`. Known-Session outcomes include authoritative read state and a reconciliation cursor. Mark-read never increments Timeline or metadata revisions and never emits an advisory notification.
+
+Read-state changes are published only as cursor-ordered `session.read-state-changed` Change Sets to every Device, whether or not it holds a detailed Session scope. Each Device maintains one canonical read state per Session across catalog, cached, and current projections: higher read-state revisions replace lower ones, lower revisions are ignored, and equal revisions must be byte-identical. Malformed state or equal-revision divergence discards the affected authority and requires resynchronization; a Device must not invent a default. A Device persists the Host cursor only after its associated changes and canonical state are durable.
+
+Protocol 1.2 requires exact Host and Device negotiation of the indivisible `session.read-state` capability at version 1 before authoritative projections are sent. There is no degraded mode, legacy migration, mixed-version continuity, cache conversion, feature disable, or rollback path. Reconnect reconciles canonical state before replaying only an unresolved command's exact identity and envelope. A reset installs current read state. Any optimistic current-View treatment is command-bound and non-persisted, never affects discovery, and clears on authoritative advance, outcome, rejection, reconnect, reset, or inconsistency.
+
+Authority persists read-through, read-state revision, and nullable unread-milestone basis in the same SQLite authority as Timeline facts, receipts, and synchronization records; read status is never persisted independently and milestone basis is never exposed to Devices. Startup and authority verification validate their invariants. Recovery may repair read authority only when intact evidence proves one unique result in a fresh Authority generation; ambiguity fails closed. Snapshots, backups, restore, fallback, and rollback move Timeline and read authority together and never merge a newer read maximum into an older generation. Synchronization compaction changes delivery only and uses the existing reset barrier outside retained history.
+
 ## 9. LAN trust, identity, and security
 
 ### 9.1 Trust boundary
@@ -409,7 +430,7 @@ The sidebar includes:
 - compact state cues without state-priority regrouping; and
 - fixed Host connection state, last authoritative synchronization time, Device identity, and settings.
 
-Sessions within groups are ordered by recent authoritative activity. Cues distinguish executing Runs, open Interactions, held work, sleeping Sessions, and abnormal outcomes.
+Sessions within groups are ordered by recent authoritative activity. A Device-local unread-only filter composes with search for available and archived catalogs without changing hierarchy or recency order. Rows, counts, and filters use canonical Host read state rather than current-View optimism. Cues and assistive-technology semantics expose unread status independently from Session attention summary; neither visual styling nor a combined priority state may collapse `unread`, `needs response`, and `working`.
 
 The main pane contains Session name, Project/Workspace context, capability-dependent model and mode controls, exact-target Run actions, Timeline, pinned Interaction controls, and composer.
 
@@ -460,6 +481,8 @@ Every affected scope visibly reports `offline`, `reconnecting`, `current`, `upda
 
 All Host mutations remain disabled until required scopes reconcile under a compatible basis. Cached content may remain visible with stale treatment. Reconnect verifies origin, Host identity, Device authorization, and protocol basis before resume or explicit reset. Cached and Host facts are never merged by timestamp.
 
+Last-synchronized Session read status may remain visible offline only with the same explicit stale treatment. Offline presentation cannot create new mark-read intent or make discovery state appear current.
+
 ### 11.3 Drafts and uncertain commands
 
 Pidex has no offline command queue. Reconnect never submits a prompt, follow-up, steering, Stop, Interaction response, lifecycle action, setting, extension command, or Composer Draft automatically.
@@ -492,6 +515,8 @@ Default notification-eligible facts are:
 - Pi warning or error notification.
 
 Routine output, keyed status/widgets, title, successful synchronization, and ordinary informational activity remain in-app by default.
+
+Session read-state transitions, mark-read commands, synchronization, and recovery never create advisory notifications. Notification eligibility remains tied to the underlying Host facts above, so acknowledging a fact cannot create a notification feedback loop.
 
 System notifications use rich previews by default, after UX disclosure, and never include input/editor Interaction Responses. Each Device must offer a generic-text privacy mode. Push payloads are encrypted, bounded, versioned event hints with stable event and Host identity, event time, and preview data. They report a past Host fact, never current authority. Notification actions only open and reconcile the canonical PWA; they never issue Host commands.
 
@@ -728,6 +753,8 @@ The implementation and its tests must preserve all of these invariants:
 13. Revocation stops future authority but does not claim remote cache erasure.
 14. Offline and Push data never claim current Host state.
 15. Authentication protects every product surface even on a trusted LAN.
+16. One Host-global Session read-through position advances monotonically only through an exact visibly presented authoritative tail.
+17. Timeline and Session read authority move together across persistence, backup, restore, and Authority-generation selection.
 
 ## 17. Quality and release acceptance
 
