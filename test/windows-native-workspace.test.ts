@@ -164,3 +164,21 @@ test("the Windows addon has one raw Node-API entry point without V8 or libuv", a
   assert.match(addonSource, /napi_create_promise/);
   assert.doesNotMatch(addonSource, /\bv8\b|uv\.h|node-addon-api/i);
 });
+
+test("the native Network port uses NLM Private profiles and owns DNS-SD registrations", async () => {
+  const [cmake, header, source] = await Promise.all([
+    readNativeFile("common/CMakeLists.txt"),
+    readNativeFile("common/include/pidex/windows/network.hpp"),
+    readNativeFile("common/src/network.cpp"),
+  ]);
+
+  assert.match(cmake, /src\/network\.cpp/);
+  assert.match(header, /class managed_network_observer/);
+  assert.match(header, /class managed_dns_sd_advertisement/);
+  assert.match(source, /NLM_NETWORK_CATEGORY_PRIVATE/);
+  assert.match(source, /GetAdaptersAddresses/);
+  assert.match(source, /DnsServiceRegister/);
+  assert.match(source, /DnsServiceDeRegister/);
+  assert.match(source, /std::call_once/);
+  assert.doesNotMatch(source, /NLM_NETWORK_CATEGORY_PUBLIC\s*==|NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED\s*==/);
+});
