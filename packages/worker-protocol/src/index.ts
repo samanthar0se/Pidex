@@ -324,6 +324,30 @@ type GenerationRunState =
   | "interrupted";
 type GenerationInteractionState = "open" | "applying" | "responded" | "withdrawn";
 
+declare const configGenerationBrand: unique symbol;
+declare const interactionIdBrand: unique symbol;
+declare const runCorrelationIdBrand: unique symbol;
+
+export type ConfigGeneration = string & {
+  readonly [configGenerationBrand]: true;
+};
+export type InteractionId = string & { readonly [interactionIdBrand]: true };
+export type RunCorrelationId = string & {
+  readonly [runCorrelationIdBrand]: true;
+};
+
+export function configGeneration(value: string): ConfigGeneration {
+  return value as ConfigGeneration;
+}
+
+export function interactionId(value: string): InteractionId {
+  return value as InteractionId;
+}
+
+export function runCorrelationId(value: string): RunCorrelationId {
+  return value as RunCorrelationId;
+}
+
 /**
  * Host-side state machine for one immutable child generation. It deliberately
  * has no replay operation: a lost executing Run can only become interrupted.
@@ -332,12 +356,12 @@ export class SessionGenerationLifecycle {
   readonly #identity: WorkerGenerationIdentity;
   readonly #requiredCapabilities: readonly string[];
   #capabilities = new Set<string>();
-  #configGeneration?: string;
-  #runCorrelationId?: string;
-  #usedCorrelations = new Set<string>();
+  #configGeneration?: ConfigGeneration;
+  #runCorrelationId?: RunCorrelationId;
+  #usedCorrelations = new Set<RunCorrelationId>();
   #runState: GenerationRunState = "idle";
   #failed = false;
-  readonly #interactions = new Map<string, GenerationInteractionState>();
+  readonly #interactions = new Map<InteractionId, GenerationInteractionState>();
 
   constructor(
     identity: WorkerGenerationIdentity,
@@ -350,7 +374,7 @@ export class SessionGenerationLifecycle {
   get runState(): GenerationRunState { return this.#runState; }
   get shouldReplay(): false { return false; }
 
-  ready(capabilities: readonly { id: string; version: number }[], configGeneration: string): void {
+  ready(capabilities: readonly { id: string; version: number }[], configGeneration: ConfigGeneration): void {
     if (this.#failed || this.#configGeneration) throw new WorkerGenerationFailure("duplicate-readiness", this.#identity);
     this.#capabilities = new Set(capabilities.map(capability => capability.id));
     const missing = this.#requiredCapabilities.filter(id => !this.#capabilities.has(id));
@@ -358,7 +382,7 @@ export class SessionGenerationLifecycle {
     this.#configGeneration = configGeneration;
   }
 
-  execute(correlationId: string): void {
+  execute(correlationId: RunCorrelationId): void {
     if (!this.#configGeneration) throw new WorkerGenerationFailure("generation-not-ready", this.#identity);
     if (this.#failed) throw new WorkerGenerationFailure("generation-failed", this.#identity);
     if (this.#usedCorrelations.has(correlationId)) throw new WorkerGenerationFailure("run-correlation-reused", this.#identity);
@@ -368,46 +392,46 @@ export class SessionGenerationLifecycle {
     this.#runState = "executing";
   }
 
-  stop(correlationId: string): "requested" {
+  stop(correlationId: RunCorrelationId): "requested" {
     this.#assertActive(correlationId);
     if (!this.#capabilities.has("runtime.cancel")) throw new WorkerGenerationFailure("cancellation-unsupported", this.#identity);
     this.#runState = "cancelling";
     return "requested";
   }
 
-  settle(correlationId: string, outcome: "completed" | "failed" | "cancelled" | "interrupted", checkpointId?: string): void {
+  settle(correlationId: RunCorrelationId, outcome: "completed" | "failed" | "cancelled" | "interrupted", checkpointId?: string): void {
     this.#assertActive(correlationId);
     if ((outcome === "completed" || outcome === "cancelled") && !checkpointId) throw new WorkerGenerationFailure("terminal-proof-missing", this.#identity);
     this.#runState = outcome;
     this.#runCorrelationId = undefined;
   }
 
-  configurationChanged(configGeneration: string): void {
+  configurationChanged(configGeneration: ConfigGeneration): void {
     if (configGeneration !== this.#configGeneration) throw new WorkerGenerationFailure("generation-replacement-required", this.#identity);
   }
 
-  openInteraction(interactionId: string, runCorrelationId: string): void {
+  openInteraction(interactionId: InteractionId, runCorrelationId: RunCorrelationId): void {
     this.#assertActive(runCorrelationId);
     if (!this.#capabilities.has("interaction.basic")) throw new WorkerGenerationFailure("interaction-unsupported", this.#identity);
     if (this.#interactions.has(interactionId)) throw new WorkerGenerationFailure("interaction-correlation-reused", this.#identity);
     this.#interactions.set(interactionId, "open");
   }
 
-  respondInteraction(interactionId: string): void {
+  respondInteraction(interactionId: InteractionId): void {
     if (this.#interactions.get(interactionId) !== "open") throw new WorkerGenerationFailure("interaction-not-open", this.#identity);
     this.#interactions.set(interactionId, "applying");
   }
 
-  acknowledgeInteraction(interactionId: string): void {
+  acknowledgeInteraction(interactionId: InteractionId): void {
     if (this.#interactions.get(interactionId) !== "applying") throw new WorkerGenerationFailure("interaction-not-applying", this.#identity);
     this.#interactions.set(interactionId, "responded");
   }
 
-  interactionState(interactionId: string): GenerationInteractionState | undefined {
+  interactionState(interactionId: InteractionId): GenerationInteractionState | undefined {
     return this.#interactions.get(interactionId);
   }
 
-  fail(code: string): void {
+  fail(): void {
     this.#failed = true;
     if (this.#runState === "executing" || this.#runState === "cancelling") this.#runState = "interrupted";
     this.#runCorrelationId = undefined;
@@ -416,7 +440,7 @@ export class SessionGenerationLifecycle {
     }
   }
 
-  #assertActive(correlationId: string): void {
+  #assertActive(correlationId: RunCorrelationId): void {
     if (this.#runCorrelationId !== correlationId || (this.#runState !== "executing" && this.#runState !== "cancelling")) {
       throw new WorkerGenerationFailure("stale-run-correlation", this.#identity);
     }
