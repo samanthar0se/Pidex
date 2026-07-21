@@ -2,12 +2,28 @@ import { useEffect, useRef, useState } from "react";
 import { Archive, ChevronDown, ChevronRight, Menu, Plus, Search, X } from "lucide-react";
 import { useStore } from "zustand";
 import { store } from "./main.js";
-import { selectCurrentSession, selectCurrentTimeline, selectDiscoveryGroups, selectDraft } from "./client-store.js";
+import {
+  selectCurrentSession,
+  selectCurrentTimeline,
+  selectDiscoveryGroups,
+  selectDraft,
+  type SessionFact,
+} from "./client-store.js";
 
 function applyPath(path: string) {
   if (path === "/archived") store.setState({ discoveryMode: "archived" });
   const match = path.match(/^\/sessions\/([^/]+)$/);
   if (match) void store.getState().openSession(decodeURIComponent(match[1]), "none");
+}
+
+function describeSessionCues(session: SessionFact) {
+  const unread = session.readState?.readStatus === "unread";
+  let attention: string | undefined;
+  if (session.attention === "working") attention = "Working";
+  if (session.attention === "needs-response") attention = "Needs response";
+
+  const labels = [unread ? "Unread" : undefined, attention].filter((label): label is string => Boolean(label));
+  return { unread, attention, accessibleName: [session.name, ...labels].join(", ") };
 }
 
 export function App() {
@@ -44,14 +60,16 @@ export function App() {
             <button className="group-heading" aria-expanded={expanded} onClick={() => group.id !== "chats" && void store.getState().toggleProject(group.id)}>
               {group.id !== "chats" && (expanded ? <ChevronDown/> : <ChevronRight/>)}<span>{group.name}</span>
             </button>
-            {expanded && group.sessions.map(item => <div className="session-row" key={item.sessionId}>
-              <button className="session-link" aria-current={state.selectedSessionId === item.sessionId ? "page" : undefined}
-                aria-label={`${item.name}${item.readState?.readStatus === "unread" ? ", Unread" : ""}${item.attention === "working" ? ", Working" : item.attention === "needs-response" ? ", Needs response" : ""}`}
-                onClick={() => choose(item.sessionId)}>
-                <span className="session-name">{item.name}</span><span className="cues" aria-hidden="true">{item.readState?.readStatus === "unread" && <i className="unread"/>}{item.attention === "working" && "Working"}{item.attention === "needs-response" && "Needs response"}</span>
-              </button>
-              {state.discoveryMode === "archived" && <button className="restore" onClick={() => void store.getState().restoreSession(item.sessionId)}>Restore</button>}
-            </div>)}
+            {expanded && group.sessions.map(item => {
+              const cues = describeSessionCues(item);
+              return <div className="session-row" key={item.sessionId}>
+                <button className="session-link" aria-current={state.selectedSessionId === item.sessionId ? "page" : undefined}
+                  aria-label={cues.accessibleName} onClick={() => choose(item.sessionId)}>
+                  <span className="session-name">{item.name}</span><span className="cues" aria-hidden="true">{cues.unread && <i className="unread"/>}{cues.attention}</span>
+                </button>
+                {state.discoveryMode === "archived" && <button className="restore" onClick={() => void store.getState().restoreSession(item.sessionId)}>Restore</button>}
+              </div>;
+            })}
           </section>;
         })}
         {groups.length === 0 && <p className="no-results">No matching Sessions</p>}
