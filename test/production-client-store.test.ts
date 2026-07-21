@@ -4,6 +4,7 @@ import {
   createClientStore,
   selectDiscoveryGroups,
   selectCurrentSession,
+  selectCurrentTimeline,
   selectDraft,
 } from "../apps/client/src/client-store.js";
 
@@ -197,4 +198,82 @@ test("FX-STATE-01 FX-DISC-05 FX-DISC-06: expansion is Device-owned and Restore u
   assert.deepEqual(restores, [["old", 9]]);
   assert.deepEqual(store.getState().archivedOrder, []);
   assert.deepEqual(store.getState().sessionOrder, ["old"]);
+});
+
+test("FX-TL-04/05 FX-STATE-02/04: live facts reconcile by identity and older pages prepend", async () => {
+  let publish: ((change: any) => void) | undefined;
+  const readThrough: number[] = [];
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "Work", metadataRevision: 1, timelineRevision: 4 },
+          timeline: [
+            { entryId: "work", runId: "run", order: 2, kind: "assistant", text: "hel", revision: 1, finalized: false },
+            { entryId: "answer", runId: "run", order: 3, kind: "response", text: "done", revision: 1, finalized: true },
+          ],
+          olderCursor: "before-2",
+        };
+      },
+      watchSession(_sessionId, listener) { publish = listener; return () => { publish = undefined; }; },
+      async readOlder(_sessionId, cursor) {
+        assert.equal(cursor, "before-2");
+        return {
+          entries: [{ entryId: "prompt", runId: "run", order: 1, kind: "prompt", text: "fix it", revision: 1, finalized: true }],
+          olderCursor: null,
+        };
+      },
+      async markRead(_sessionId, revision) { readThrough.push(revision); },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  await store.getState().openSession("session");
+  publish?.({ baseRevision: 4, revision: 5, entry: { entryId: "work", runId: "run", order: 2, kind: "assistant", text: "hello", revision: 2, finalized: true } });
+  publish?.({ baseRevision: 5, revision: 6, entry: { entryId: "answer", runId: "run", order: 3, kind: "response", text: "rewritten", revision: 2, finalized: true } });
+  publish?.({ baseRevision: 6, revision: 7, entry: { entryId: "correction", runId: "run", order: 4, kind: "lifecycle", text: "Recovery preserved the final answer", revision: 1, finalized: true } });
+  assert.deepEqual(selectCurrentTimeline(store.getState()).map(entry => entry.text), ["hello", "done", "Recovery preserved the final answer"]);
+
+  await store.getState().loadOlder();
+  assert.deepEqual(selectCurrentTimeline(store.getState()).map(entry => entry.entryId), ["prompt", "work", "answer", "correction"]);
+  await store.getState().presentTail();
+  assert.deepEqual(readThrough, [7]);
+});
+
+test("paging from a previously selected Session cannot leave the current Session loading or failed", async () => {
+  for (const outcome of ["success", "failure"] as const) {
+    let resolveOlderPage: ((result: { entries: []; olderCursor: null }) => void) | undefined;
+    let rejectOlderPage: ((reason: Error) => void) | undefined;
+    const olderPage = new Promise<{ entries: []; olderCursor: null }>((resolve, reject) => {
+      resolveOlderPage = resolve;
+      rejectOlderPage = reject;
+    });
+    const store = createClientStore({
+      host: {
+        async readSession(sessionId) {
+          return {
+            session: { sessionId, name: sessionId, metadataRevision: 1, timelineRevision: 1 },
+            timeline: [],
+            olderCursor: sessionId === "first" ? "older" : null,
+          };
+        },
+        async readOlder() { return olderPage; },
+      },
+      drafts: { async read() { return ""; }, async write() {} },
+      routing: { replace() {} },
+    });
+
+    await store.getState().openSession("first");
+    const stalePaging = store.getState().loadOlder();
+    assert.equal(store.getState().paging, "loading");
+
+    await store.getState().openSession("second");
+    if (outcome === "success") resolveOlderPage?.({ entries: [], olderCursor: null });
+    else rejectOlderPage?.(new Error("Host unavailable"));
+    await stalePaging;
+
+    assert.equal(store.getState().selectedSessionId, "second");
+    assert.equal(store.getState().paging, "idle");
+  }
 });

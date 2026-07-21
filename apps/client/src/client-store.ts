@@ -11,8 +11,21 @@ export interface SessionFact {
   attention?: SessionAttention;
   readState?: { readStatus: "read" | "unread"; readStateRevision: number; readThroughTimelineRevision: number };
 }
-export interface TimelineFact { entryId: string; kind: string; text: string; }
-export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; }
+export type TimelineKind = "assistant" | "interaction" | "lifecycle" | "outcome" | "prompt" | "response" | "tool";
+export interface TimelineFact {
+  entryId: string;
+  kind: TimelineKind;
+  text: string;
+  runId?: string | null;
+  order?: number;
+  revision?: number;
+  finalized?: boolean;
+  blobId?: string | null;
+  toolCallId?: string | null;
+}
+export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; olderCursor?: string | null; }
+export interface TimelineChange { baseRevision: number; revision: number; entry: TimelineFact }
+export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
 export interface DiscoveryProjection {
   projects: ProjectFact[];
   sessions: SessionFact[];
@@ -46,6 +59,9 @@ export interface ClientAdapters {
     restoreSession?(session: SessionFact): Promise<void>;
     createSession?(command: { commandId: string } & NewSessionScope): Promise<SessionCreateResult>;
     submitRun?(command: { commandId: string; sessionId: string; prompt: string }): Promise<CommandResult>;
+    watchSession?(sessionId: string, listener: (change: TimelineChange) => void): () => void;
+    readOlder?(sessionId: string, cursor: string): Promise<TimelinePage>;
+    markRead?(sessionId: string, timelineRevision: number): Promise<void>;
   };
   drafts: { read(sessionId: string): Promise<string>; write(sessionId: string, value: string): Promise<void>; };
   preferences?: {
@@ -68,6 +84,8 @@ export interface ClientState {
   archivedSessions: Readonly<Record<string, SessionFact>>;
   archivedOrder: readonly string[];
   timelines: Readonly<Record<string, readonly TimelineFact[]>>;
+  olderCursors: Readonly<Record<string, string | null>>;
+  paging: "idle" | "loading" | "error";
   drafts: Readonly<Record<string, string>>;
   expandedProjectIds: readonly string[];
   searchQuery: string;
@@ -85,6 +103,8 @@ export interface ClientState {
   setDiscoveryMode(mode: "available" | "archived"): void;
   toggleProject(projectId: string): Promise<void>;
   restoreSession(sessionId: string): Promise<void>;
+  loadOlder(): Promise<void>;
+  presentTail(): Promise<void>;
 }
 
 export type ClientStore = StoreApi<ClientState>;
@@ -93,7 +113,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
   return createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
-    timelines: {}, drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
+    timelines: {}, olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     async loadDiscovery() {
       if (!adapters.host.readCatalog) return;
@@ -163,7 +183,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       if (submitted.kind === "accepted") adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
     },
     async openSession(sessionId, navigation = "replace") {
-      set({ selectedSessionId: sessionId, isSessionCurrent: false, newSession: undefined });
+      set({ selectedSessionId: sessionId, isSessionCurrent: false, newSession: undefined, paging: "idle" });
       const path = `/sessions/${encodeURIComponent(sessionId)}`;
       if (navigation === "push") (adapters.routing.push ?? adapters.routing.replace)(path);
       else if (navigation === "replace") adapters.routing.replace(path);
@@ -172,8 +192,30 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       set(state => ({
         sessions: { ...state.sessions, [sessionId]: projection.session },
         timelines: { ...state.timelines, [sessionId]: projection.timeline },
+        olderCursors: { ...state.olderCursors, [sessionId]: projection.olderCursor ?? null },
         drafts: { ...state.drafts, [sessionId]: draft }, isSessionCurrent: true,
       }));
+      adapters.host.watchSession?.(sessionId, change => {
+        if (get().selectedSessionId !== sessionId) return;
+        set(state => {
+          const session = state.sessions[sessionId];
+          if (!session || change.baseRevision !== session.timelineRevision || change.revision <= session.timelineRevision) return state;
+          const entries = [...(state.timelines[sessionId] ?? [])];
+          const index = entries.findIndex(entry => entry.entryId === change.entry.entryId);
+          if (index < 0) entries.push(change.entry);
+          else {
+            const current = entries[index]!;
+            const currentEntryRevision = current.revision ?? 1;
+            const incomingEntryRevision = change.entry.revision ?? 1;
+            if (!current.finalized && incomingEntryRevision > currentEntryRevision) entries[index] = change.entry;
+          }
+          entries.sort(compareTimelineEntries);
+          return {
+            sessions: { ...state.sessions, [sessionId]: { ...session, timelineRevision: change.revision } },
+            timelines: { ...state.timelines, [sessionId]: entries },
+          };
+        });
+      });
     },
     async setDraft(value) {
       const sessionId = get().selectedSessionId;
@@ -204,7 +246,40 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         sessionOrder: [...state.sessionOrder, sessionId],
       }));
     },
+    async loadOlder() {
+      const state = get();
+      const sessionId = state.selectedSessionId;
+      const cursor = sessionId ? state.olderCursors[sessionId] : null;
+      if (!sessionId || !cursor || !adapters.host.readOlder || state.paging === "loading") return;
+      set({ paging: "loading" });
+      try {
+        const page = await adapters.host.readOlder(sessionId, cursor);
+        if (get().selectedSessionId !== sessionId) return;
+        set(current => ({
+          timelines: { ...current.timelines, [sessionId]: mergeTimeline(page.entries, current.timelines[sessionId] ?? []) },
+          olderCursors: { ...current.olderCursors, [sessionId]: page.olderCursor },
+          paging: "idle",
+        }));
+      } catch {
+        if (get().selectedSessionId === sessionId) set({ paging: "error" });
+      }
+    },
+    async presentTail() {
+      const state = get();
+      const sessionId = state.selectedSessionId;
+      const revision = sessionId ? state.sessions[sessionId]?.timelineRevision : undefined;
+      if (sessionId && revision && state.isSessionCurrent) await adapters.host.markRead?.(sessionId, revision);
+    },
   }));
+}
+
+function mergeTimeline(older: readonly TimelineFact[], current: readonly TimelineFact[]): TimelineFact[] {
+  const entries = new Map([...older, ...current].map(entry => [entry.entryId, entry]));
+  return [...entries.values()].sort(compareTimelineEntries);
+}
+
+function compareTimelineEntries(left: TimelineFact, right: TimelineFact): number {
+  return (left.order ?? 0) - (right.order ?? 0);
 }
 
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }

@@ -11,6 +11,7 @@ import {
   type NewSessionState,
   type SessionFact,
 } from "./client-store.js";
+import { SessionTimeline } from "./SessionTimeline.js";
 
 function applyPath(path: string) {
   if (path === "/new") {
@@ -87,10 +88,9 @@ export function App() {
       <header><button ref={drawerToggle} className="menu" aria-label="Open Session drawer" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}><Menu/></button><div><h1>{newSession ? "New Session" : session?.name ?? (state.discoveryMode === "archived" ? "Archived Sessions" : "Pidex")}</h1><small>{newSession ? "Nothing is created until you submit" : session && (state.isSessionCurrent ? "Current" : "Reconciling current Host data")}</small></div></header>
       {newSession && <NewSessionView newSession={newSession}/>}
       {!newSession && <>
-        <section className="timeline" aria-label="Session Timeline">
-          {!session && <div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div>}
-          {timeline.map(entry => <article key={entry.entryId} data-kind={entry.kind}><small>{entry.kind}</small>{entry.text}</article>)}
-        </section>
+        {session ? <SessionTimeline entries={timeline} olderCursor={state.olderCursors[session.sessionId]} paging={state.paging}
+          loadOlder={() => store.getState().loadOlder()} presentTail={() => store.getState().presentTail()}/>
+          : <section className="timeline" aria-label="Session Timeline"><div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div></section>}
         {session && <footer><textarea aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pi…"/><button>Run</button></footer>}
       </>}
     </main>
