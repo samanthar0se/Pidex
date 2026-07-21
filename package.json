@@ -28,6 +28,9 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.80.10",
+    "@earendil-works/pi-ai": "0.80.10",
+    "@earendil-works/pi-coding-agent": "0.80.10",
     "ws": "^8.21.1",
     "zod": "^4.4.3"
   }
