@@ -23,25 +23,18 @@ export class CliControlClient {
   /** A transport failure is ambiguous: reconcile the same invocation, never resubmit it. */
   async invoke(input: Omit<Invocation, "invocationId">): Promise<Receipt> {
     const invocation = invocationSchema.parse({ ...input, invocationId: this.createInvocationId() });
-    try {
-      return operationReceiptSchema.parse(await this.transport.request("operation.invoke", invocation));
-    } catch (deliveryError) {
-      try {
-        return operationReceiptSchema.parse(await this.transport.request(
-          "operation.lookup-invocation",
-          { invocationId: invocation.invocationId },
-        ));
-      } catch {
-        throw deliveryError;
-      }
-    }
+    return this.requestOperation("operation.invoke", invocation);
   }
 
   /** The source driver has already published bytes; the launcher receives no mutable path. */
   async activateSourceUpdate(input: Omit<z.input<typeof sourceUpdateActivationSchema>, "invocationId">): Promise<Receipt> {
     const request = sourceUpdateActivationSchema.parse({ ...input, invocationId: this.createInvocationId() });
+    return this.requestOperation("source-update.activate", request);
+  }
+
+  private async requestOperation(method: string, request: { invocationId: string }): Promise<Receipt> {
     try {
-      return operationReceiptSchema.parse(await this.transport.request("source-update.activate", request));
+      return operationReceiptSchema.parse(await this.transport.request(method, request));
     } catch (deliveryError) {
       try {
         return operationReceiptSchema.parse(await this.transport.request(

@@ -1,4 +1,5 @@
 import { resolve, join } from "node:path";
+import { sourceReleaseIdFromClosureSha256 } from "../../local-control/src/index.js";
 import { verifyPublishedSourceClosure, type SourceClosureEvidence } from "../../source/src/source-closure.js";
 
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
@@ -40,7 +41,7 @@ export async function activateSourceUpdate(options: {
   if (options.peer.instanceId !== options.expectedInstanceId || options.peer.owningSid !== options.expectedOwningSid) {
     throw new SourceUpdateActivationError("identity-mismatch");
   }
-  if (options.candidate.releaseId !== `sha256-${options.candidate.closureSha256}`) {
+  if (options.candidate.releaseId !== sourceReleaseIdFromClosureSha256(options.candidate.closureSha256)) {
     throw new SourceUpdateActivationError("identity-mismatch", "source update fingerprint mismatch");
   }
 
