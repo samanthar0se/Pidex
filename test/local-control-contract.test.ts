@@ -10,6 +10,8 @@ import {
   FrameReceiver,
   invocationSchema,
   LOCAL_CONTROL_LIMITS,
+  LocalControlAdmission,
+  OneUseChildBootstrap,
   operationReceiptSchema,
   progressSchema,
   secretOutputPolicy,
@@ -216,5 +218,74 @@ test("frames enforce encoded byte and decoded value bounds", () => {
   assert.throws(
     () => acceptFrame(key, oversizedCollectionFrame),
     /collection exceeds bound/,
+  );
+});
+
+test("local peers are authenticated before any request is routed", () => {
+  let routed = 0;
+  const admission = new LocalControlAdmission({
+    instanceId: "instance",
+    owningSid: "S-1-5-21-1",
+    allowedRoles: ["cli"],
+  });
+  const validPeer = {
+    local: true,
+    sid: "S-1-5-21-1",
+    elevated: true,
+    appContainer: false,
+    instanceId: "instance",
+    role: "cli" as const,
+  };
+
+  for (const peer of [
+    { ...validPeer, local: false },
+    { ...validPeer, sid: "S-1-5-21-2" },
+    { ...validPeer, elevated: false },
+    { ...validPeer, appContainer: true },
+    { ...validPeer, instanceId: "other" },
+    { ...validPeer, role: "daemon" as const },
+  ]) {
+    assert.throws(() => admission.route(peer, () => routed++), /rejected/);
+  }
+  assert.equal(routed, 0);
+  assert.equal(admission.route(validPeer, () => ++routed), 1);
+});
+
+test("child bootstrap is one-use and binds process, role, release, config, and protocol", () => {
+  const bootstraps = new OneUseChildBootstrap();
+  const identity = {
+    processId: 421,
+    role: "daemon" as const,
+    instanceId: "instance",
+    releaseId: "release-1",
+    configId: "config-1",
+    protocol: "pidex-local-control-v1" as const,
+  };
+  const nonce = bootstraps.issue(identity);
+  let routed = 0;
+
+  assert.throws(
+    () =>
+      bootstraps.authenticate(
+        nonce,
+        { ...identity, processId: 422 },
+        () => routed++,
+      ),
+    /rejected/,
+  );
+  assert.equal(routed, 0);
+  assert.throws(
+    () => bootstraps.authenticate(nonce, identity, () => routed++),
+    /rejected/,
+  );
+
+  const freshNonce = bootstraps.issue(identity);
+  assert.equal(
+    bootstraps.authenticate(freshNonce, identity, () => ++routed),
+    1,
+  );
+  assert.throws(
+    () => bootstraps.authenticate(freshNonce, identity, () => routed++),
+    /rejected/,
   );
 });

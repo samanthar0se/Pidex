@@ -94,3 +94,21 @@ test("the Windows common library exposes identity, error, and lifetime primitive
   assert.match(raiiHeader, /unique_com/);
   assert.match(raiiHeader, /unique_registration/);
 });
+
+test("the per-instance pipe rejects squatting, remote access, and unauthenticated tokens", async () => {
+  const [cmake, pipeSource] = await Promise.all([
+    readNativeFile("common/CMakeLists.txt"),
+    readNativeFile("common/src/local_pipe.cpp"),
+  ]);
+  assert.match(cmake, /local_pipe\.cpp/);
+  assert.match(pipeSource, /FILE_FLAG_FIRST_PIPE_INSTANCE/);
+  assert.match(pipeSource, /PIPE_REJECT_REMOTE_CLIENTS/);
+  assert.match(pipeSource, /ImpersonateNamedPipeClient/);
+  assert.match(pipeSource, /OpenThreadToken/);
+  assert.match(pipeSource, /validate_owning_token/);
+  assert.match(pipeSource, /GetNamedPipeClientProcessId/);
+  assert.ok(
+    pipeSource.indexOf("validate_owning_token") <
+      pipeSource.indexOf("peer.process_id = process_id"),
+  );
+});
