@@ -10,6 +10,10 @@ import {
   type LocalControlTransport,
 } from "../packages/cli/src/local-control.js";
 
+function makeRunningReceipt(invocationId: string, operationId: string) {
+  return { invocationId, operationId, phase: "copy", state: "running", cancellable: true } as const;
+}
+
 test("CLI resolves exactly the explicit manifest or checkout source marker without fallback", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-cli-target-"));
   const checkout = join(root, "checkout");
@@ -57,7 +61,7 @@ test("status projects launcher state with fresh or explicitly stale daemon healt
 test("ambiguous operation delivery looks up one invocation receipt and reconnect follow preserves it", async () => {
   const calls: Array<{ method: string; payload: unknown }> = [];
   let disconnected = false;
-  const receipt = { invocationId: "inv-1", operationId: "op-1", phase: "copy", state: "running", cancellable: true } as const;
+  const receipt = makeRunningReceipt("inv-1", "op-1");
   const transport: LocalControlTransport = {
     async request(method, payload) {
       calls.push({ method, payload });
@@ -78,7 +82,7 @@ test("ambiguous operation delivery looks up one invocation receipt and reconnect
 });
 
 test("detach and Ctrl+C preserve the accepted receipt while cancel is an explicit operation", async () => {
-  const receipt = { invocationId: "inv-2", operationId: "op-2", phase: "copy", state: "running", cancellable: true } as const;
+  const receipt = makeRunningReceipt("inv-2", "op-2");
   const methods: string[] = [];
   const transport: LocalControlTransport = { async request(method) {
     methods.push(method);
