@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   MAX_WORKER_FRAME_BYTES,
   SessionGenerationLifecycle,
+  SessionWorkerTransport,
   SessionWorkerProtocol,
   WorkerGenerationFailure,
   configGeneration,
@@ -25,6 +27,7 @@ function createFrame(type: string, sequence: number, body: object = {}) {
 test("worker IPC admits every bounded protocol family and rejects unknown data", () => {
   const frames = [
     createFrame("bootstrap", 0, {
+      authenticationToken: "a".repeat(64),
       releaseGeneration: "r1",
       configGeneration: "c1",
       piGeneration: "0.80.10",
@@ -88,6 +91,47 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
     () => decodeWorkerFrame("x".repeat(MAX_WORKER_FRAME_BYTES + 1)),
     /oversized-worker-frame/,
   );
+});
+
+test("Session IPC authenticates its generation before delivering fragmented and coalesced frames", async () => {
+  const stream = new PassThrough();
+  const received: unknown[] = [];
+  const transport = new SessionWorkerTransport(stream, identity, {
+    authenticationToken: "a".repeat(64),
+    onFrame: frame => received.push(frame),
+  });
+  const bootstrap = createFrame("bootstrap", 0, {
+    authenticationToken: "a".repeat(64),
+    releaseGeneration: "r1",
+    configGeneration: "c1",
+    piGeneration: "0.80.10",
+    cwd: "C:\\work",
+  });
+  const execute = createFrame("execute", 1, {
+    correlationId: "run-1",
+    prompt: "build",
+  });
+  const bytes = Buffer.concat([
+    SessionWorkerTransport.frame(bootstrap),
+    SessionWorkerTransport.frame(execute),
+  ]);
+
+  stream.write(bytes.subarray(0, 3));
+  stream.write(bytes.subarray(3));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(received, [bootstrap, execute]);
+  transport.close();
+
+  const rejected = new PassThrough();
+  const failure = new Promise<Error>(resolve => {
+    new SessionWorkerTransport(rejected, identity, {
+      authenticationToken: "a".repeat(64),
+      onFrame: () => assert.fail("unauthenticated frame was delivered"),
+      onFailure: resolve,
+    });
+  });
+  rejected.write(SessionWorkerTransport.frame({ ...execute, sequence: 0 }));
+  assert.match((await failure).message, /bootstrap-required/);
 });
 
 test("one protocol owner fails only its generation on identity, ordering, pressure, heartbeat, transport, exit, and hang faults", () => {

@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { timingSafeEqual } from "node:crypto";
+import type { Duplex } from "node:stream";
 
 export const WORKER_PROTOCOL_GENERATION = 1 as const;
 export const MAX_WORKER_FRAME_BYTES = 256 * 1024;
@@ -16,6 +18,7 @@ const envelopeFields = {
   protocolGeneration: z.literal(WORKER_PROTOCOL_GENERATION),
   sequence: z.number().int().nonnegative(),
 };
+const authenticationTokenSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const capabilitySchema = z.strictObject({
   id: identifierSchema,
   version: z.number().int().positive(),
@@ -105,6 +108,7 @@ export const workerFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...envelopeFields,
     type: z.literal("bootstrap"),
+    authenticationToken: authenticationTokenSchema,
     releaseGeneration: identifierSchema,
     configGeneration: identifierSchema,
     piGeneration: identifierSchema,
@@ -228,6 +232,136 @@ export function encodeWorkerFrame(frame: WorkerFrame): Buffer {
     throw new WorkerProtocolError("oversized-worker-frame");
   }
   return encoded;
+}
+
+interface SessionWorkerTransportOptions {
+  authenticationToken: string;
+  onFrame: (frame: WorkerFrame) => void;
+  onFailure?: (failure: WorkerGenerationFailure) => void;
+}
+
+/** Owns strict length-prefixed framing and one-use generation admission. */
+export class SessionWorkerTransport {
+  readonly #stream: Duplex;
+  readonly #identity: WorkerGenerationIdentity;
+  readonly #protocol: SessionWorkerProtocol;
+  readonly #authenticationToken: Buffer;
+  readonly #onFrame: (frame: WorkerFrame) => void;
+  readonly #onFailure?: (failure: WorkerGenerationFailure) => void;
+  #buffer = Buffer.alloc(0);
+  #authenticated = false;
+  #closed = false;
+
+  constructor(
+    stream: Duplex,
+    identity: WorkerGenerationIdentity,
+    options: SessionWorkerTransportOptions,
+  ) {
+    this.#stream = stream;
+    this.#identity = Object.freeze({ ...identity });
+    this.#protocol = new SessionWorkerProtocol(identity);
+    this.#authenticationToken = Buffer.from(
+      authenticationTokenSchema.parse(options.authenticationToken),
+      "hex",
+    );
+    this.#onFrame = options.onFrame;
+    this.#onFailure = options.onFailure;
+    stream.on("data", this.#handleData);
+    stream.once("end", this.#handleDisconnect);
+    stream.once("close", this.#handleDisconnect);
+    stream.once("error", this.#handleStreamError);
+  }
+
+  static frame(frame: unknown): Buffer {
+    const payload = encodeWorkerFrame(workerFrameSchema.parse(frame));
+    const header = Buffer.allocUnsafe(4);
+    header.writeUInt32BE(payload.byteLength);
+    return Buffer.concat([header, payload]);
+  }
+
+  send(frame: WorkerFrame): boolean {
+    if (this.#closed) throw new Error("worker-transport-closed");
+    return this.#stream.write(SessionWorkerTransport.frame(frame));
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#detach();
+    this.#stream.end();
+  }
+
+  readonly #handleData = (chunk: Buffer | Uint8Array): void => {
+    if (this.#closed) return;
+    this.#buffer = Buffer.concat([this.#buffer, Buffer.from(chunk)]);
+    try {
+      while (this.#buffer.byteLength >= 4) {
+        const length = this.#buffer.readUInt32BE(0);
+        if (length === 0 || length > MAX_WORKER_FRAME_BYTES) {
+          this.#fail("invalid-frame-length");
+        }
+        if (this.#buffer.byteLength < length + 4) return;
+        const payload = this.#buffer.subarray(4, length + 4);
+        this.#buffer = this.#buffer.subarray(length + 4);
+        const frame = this.#protocol.accept(decodeWorkerFrame(payload));
+        if (!this.#authenticated) {
+          if (frame.type !== "bootstrap") this.#fail("bootstrap-required");
+          const actual = Buffer.from(frame.authenticationToken, "hex");
+          if (
+            actual.byteLength !== this.#authenticationToken.byteLength ||
+            !timingSafeEqual(actual, this.#authenticationToken)
+          ) {
+            this.#fail("bootstrap-authentication-failed");
+          }
+          this.#authenticated = true;
+        } else if (frame.type === "bootstrap") {
+          this.#fail("duplicate-bootstrap");
+        }
+        this.#onFrame(frame);
+      }
+    } catch (cause) {
+      if (cause instanceof WorkerGenerationFailure) this.#reject(cause);
+      else this.#reject(new WorkerGenerationFailure("malformed-frame", this.#identity, cause));
+    }
+  };
+
+  readonly #handleDisconnect = (): void => {
+    if (!this.#closed) this.#reject(this.#captureFailure(() => this.#protocol.transportDisconnected()));
+  };
+
+  readonly #handleStreamError = (cause: Error): void => {
+    if (!this.#closed) this.#reject(this.#captureFailure(() => this.#protocol.transportDisconnected(), cause));
+  };
+
+  #fail(code: string): never {
+    throw this.#captureFailure(() => {
+      throw new WorkerGenerationFailure(code, this.#identity);
+    });
+  }
+
+  #captureFailure(operation: () => never, diagnostic?: unknown): WorkerGenerationFailure {
+    try { operation(); } catch (error) {
+      const failure = error as WorkerGenerationFailure;
+      if (diagnostic === undefined) return failure;
+      return new WorkerGenerationFailure(failure.code, this.#identity, diagnostic);
+    }
+    throw new Error("unreachable");
+  }
+
+  #reject(failure: WorkerGenerationFailure): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#detach();
+    this.#stream.destroy();
+    this.#onFailure?.(failure);
+  }
+
+  #detach(): void {
+    this.#stream.off("data", this.#handleData);
+    this.#stream.off("end", this.#handleDisconnect);
+    this.#stream.off("close", this.#handleDisconnect);
+    this.#stream.off("error", this.#handleStreamError);
+  }
 }
 
 interface SessionWorkerProtocolOptions {
