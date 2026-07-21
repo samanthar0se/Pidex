@@ -112,3 +112,12 @@ test("the per-instance pipe rejects squatting, remote access, and unauthenticate
       pipeSource.indexOf("peer.process_id = process_id"),
   );
 });
+
+test("the per-instance pipe reports a failed impersonation revert before token errors", async () => {
+  const pipeSource = await readNativeFile("common/src/local_pipe.cpp");
+
+  assert.ok(
+    pipeSource.indexOf("if (!reverted)") <
+      pipeSource.indexOf("if (!opened)"),
+  );
+});

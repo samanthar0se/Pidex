@@ -72,13 +72,13 @@ std::optional<native_error> authenticate_pipe_peer(
   const DWORD open_error = opened ? ERROR_SUCCESS : GetLastError();
   token.reset(raw_token);
   const BOOL reverted = RevertToSelf();
-  if (!opened) {
-    return win32_error("OpenThreadToken",
-                       native_error_category::invalid_identity, open_error);
-  }
   if (!reverted) {
     return win32_error("RevertToSelf", native_error_category::internal,
                        GetLastError());
+  }
+  if (!opened) {
+    return win32_error("OpenThreadToken",
+                       native_error_category::invalid_identity, open_error);
   }
   if (auto error = validate_owning_token(token.get(), owning_sid)) {
     return error;

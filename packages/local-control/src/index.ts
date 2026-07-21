@@ -1,5 +1,22 @@
-import { createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import { canonicalJson } from "./canonical-json.js";
+import {
+  identifierSchema,
+  protocolSchema,
+  roleSchema,
+  type LocalControlRole,
+} from "./contract-schemas.js";
+
+export {
+  type ChildBootstrapIdentity,
+  OneUseChildBootstrap,
+} from "./child-bootstrap.js";
+export type { LocalControlRole } from "./contract-schemas.js";
+export {
+  LocalControlAdmission,
+  type LocalPeerEvidence,
+} from "./peer-admission.js";
 
 export const LOCAL_CONTROL_LIMITS = Object.freeze({
   frameBytes: 1_048_576,
@@ -8,92 +25,7 @@ export const LOCAL_CONTROL_LIMITS = Object.freeze({
   inFlightRequests: 64,
 });
 
-const identifierSchema = z.string().min(1).max(200);
-const protocolSchema = z.literal("pidex-local-control-v1");
 const hex256BitSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const roleSchema = z.enum(["cli", "launcher", "daemon", "maintenance"]);
-export type LocalControlRole = z.infer<typeof roleSchema>;
-
-export interface LocalPeerEvidence {
-  readonly local: boolean;
-  readonly sid: string;
-  readonly elevated: boolean;
-  readonly appContainer: boolean;
-  readonly instanceId: string;
-  readonly role: LocalControlRole;
-}
-
-/** Fail-closed authorization boundary called after native pipe impersonation. */
-export class LocalControlAdmission {
-  readonly #instanceId: string;
-  readonly #owningSid: string;
-  readonly #allowedRoles: ReadonlySet<LocalControlRole>;
-
-  constructor(options: {
-    instanceId: string;
-    owningSid: string;
-    allowedRoles: readonly LocalControlRole[];
-  }) {
-    this.#instanceId = identifierSchema.parse(options.instanceId);
-    this.#owningSid = options.owningSid;
-    this.#allowedRoles = new Set(options.allowedRoles);
-  }
-
-  route<T>(peer: LocalPeerEvidence, route: () => T): T {
-    if (
-      !peer.local ||
-      peer.sid !== this.#owningSid ||
-      !peer.elevated ||
-      peer.appContainer ||
-      peer.instanceId !== this.#instanceId ||
-      !this.#allowedRoles.has(peer.role)
-    ) {
-      throw new Error("local-control peer rejected");
-    }
-    return route();
-  }
-}
-
-const childIdentitySchema = z.strictObject({
-  processId: z.number().int().positive(),
-  role: z.enum(["daemon", "maintenance"]),
-  instanceId: identifierSchema,
-  releaseId: identifierSchema,
-  configId: identifierSchema,
-  protocol: protocolSchema,
-});
-export type ChildBootstrapIdentity = z.infer<typeof childIdentitySchema>;
-
-/** One failed or successful presentation consumes the inherited child nonce. */
-export class OneUseChildBootstrap {
-  readonly #pending = new Map<string, ChildBootstrapIdentity>();
-
-  issue(identity: ChildBootstrapIdentity): Buffer {
-    const parsed = childIdentitySchema.parse(identity);
-    const nonce = randomBytes(32);
-    this.#pending.set(nonce.toString("hex"), parsed);
-    return nonce;
-  }
-
-  authenticate<T>(
-    nonce: Uint8Array,
-    identity: ChildBootstrapIdentity,
-    route: () => T,
-  ): T {
-    const key = Buffer.from(nonce).toString("hex");
-    const expected = this.#pending.get(key);
-    this.#pending.delete(key);
-    const parsed = childIdentitySchema.safeParse(identity);
-    if (
-      !expected ||
-      !parsed.success ||
-      canonicalJson(expected) !== canonicalJson(parsed.data)
-    ) {
-      throw new Error("child bootstrap rejected");
-    }
-    return route();
-  }
-}
 
 export const compatibilitySchema = z.strictObject({
   generation: z.number().int().nonnegative(),
@@ -375,19 +307,6 @@ function enforceValueBounds(value: unknown): void {
       enforceValueBounds(child);
     }
   }
-}
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map(canonicalJson).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    const properties = Object.entries(value)
-      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
-      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`);
-    return `{${properties.join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function calculateFrameMac(
