@@ -376,6 +376,11 @@ interface SynchronizationChange {
   change: HostChange;
 }
 
+interface SessionReadStateSynchronizationChange {
+  cursor: string;
+  change: Extract<HostChange, { type: "session.read-state-changed" }>;
+}
+
 const objectIdRowSchema = z.object({
   objectId: z.string(),
 });
@@ -2609,6 +2614,22 @@ export class AuthorityStore {
       ),
       change: hostChangeSchema.parse(JSON.parse(String(row.payload_json))),
     }));
+  }
+
+  currentSessionReadStateChange(
+    sessionId: string,
+  ): SessionReadStateSynchronizationChange | undefined {
+    const readStateRevision = this.loadSession(sessionId).readState
+      .readStateRevision;
+    const item = this.changesAfter(0).reverse().find(candidate =>
+      candidate.change.type === "session.read-state-changed" &&
+      candidate.change.sessionId === sessionId &&
+      candidate.change.readState.readStateRevision === readStateRevision
+    );
+    if (!item || item.change.type !== "session.read-state-changed") {
+      return undefined;
+    }
+    return { cursor: item.cursor, change: item.change };
   }
 
   /**

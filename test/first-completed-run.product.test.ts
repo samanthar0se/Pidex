@@ -8,7 +8,7 @@ import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { negotiateControl, nextControlMessage } from "./control-client.js";
 
-test("an accepted prompt completes durably and its receipt survives a Host restart", async () => {
+test("completion survives restart without republishing an unchanged unread state", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-run-"));
   const options = {
     dataDir,
@@ -43,6 +43,19 @@ test("an accepted prompt completes durably and its receipt survives a Host resta
       accepted.type === "command.outcome" && accepted.outcome,
       "accepted",
     );
+    const readStateChanged = await nextControlMessage(socket);
+    assert.equal(readStateChanged.type, "host.change-set");
+    if (readStateChanged.type === "host.change-set") {
+      assert.deepEqual(readStateChanged.changes[0], {
+        type: "session.read-state-changed",
+        sessionId,
+        readState: {
+          readThroughTimelineRevision: 1,
+          readStatus: "unread",
+          readStateRevision: 2,
+        },
+      });
+    }
     const completed = await nextControlMessage(socket);
     assert.equal(completed.type, "run.completed");
     if (completed.type === "run.completed") {
@@ -60,6 +73,19 @@ test("an accepted prompt completes durably and its receipt survives a Host resta
     await negotiateControl(reconnected);
     reconnected.send(JSON.stringify(submit));
     assert.deepEqual(await nextControlMessage(reconnected), accepted);
+
+    reconnected.send(JSON.stringify({
+      ...submit,
+      commandId: "run-2",
+      prompt: "again",
+    }));
+    const secondAccepted = await nextControlMessage(reconnected);
+    assert.equal(
+      secondAccepted.type === "command.outcome" && secondAccepted.outcome,
+      "accepted",
+    );
+    const secondCompleted = await nextControlMessage(reconnected);
+    assert.equal(secondCompleted.type, "run.completed");
     reconnected.close();
   } finally {
     await host.close();

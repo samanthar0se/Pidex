@@ -203,6 +203,14 @@ test("fork command publishes validated child genesis and closes its bootstrap on
       }),
     );
     await nextControlMessage(socket);
+    const readStateChanged = await nextControlMessage(socket);
+    assert.equal(readStateChanged.type, "host.change-set");
+    if (readStateChanged.type === "host.change-set") {
+      assert.equal(
+        readStateChanged.changes[0]?.type,
+        "session.read-state-changed",
+      );
+    }
     const completed = await nextControlMessage(socket);
     assert.equal(completed.type, "run.completed");
     if (completed.type !== "run.completed") {
