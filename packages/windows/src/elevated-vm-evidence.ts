@@ -3,6 +3,37 @@ export interface WindowsNativeCandidate {
   candidate: string;
   architecture: "x64";
   nodeLanes: readonly WindowsNodeLane[];
+  identities: WindowsCandidateIdentities;
+}
+
+export interface WindowsCandidateIdentities {
+  addonSha256: string;
+  closureSha256: string;
+  sbomSha256: string;
+  piVersion: string;
+  launcherSha256: string;
+  schemaGeneration: number;
+  toolchain: string;
+  configSha256: string;
+}
+
+export interface ObservedWindowsLaneIdentity extends WindowsCandidateIdentities {
+  nodeVersion: string;
+  nodeApi: number;
+}
+
+export interface SecondarySoakObservation {
+  readinessObservations: number;
+  wakeObservations: number;
+  durationMinutes: number;
+  residentSessions: number;
+  executingSessions: number;
+  maxHostRssMiB: number;
+  maxWorkerRssMiB: number;
+  quiescentCpuPercent: number;
+  readinessSeconds: number;
+  sleepingWorkerReadinessSeconds: number;
+  monotonicallyGrowingHandles: boolean;
 }
 
 export interface WindowsNodeLane {
@@ -54,16 +85,45 @@ export const requiredChecks = {
     "stable-exits-secret-channels-and-output-separation",
     "redacted-logs-diagnostics-and-support-artifacts",
   ],
+  "secondary-readiness-and-soak": [
+    "twenty-readiness-observations",
+    "twenty-wake-observations",
+    "thirty-minute-four-resident-two-executing-soak",
+    "memory-cpu-readiness-and-handle-ceilings",
+  ],
 } as const;
 
+type ScenarioName = keyof typeof requiredChecks;
+
+interface ElevatedWindowsVmScenarioOutput {
+  artifactSha256: string;
+  passedChecks?: readonly string[];
+  observedIdentity?: ObservedWindowsLaneIdentity;
+  secondarySoak?: SecondarySoakObservation;
+}
+
 export interface ElevatedWindowsVmScenario {
-  name: keyof typeof requiredChecks;
-  run(context: ElevatedWindowsVmContext): Promise<{
-    artifactSha256: string;
-    passedChecks?: readonly string[];
-  }>;
+  name: ScenarioName;
+  run(context: ElevatedWindowsVmContext): Promise<ElevatedWindowsVmScenarioOutput>;
   cleanup(context: ElevatedWindowsVmContext): Promise<void>;
 }
+
+interface ScenarioPolicy {
+  lane?: WindowsNodeLane["lane"];
+  validate?(output: ElevatedWindowsVmScenarioOutput): void;
+}
+
+const scenarioPolicies: Record<ScenarioName, ScenarioPolicy> = {
+  "native-capabilities": {},
+  "two-checkout-source-lifecycle": {},
+  "launcher-cli-maintenance-states": {},
+  "secondary-readiness-and-soak": {
+    lane: "secondary",
+    validate(output) {
+      assertSecondarySoak(output.secondarySoak);
+    },
+  },
+};
 
 type EvidenceStatus = "passed" | "failed" | "incomplete";
 
@@ -78,6 +138,7 @@ interface LaneEvidence {
   lane: WindowsNodeLane["lane"];
   nodeVersion: string;
   nodeApi: number;
+  identities: ObservedWindowsLaneIdentity;
   status: EvidenceStatus;
   scenarios: ScenarioEvidence[];
 }
@@ -105,6 +166,8 @@ export class ElevatedWindowsVmCampaign {
     for (const lane of this.candidate.nodeLanes) {
       const results: ScenarioEvidence[] = [];
       for (const scenario of this.scenarios) {
+        const policy = scenarioPolicies[scenario.name];
+        if (policy.lane && policy.lane !== lane.lane) continue;
         const context = { candidate: this.candidate.candidate, lane, vm: input.vm };
         let result: ScenarioEvidence;
         try {
@@ -114,6 +177,8 @@ export class ElevatedWindowsVmCampaign {
           // Compatibility for programmatic scenarios is intentionally absent: VM evidence
           // must enumerate every observable gate rather than report one aggregate success.
           if (missing.length > 0) throw new Error(`scenario missing required checks: ${missing.join(", ")}`);
+          assertIdentity(output.observedIdentity, this.candidate.identities, lane);
+          policy.validate?.(output);
           result = { name: scenario.name, status: "passed", artifactSha256: output.artifactSha256 };
         } catch (error) {
           result = { name: scenario.name, status: "failed", failure: coarseFailure(error) };
@@ -131,6 +196,7 @@ export class ElevatedWindowsVmCampaign {
         lane: lane.lane,
         nodeVersion: lane.version,
         nodeApi: lane.nodeApi,
+        identities: { ...this.candidate.identities, nodeVersion: lane.version, nodeApi: lane.nodeApi },
         status: combinedStatus(results.map(result => result.status)),
         scenarios: results,
       });
@@ -152,11 +218,56 @@ function validateCampaign(candidate: WindowsNativeCandidate, scenarios: readonly
   if (candidate.schemaVersion !== 1 || candidate.architecture !== "x64") throw new Error("unsupported Windows native candidate");
   const lanes = candidate.nodeLanes.map(lane => lane.lane);
   if (lanes.length !== 2 || lanes[0] !== "primary" || lanes[1] !== "secondary") throw new Error("campaign requires exact primary and secondary Node lanes");
+  assertCandidateIdentities(candidate.identities);
   const names = scenarios.map(scenario => scenario.name);
   const requiredScenarios = Object.keys(requiredChecks) as ElevatedWindowsVmScenario["name"][];
   if (names.length !== requiredScenarios.length || requiredScenarios.some(name => !names.includes(name))) {
     throw new Error("campaign requires native capabilities, two-checkout source lifecycle, and launcher/CLI/maintenance state scenarios");
   }
+}
+
+function assertCandidateIdentities(identities: WindowsCandidateIdentities): void {
+  for (const [name, value] of Object.entries(identities)) {
+    if (name.endsWith("Sha256") && !/^[a-f0-9]{64}$/.test(String(value))) throw new Error(`candidate ${name} must be an exact SHA-256 digest`);
+  }
+  if (!identities.piVersion || !identities.toolchain || !Number.isInteger(identities.schemaGeneration)) {
+    throw new Error("candidate requires exact Pi, schema, and toolchain identities");
+  }
+}
+
+function assertIdentity(
+  observed: ObservedWindowsLaneIdentity | undefined,
+  expected: WindowsCandidateIdentities,
+  lane: WindowsNodeLane,
+): void {
+  if (!observed) throw new Error("scenario missing exact lane identity observation");
+  const labels: Record<keyof WindowsCandidateIdentities, string> = {
+    addonSha256: "addon", closureSha256: "closure", sbomSha256: "SBOM", piVersion: "Pi",
+    launcherSha256: "launcher", schemaGeneration: "schema", toolchain: "toolchain", configSha256: "config",
+  };
+  for (const key of Object.keys(labels) as (keyof WindowsCandidateIdentities)[]) {
+    if (observed[key] !== expected[key]) throw new Error(`${labels[key]} identity mismatch`);
+  }
+  if (observed.nodeVersion !== lane.version) throw new Error("runtime identity mismatch");
+  if (observed.nodeApi !== lane.nodeApi) throw new Error("Node-API identity mismatch");
+}
+
+function assertSecondarySoak(soak: SecondarySoakObservation | undefined): void {
+  if (!soak) throw new Error("secondary lane missing readiness/wake soak observations");
+  const failures = [
+    soak.readinessObservations < 20 && "readiness observations<20",
+    soak.wakeObservations < 20 && "wake observations<20",
+    soak.durationMinutes < 30 && "duration<30m",
+    soak.residentSessions !== 4 && "resident sessions!=4",
+    soak.executingSessions !== 2 && "executing sessions!=2",
+    soak.maxHostRssMiB > 300 && "Host RSS>300MiB",
+    soak.maxWorkerRssMiB > 300 && "worker RSS>300MiB",
+    soak.quiescentCpuPercent > 1 && "quiescent CPU>1%",
+    soak.readinessSeconds > 15 && "readiness>15s",
+    soak.sleepingWorkerReadinessSeconds > 5 && "wake readiness>5s",
+    soak.monotonicallyGrowingHandles && "handles monotonically growing",
+  ].filter((failure): failure is string => Boolean(failure));
+  if (failures.length > 0) throw new Error(`secondary soak ceilings failed: ${failures.join(", ")}`);
 }
 
 function assertVm(vm: ElevatedWindowsVmIdentity): void {

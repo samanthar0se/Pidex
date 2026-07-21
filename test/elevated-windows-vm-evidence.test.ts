@@ -15,6 +15,25 @@ const candidate = {
     { lane: "primary" as const, version: "24.18.0", nodeApi: 10 },
     { lane: "secondary" as const, version: "22.23.1", nodeApi: 10 },
   ],
+  identities: {
+    addonSha256: "1".repeat(64), closureSha256: "2".repeat(64), sbomSha256: "3".repeat(64),
+    piVersion: "0.80.10", launcherSha256: "4".repeat(64), schemaGeneration: 1,
+    toolchain: "msvc-19.44.35207-sdk-10.0.26100.0-cmake-4.3.3-cpp20", configSha256: "5".repeat(64),
+  },
+};
+
+const passingSecondarySoak = {
+  readinessObservations: 20,
+  wakeObservations: 20,
+  durationMinutes: 30,
+  residentSessions: 4,
+  executingSessions: 2,
+  maxHostRssMiB: 300,
+  maxWorkerRssMiB: 300,
+  quiescentCpuPercent: 1,
+  readinessSeconds: 15,
+  sleepingWorkerReadinessSeconds: 5,
+  monotonicallyGrowingHandles: false,
 };
 
 function passingScenario(
@@ -26,7 +45,12 @@ function passingScenario(
     name,
     async run(context) {
       recordCall(`run:${context.lane.lane}:${name}`);
-      return { artifactSha256, passedChecks: requiredChecks[name] };
+      return {
+        artifactSha256,
+        passedChecks: requiredChecks[name],
+        observedIdentity: { ...candidate.identities, nodeVersion: context.lane.version, nodeApi: context.lane.nodeApi },
+        secondarySoak: passingSecondarySoak,
+      };
     },
     async cleanup(context) {
       recordCall(`cleanup:${context.lane.lane}:${name}`);
@@ -83,7 +107,10 @@ test("elevated Windows VM evidence binds both exact lanes and always cleans each
     "run:secondary:native-capabilities", "cleanup:secondary:native-capabilities",
     "run:secondary:two-checkout-source-lifecycle", "cleanup:secondary:two-checkout-source-lifecycle",
     "run:secondary:launcher-cli-maintenance-states", "cleanup:secondary:launcher-cli-maintenance-states",
+    "run:secondary:secondary-readiness-and-soak", "cleanup:secondary:secondary-readiness-and-soak",
   ]);
+  assert.equal(evidence.lanes[0]!.identities.configSha256, candidate.identities.configSha256);
+  assert.equal(evidence.lanes[1]!.identities.nodeVersion, "22.23.1");
 });
 
 test("failed scenarios remain authoritative and cleanup failures make evidence incomplete", async () => {
@@ -107,6 +134,7 @@ test("failed scenarios remain authoritative and cleanup failures make evidence i
       "native-capabilities": "c".repeat(64),
       "two-checkout-source-lifecycle": "d".repeat(64),
       "launcher-cli-maintenance-states": "e".repeat(64),
+      "secondary-readiness-and-soak": "f".repeat(64),
     },
   })).run(input);
   const attempts = new FirstAttemptEvidence();
@@ -128,6 +156,7 @@ test("launcher, CLI, and maintenance evidence requires every supported Host stat
       "native-capabilities": "a".repeat(64),
       "two-checkout-source-lifecycle": "b".repeat(64),
       "launcher-cli-maintenance-states": "c".repeat(64),
+      "secondary-readiness-and-soak": "d".repeat(64),
     },
     overrides: {
       "launcher-cli-maintenance-states": {
@@ -155,4 +184,36 @@ test("launcher, CLI, and maintenance evidence requires every supported Host stat
     evidence.lanes[0]!.scenarios[2]!.failure ?? "",
     /durable-receipts-and-conservative-reconciliation/,
   );
+});
+
+test("secondary evidence fails closed on identity drift and an undersized readiness soak", async () => {
+  const campaign = new ElevatedWindowsVmCampaign(candidate, completeScenarioSet({
+    artifactSha256: "d".repeat(64),
+    overrides: {
+      "secondary-readiness-and-soak": {
+        name: "secondary-readiness-and-soak",
+        async run(context) {
+          return {
+            artifactSha256: "d".repeat(64), passedChecks: requiredChecks["secondary-readiness-and-soak"],
+            observedIdentity: { ...candidate.identities, nodeVersion: context.lane.version, nodeApi: context.lane.nodeApi, configSha256: "6".repeat(64) },
+            secondarySoak: {
+              readinessObservations: 19, wakeObservations: 20, durationMinutes: 29,
+              residentSessions: 4, executingSessions: 2, maxHostRssMiB: 301,
+              maxWorkerRssMiB: 300, quiescentCpuPercent: 1, readinessSeconds: 15,
+              sleepingWorkerReadinessSeconds: 5, monotonicallyGrowingHandles: false,
+            },
+          };
+        },
+        async cleanup() {},
+      },
+    },
+  }));
+
+  const evidence = await campaign.run({
+    vm: { os: "Windows 11", architecture: "x64", elevated: true, disposable: true },
+    attemptedAt: "2026-07-21T12:00:00.000Z",
+  });
+
+  assert.equal(evidence.status, "failed");
+  assert.match(evidence.lanes[1]!.scenarios.at(-1)!.failure ?? "", /config identity mismatch/);
 });
