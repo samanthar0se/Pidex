@@ -71,6 +71,36 @@ test("immutable publication is validated, flushed, published, and idempotent", (
     );
   }));
 
+test("an equivalent retry flushes the parent directory after an uncertain rename", () =>
+  withFixture(root => {
+    const request = {
+      target: join(root, "object"),
+      materialize: writeCandidate("value"),
+      validate: (path: string) => readFileSync(path, "utf8") === "value",
+    };
+
+    assert.throws(
+      () =>
+        publishImmutableFile(
+          request,
+          createDeterministicPublicationAdapter({ failAt: "published" }),
+        ),
+      /Injected publication failure at published/,
+    );
+    assert.equal(readFileSync(request.target, "utf8"), "value");
+
+    const retrySteps: PublicationStep[] = [];
+    const result = publishImmutableFile(
+      request,
+      createDeterministicPublicationAdapter({
+        onStep: step => retrySteps.push(step),
+      }),
+    );
+
+    assert.equal(result.outcome, "already-published");
+    assert.ok(retrySteps.includes("parent-directory-flushed"));
+  }));
+
 test("immutable collision preserves candidate evidence without overwriting authority", () =>
   withFixture(root => {
     const target = join(root, "object");
