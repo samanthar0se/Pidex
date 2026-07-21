@@ -13,17 +13,33 @@ import { z } from "zod";
 import type { ChildBootstrapIdentity } from "../../local-control/src/child-bootstrap.js";
 import type { ManagedProcess, ProcessPort } from "../../windows/src/ports.js";
 
-export type MaintenanceOperation = "restore" | "recovery" | "migration" | "reidentify";
+export const MAINTENANCE_OPERATIONS = [
+  "restore",
+  "recovery",
+  "migration",
+  "reidentify",
+] as const;
+export type MaintenanceOperation = (typeof MAINTENANCE_OPERATIONS)[number];
+export type PolicyOwnedOperation = "backup" | MaintenanceOperation;
+
+const policyOwnedOperations: ReadonlySet<string> = new Set([
+  "backup",
+  ...MAINTENANCE_OPERATIONS,
+]);
+
+export function isPolicyOwnedOperation(operation: string): operation is PolicyOwnedOperation {
+  return policyOwnedOperations.has(operation);
+}
 
 export function policyOwnerForOperation(
-  operation: "backup" | MaintenanceOperation,
+  operation: PolicyOwnedOperation,
 ): "daemon" | "maintenance" {
   return operation === "backup" ? "daemon" : "maintenance";
 }
 
 const stateSchema = z.strictObject({
   operationId: z.string().min(1),
-  operation: z.enum(["restore", "recovery", "migration", "reidentify"]),
+  operation: z.enum(MAINTENANCE_OPERATIONS),
   state: z.enum(["launching", "running", "interrupted", "succeeded", "failed"]),
   processId: z.number().int().positive().optional(),
   authorityDisposition: z.literal("inspect-before-next-mutation").optional(),
@@ -33,11 +49,9 @@ type MaintenanceState = z.infer<typeof stateSchema>;
 interface MaintenanceManifestSelection {
   instanceId: string;
   releaseId: string;
-  configId: string;
   localControlGeneration: number;
   maintenanceExecutable: string;
   workingDirectory: string;
-  authorityRoot: string;
 }
 
 interface BootstrapPort {

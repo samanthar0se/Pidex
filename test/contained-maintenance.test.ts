@@ -5,13 +5,14 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   ContainedMaintenance,
+  MAINTENANCE_OPERATIONS,
   policyOwnerForOperation,
 } from "../packages/launcher/src/maintenance.js";
 import { DurableOperationRouter } from "../packages/launcher/src/operations.js";
 
 test("online backup stays with the daemon while offline Authority work is maintenance-owned", () => {
   assert.equal(policyOwnerForOperation("backup"), "daemon");
-  for (const operation of ["restore", "recovery", "migration", "reidentify"] as const) {
+  for (const operation of MAINTENANCE_OPERATIONS) {
     assert.equal(policyOwnerForOperation(operation), "maintenance");
   }
   const root = mkdtempSync(join(tmpdir(), "pidex-maintenance-routing-"));
@@ -20,6 +21,12 @@ test("online backup stays with the daemon while offline Authority work is mainte
     invocationId: "wrong-owner", policyOwner: "maintenance",
     operation: "backup", argumentsDigest: "aa".repeat(32),
   }, { phase: "accepted", cancellable: false }), /policy-owner-conflict/);
+  for (const operation of MAINTENANCE_OPERATIONS) {
+    assert.throws(() => router.accept({
+      invocationId: `wrong-owner-${operation}`, policyOwner: "daemon",
+      operation, argumentsDigest: "aa".repeat(32),
+    }, { phase: "accepted", cancellable: false }), /policy-owner-conflict/);
+  }
 });
 
 test("maintenance authenticates a contained manifest-pinned child and owns Authority exclusively", async () => {
@@ -31,11 +38,9 @@ test("maintenance authenticates a contained manifest-pinned child and owns Autho
     manifest: {
       instanceId: "instance-1",
       releaseId: "release-1",
-      configId: "config-1",
       localControlGeneration: 1,
       maintenanceExecutable: "C:\\Pidex\\releases\\release-1\\maintenance.exe",
       workingDirectory: "C:\\Pidex\\Source\\instance-1",
-      authorityRoot: "C:\\Pidex\\Source\\instance-1\\authority",
     },
     daemon: {
       isStopped: () => daemonStopped,
@@ -86,9 +91,9 @@ test("restart preserves interrupted evidence and never guesses that maintenance 
   const options = {
     statePath,
     manifest: {
-      instanceId: "instance-1", releaseId: "release-1", configId: "config-1",
+      instanceId: "instance-1", releaseId: "release-1",
       localControlGeneration: 1, maintenanceExecutable: "C:\\Pidex\\maintenance.exe",
-      workingDirectory: "C:\\Pidex", authorityRoot: "C:\\Pidex\\authority",
+      workingDirectory: "C:\\Pidex",
     },
     daemon: { isStopped: () => true },
     bootstrap: { issue: () => ({ handle: 1, nonce: Buffer.from("n") }), authenticate: () => {} },

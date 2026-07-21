@@ -17,7 +17,10 @@ import {
   progressSchema,
 } from "../../local-control/src/index.js";
 import { canonicalJson } from "../../local-control/src/canonical-json.js";
-import { policyOwnerForOperation } from "./maintenance.js";
+import {
+  isPolicyOwnedOperation,
+  policyOwnerForOperation,
+} from "./maintenance.js";
 
 type Invocation = z.output<typeof invocationSchema>;
 export type OperationReceipt = z.output<typeof operationReceiptSchema>;
@@ -82,10 +85,8 @@ export class DurableOperationRouter {
   ): OperationReceipt {
     const invocation = invocationSchema.parse(invocationInput);
     if (
-      ["backup", "restore", "recovery", "migration", "reidentify"].includes(invocation.operation) &&
-      invocation.policyOwner !== policyOwnerForOperation(
-        invocation.operation as "backup" | "restore" | "recovery" | "migration" | "reidentify",
-      )
+      isPolicyOwnedOperation(invocation.operation) &&
+      invocation.policyOwner !== policyOwnerForOperation(invocation.operation)
     ) {
       throw new Error("operation-policy-owner-conflict");
     }
