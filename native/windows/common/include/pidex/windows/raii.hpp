@@ -2,9 +2,18 @@
 
 #include <Windows.h>
 
+#include <future>
+#include <mutex>
 #include <utility>
 
 namespace pidex::windows {
+
+template <typename Close>
+std::future<void> close_managed_resource_once(
+    std::once_flag& close_once, Close&& close) {
+  std::call_once(close_once, std::forward<Close>(close));
+  return std::async(std::launch::deferred, [] {});
+}
 
 class unique_handle final {
  public:

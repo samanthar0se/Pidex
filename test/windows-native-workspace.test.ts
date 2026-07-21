@@ -192,3 +192,40 @@ test("the Windows addon has one raw Node-API entry point without V8 or libuv", a
   assert.match(addonSource, /napi_create_promise/);
   assert.doesNotMatch(addonSource, /\bv8\b|uv\.h|node-addon-api/i);
 });
+
+test("Private-interface observation and DNS-SD registration have separate native modules", async () => {
+  const [cmake, privateHeader, privateSource, dnsSdHeader, dnsSdSource, raiiHeader] = await Promise.all([
+    readNativeFile("common/CMakeLists.txt"),
+    readNativeFile("common/include/pidex/windows/private_network.hpp"),
+    readNativeFile("common/src/private_network.cpp"),
+    readNativeFile("common/include/pidex/windows/dns_sd.hpp"),
+    readNativeFile("common/src/dns_sd.cpp"),
+    readNativeFile("common/include/pidex/windows/raii.hpp"),
+  ]);
+
+  assert.match(cmake, /src\/private_network\.cpp/);
+  assert.match(cmake, /src\/dns_sd\.cpp/);
+  assert.match(privateHeader, /class managed_network_observer/);
+  assert.doesNotMatch(privateHeader, /managed_dns_sd_advertisement/);
+  assert.match(dnsSdHeader, /class managed_dns_sd_advertisement/);
+  assert.doesNotMatch(dnsSdHeader, /managed_network_observer/);
+  assert.match(privateSource, /NLM_NETWORK_CATEGORY_PRIVATE/);
+  assert.match(privateSource, /GetAdaptersAddresses/);
+  assert.doesNotMatch(privateSource, /DnsService(?:Register|DeRegister)/);
+  assert.match(dnsSdSource, /DnsServiceRegister/);
+  assert.match(dnsSdSource, /DnsServiceDeRegister/);
+  assert.doesNotMatch(dnsSdSource, /NLM_NETWORK_CATEGORY_/);
+  assert.match(raiiHeader, /close_managed_resource_once/);
+  assert.match(privateSource, /close_managed_resource_once/);
+  assert.match(dnsSdSource, /close_managed_resource_once/);
+  assert.doesNotMatch(privateSource, /NLM_NETWORK_CATEGORY_PUBLIC\s*==|NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED\s*==/);
+});
+
+test("direct Private-interface snapshots initialize COM before creating NLM", async () => {
+  const source = await readNativeFile("common/src/private_network.cpp");
+
+  const snapshot = source.slice(source.indexOf("snapshot_private_interfaces()"));
+  assert.ok(source.indexOf("CoInitializeEx") < source.indexOf("CoCreateInstance"));
+  assert.ok(snapshot.indexOf("scoped_com_apartment apartment") < snapshot.indexOf("CoCreateInstance"));
+  assert.match(source, /if \(SUCCEEDED\(initialized_\)\) CoUninitialize\(\)/);
+});

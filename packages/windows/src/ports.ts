@@ -19,9 +19,31 @@ export interface InstallationPort {
 }
 
 export interface NetworkPort {
-  snapshotPrivateInterfaces(): Promise<unknown>;
-  observePrivateInterfaces(): Promise<ManagedWindowsResource>;
-  openAdvertisement(input: unknown): Promise<ManagedWindowsResource>;
+  snapshotPrivateInterfaces(): Promise<readonly PrivateNetworkInterface[]>;
+  observePrivateInterfaces(
+    listener: (snapshot: readonly PrivateNetworkInterface[]) => void | Promise<void>,
+  ): Promise<ManagedWindowsResource>;
+  openAdvertisement(input: PidexDnsSdAdvertisement): Promise<ManagedWindowsResource>;
+}
+
+export interface PrivateNetworkInterface {
+  readonly id: string;
+  readonly name: string;
+  readonly addresses: readonly string[];
+  readonly profile: "private";
+}
+
+export interface PidexDnsSdAdvertisement {
+  readonly service: "_pidex._tcp.local";
+  readonly hostname: string;
+  readonly port: number;
+  readonly interfaces: readonly PrivateNetworkInterface[];
+  readonly txt: {
+    readonly location: string;
+    readonly label: string;
+    readonly version: string;
+    readonly fingerprint: string;
+  };
 }
 
 export interface FirewallPort {

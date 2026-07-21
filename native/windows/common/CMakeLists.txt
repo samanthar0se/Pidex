@@ -1,9 +1,13 @@
 add_library(pidex_windows_common STATIC
+  src/dns_sd.cpp
   src/error.cpp
   src/identity.cpp
   src/local_pipe.cpp
+  src/private_network.cpp
   src/process.cpp
 )
+
+target_link_libraries(pidex_windows_common PUBLIC dnsapi iphlpapi ole32 ws2_32)
 
 target_include_directories(pidex_windows_common PUBLIC include)
 target_compile_features(pidex_windows_common PUBLIC cxx_std_20)
