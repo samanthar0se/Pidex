@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -7,10 +8,11 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { PiTimelineEvent } from "../../adapters/src/index.js";
 
-export const EXACT_PI_VERSION = "0.80.10" as const;
+export const EXACT_PI_VERSION = "0.80.10";
 
 export interface ExactPiChildBinding {
   sessionId: string;
@@ -25,9 +27,19 @@ export interface ExactPiRunDependencies {
   model?: Model<string>;
 }
 
+export interface ExactPiRunResult {
+  text: string;
+  checkpoint: string;
+}
+
+interface ToolResultContent {
+  type: string;
+  text?: string;
+}
+
 /**
- * Executes one Run through Pi's public SDK. An instance is a generation: its
- * canonical profile/cwd and loaded resources cannot be replaced after bind.
+ * Executes one Run through Pi's public SDK. Each generation is permanently
+ * bound to its canonical profile and cwd.
  */
 export class ExactPiChild {
   readonly binding: Readonly<ExactPiChildBinding>;
@@ -48,9 +60,8 @@ export class ExactPiChild {
     binding: ExactPiChildBinding,
     dependencies: ExactPiRunDependencies = {},
   ): Promise<ExactPiChild> {
-    if (!binding.sessionId || !binding.workerId || !Number.isSafeInteger(binding.generation) || binding.generation < 0) {
-      throw new Error("invalid-pi-child-binding");
-    }
+    assertValidBinding(binding);
+
     const [cwd, agentDir] = await Promise.all([
       realpath(binding.cwd),
       realpath(binding.agentDir),
@@ -61,54 +72,22 @@ export class ExactPiChild {
   async execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
-  ): Promise<{ text: string; checkpoint: string }> {
+  ): Promise<ExactPiRunResult> {
     if (this.#used) throw new Error("pi-child-generation-already-executed");
     this.#used = true;
 
-    const settingsManager = SettingsManager.create(
-      this.binding.cwd,
-      this.binding.agentDir,
-    );
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: this.binding.cwd,
-      agentDir: this.binding.agentDir,
-      settingsManager,
-    });
-    await resourceLoader.reload();
-    const modelRuntime =
-      this.#modelRuntime ??
-      (await ModelRuntime.create({
-        authPath: `${this.binding.agentDir}/auth.json`,
-        modelsPath: `${this.binding.agentDir}/models.json`,
-      }));
-    const { session } = await createAgentSession({
-      cwd: this.binding.cwd,
-      agentDir: this.binding.agentDir,
-      modelRuntime,
-      model: this.#model,
-      resourceLoader,
-      settingsManager,
-      sessionManager: SessionManager.inMemory(this.binding.cwd),
-      noTools: "all",
-    });
+    const session = await this.#createSession();
     let text = "";
     const unsubscribe = session.subscribe(event => {
-      if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-        const delta = event.assistantMessageEvent.delta;
-        text += delta;
-        onTimelineEvent?.({ type: "assistant.delta", text: delta });
-      } else if (event.type === "tool_execution_start") {
-        onTimelineEvent?.({ type: "tool.started", toolCallId: event.toolCallId, name: event.toolName });
-      } else if (event.type === "tool_execution_end") {
-        const rendered = event.result.content
-          .map((item: { type: string; text?: string }) =>
-            item.type === "text" ? (item.text ?? "") : "",
-          )
-          .filter(Boolean)
-          .join("\n");
-        onTimelineEvent?.({ type: "tool.completed", toolCallId: event.toolCallId, name: event.toolName, text: rendered });
+      const timelineEvent = translateTimelineEvent(event);
+      if (!timelineEvent) return;
+
+      if (timelineEvent.type === "assistant.delta") {
+        text += timelineEvent.text;
       }
+      onTimelineEvent?.(timelineEvent);
     });
+
     try {
       await session.prompt(prompt);
       const checkpoint = createHash("sha256")
@@ -120,4 +99,81 @@ export class ExactPiChild {
       session.dispose();
     }
   }
+
+  async #createSession() {
+    const { cwd, agentDir } = this.binding;
+    const settingsManager = SettingsManager.create(cwd, agentDir);
+    const resourceLoader = new DefaultResourceLoader({
+      cwd,
+      agentDir,
+      settingsManager,
+    });
+    await resourceLoader.reload();
+
+    const modelRuntime =
+      this.#modelRuntime ??
+      (await ModelRuntime.create({
+        authPath: join(agentDir, "auth.json"),
+        modelsPath: join(agentDir, "models.json"),
+      }));
+    const { session } = await createAgentSession({
+      cwd,
+      agentDir,
+      modelRuntime,
+      model: this.#model,
+      resourceLoader,
+      settingsManager,
+      sessionManager: SessionManager.inMemory(cwd),
+      noTools: "all",
+    });
+    return session;
+  }
+}
+
+function assertValidBinding(binding: ExactPiChildBinding): void {
+  const hasValidIdentity = Boolean(binding.sessionId && binding.workerId);
+  const hasValidGeneration =
+    Number.isSafeInteger(binding.generation) && binding.generation >= 0;
+
+  if (!hasValidIdentity || !hasValidGeneration) {
+    throw new Error("invalid-pi-child-binding");
+  }
+}
+
+function translateTimelineEvent(
+  event: AgentSessionEvent,
+): PiTimelineEvent | undefined {
+  switch (event.type) {
+    case "message_update":
+      if (event.assistantMessageEvent.type !== "text_delta") return undefined;
+      return {
+        type: "assistant.delta",
+        text: event.assistantMessageEvent.delta,
+      };
+    case "tool_execution_start":
+      return {
+        type: "tool.started",
+        toolCallId: event.toolCallId,
+        name: event.toolName,
+      };
+    case "tool_execution_end":
+      return {
+        type: "tool.completed",
+        toolCallId: event.toolCallId,
+        name: event.toolName,
+        text: renderToolResult(event.result.content),
+      };
+    default:
+      return undefined;
+  }
+}
+
+function renderToolResult(content: ToolResultContent[]): string {
+  return content
+    .map(item => {
+      if (item.type !== "text") return "";
+      return item.text ?? "";
+    })
+    .filter(Boolean)
+    .join("\n");
 }
