@@ -60,6 +60,7 @@ test("forks stable history into an inert, independently scoped child with durabl
       undefined,
       "session_child",
       "stable",
+      "stable-child-genesis",
       5,
     ).session;
     assert.equal(child.parentSessionId, parent.sessionId);
@@ -87,6 +88,7 @@ test("forks stable history into an inert, independently scoped child with durabl
           null,
           "session_bad",
           "stable",
+          "stable-child-genesis-2",
           6,
         ),
       /unknown-project/,
@@ -100,6 +102,7 @@ test("forks stable history into an inert, independently scoped child with durabl
           undefined,
           "session_bad2",
           "wrong-runtime-proof",
+          "stable-child-genesis-3",
           6,
         ),
       /invalid-fork-point/,
@@ -131,7 +134,7 @@ test("forks stable history into an inert, independently scoped child with durabl
   }
 });
 
-test("fork command validates the runtime checkpoint and publishes the child session", async () => {
+test("fork command publishes validated child genesis and closes its bootstrap on publication or commit failure", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-fork-command-"));
   const baseAdapters = adaptersFor("deterministic");
   let forkRequest:
@@ -141,6 +144,8 @@ test("fork command validates the runtime checkpoint and publishes the child sess
         childSessionId: string;
       }
     | undefined;
+  const bootstrapLifecycle: string[] = [];
+  let forkFailure: "publication" | null = null;
   const pi: PiAdapter = {
     ...baseAdapters.pi,
     forkCheckpoint: async (
@@ -149,7 +154,15 @@ test("fork command validates the runtime checkpoint and publishes the child sess
       childSessionId,
     ) => {
       forkRequest = { parentSessionId, checkpoint, childSessionId };
-      return checkpoint;
+      bootstrapLifecycle.push("bootstrap");
+      return {
+        publish: async () => {
+          bootstrapLifecycle.push("publish", "validate");
+          if (forkFailure === "publication") throw new Error("publication-interrupted");
+          return "sha256:" + "a".repeat(64);
+        },
+        close: async () => { bootstrapLifecycle.push("close"); },
+      };
     },
   };
   const host = await startHost({
@@ -198,6 +211,21 @@ test("fork command validates the runtime checkpoint and publishes the child sess
     const forkPointEntryId = completed.timeline.at(-1)?.entryId;
     assert.ok(forkPointEntryId);
 
+    async function expectForkRejected(commandId: string): Promise<void> {
+      socket.send(JSON.stringify({
+        type: "session.fork",
+        commandId,
+        parentSessionId,
+        forkPointEntryId,
+      }));
+      const failure = await nextControlMessage(socket);
+      assert.equal(
+        failure.type === "command.outcome" && failure.outcome,
+        "rejected",
+      );
+      assert.equal(bootstrapLifecycle.at(-1), "close");
+    }
+
     socket.send(
       JSON.stringify({
         type: "session.fork",
@@ -231,6 +259,39 @@ test("fork command validates the runtime checkpoint and publishes the child sess
       checkpoint: `checkpoint:${parentSessionId}`,
       childSessionId: child.sessionId,
     });
+    assert.deepEqual(bootstrapLifecycle, [
+      "bootstrap", "publish", "validate", "close",
+    ]);
+    const childStore = new AuthorityStore(
+      join(dataDir, "authority.sqlite"),
+      baseAdapters,
+    );
+    assert.equal(
+      childStore.latestCheckpoint(child.sessionId),
+      "sha256:" + "a".repeat(64),
+    );
+    assert.equal(
+      childStore.latestCheckpoint(parentSessionId),
+      `checkpoint:${parentSessionId}`,
+    );
+    childStore.close();
+
+    forkFailure = "publication";
+    await expectForkRejected("fork-publication-failure");
+
+    forkFailure = null;
+    baseAdapters.storage.beforeCommit = () => { throw new Error("commit-interrupted"); };
+    await expectForkRejected("fork-commit-failure");
+
+    const afterFailures = new AuthorityStore(
+      join(dataDir, "authority.sqlite"), adaptersFor("deterministic"),
+    );
+    assert.equal(afterFailures.projection().sessions.length, 2);
+    assert.equal(
+      afterFailures.latestCheckpoint(parentSessionId),
+      `checkpoint:${parentSessionId}`,
+    );
+    afterFailures.close();
   } finally {
     socket.close();
     await host.close();

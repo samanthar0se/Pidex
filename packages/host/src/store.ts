@@ -549,7 +549,8 @@ export class AuthorityStore {
     projectId: string | null | undefined,
     workspaceId: string | null | undefined,
     childSessionId: string,
-    validatedCheckpoint: string,
+    parentCheckpoint: string,
+    childGenesisCheckpoint: string,
     now: number,
   ): { session: SessionSummary; cursor: string } {
     this.#db.exec("BEGIN IMMEDIATE");
@@ -570,7 +571,9 @@ export class AuthorityStore {
         !point ||
         !point.finalized ||
         point.kind !== "response" ||
-        point.checkpoint !== validatedCheckpoint
+        point.checkpoint !== parentCheckpoint ||
+        childGenesisCheckpoint.length === 0 ||
+        childGenesisCheckpoint === parentCheckpoint
       ) {
         throw new Error("invalid-fork-point");
       }
@@ -665,7 +668,9 @@ export class AuthorityStore {
           row.entryOrder,
           row.kind,
           row.text,
-          row.checkpoint,
+          row.entryOrder === point.entryOrder
+            ? childGenesisCheckpoint
+            : row.checkpoint,
           row.blobId,
           row.createdAt,
           row.revision,

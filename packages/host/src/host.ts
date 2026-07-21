@@ -858,11 +858,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       }
 
       const childSessionId = `session_${randomUUID()}`;
-      const validatedCheckpoint = await adapters.pi.forkCheckpoint(
+      const bootstrap = await adapters.pi.forkCheckpoint(
         command.parentSessionId,
         checkpoint,
         childSessionId,
       );
+      let childGenesisCheckpoint: string;
+      try {
+        childGenesisCheckpoint = await bootstrap.publish();
+      } finally {
+        await bootstrap.close();
+      }
       adapters.storage.beforeCommit();
       const created = store.forkSession(
         command.parentSessionId,
@@ -870,7 +876,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         command.projectId,
         command.workspaceId,
         childSessionId,
-        validatedCheckpoint,
+        checkpoint,
+        childGenesisCheckpoint,
         adapters.clock.now(),
       );
       sendServerMessage(client, {

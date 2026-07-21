@@ -72,6 +72,7 @@ test("maintenance retains reachable ancestry and uses durable independent proofs
       undefined,
       "child",
       "checkpoint",
+      "checkpoint-child-genesis",
       4,
     );
 

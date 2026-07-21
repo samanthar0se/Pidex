@@ -105,11 +105,19 @@ export interface PiAdapter {
     parentSessionId: string,
     checkpoint: string,
     childSessionId: string,
-  ): Promise<string>;
+  ): Promise<PiForkBootstrap>;
   /** Copy-migrates an artifact owned by an older pinned Pi runtime. */
   migrateArtifact?(
     request: PiArtifactMigrationRequest,
   ): Promise<PiArtifactMigrationResult>;
+}
+
+/** A fresh contained bootstrap generation owning a verified child genesis. */
+export interface PiForkBootstrap {
+  /** Imports, publishes, and validates the child-owned genesis checkpoint. */
+  publish(): Promise<string>;
+  /** Terminates the bootstrap generation and all of its descendants. */
+  close(): Promise<void>;
 }
 
 export interface PiArtifactMigrationRequest {
@@ -340,7 +348,10 @@ function deterministicPiAdapter(): PiAdapter {
       checkpoint: `checkpoint:${request.sessionId}`,
     }),
     flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
-    forkCheckpoint: async (_parentSessionId, checkpoint) => checkpoint,
+    forkCheckpoint: async (_parentSessionId, checkpoint, childSessionId) => ({
+      publish: async () => `${checkpoint}:genesis:${childSessionId}`,
+      close: async () => {},
+    }),
   };
 }
 
