@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { invocationSchema, operationReceiptSchema } from "../../local-control/src/index.js";
+import { invocationSchema, operationReceiptSchema, sourceUpdateActivationSchema } from "../../local-control/src/index.js";
 import { projectStatus, type LocalStatus, type StatusProjection } from "./status-projection.js";
 
 type Receipt = z.output<typeof operationReceiptSchema>;
@@ -23,13 +23,23 @@ export class CliControlClient {
   /** A transport failure is ambiguous: reconcile the same invocation, never resubmit it. */
   async invoke(input: Omit<Invocation, "invocationId">): Promise<Receipt> {
     const invocation = invocationSchema.parse({ ...input, invocationId: this.createInvocationId() });
+    return this.requestOperation("operation.invoke", invocation);
+  }
+
+  /** The source driver has already published bytes; the launcher receives no mutable path. */
+  async activateSourceUpdate(input: Omit<z.input<typeof sourceUpdateActivationSchema>, "invocationId">): Promise<Receipt> {
+    const request = sourceUpdateActivationSchema.parse({ ...input, invocationId: this.createInvocationId() });
+    return this.requestOperation("source-update.activate", request);
+  }
+
+  private async requestOperation(method: string, request: { invocationId: string }): Promise<Receipt> {
     try {
-      return operationReceiptSchema.parse(await this.transport.request("operation.invoke", invocation));
+      return operationReceiptSchema.parse(await this.transport.request(method, request));
     } catch (deliveryError) {
       try {
         return operationReceiptSchema.parse(await this.transport.request(
           "operation.lookup-invocation",
-          { invocationId: invocation.invocationId },
+          { invocationId: request.invocationId },
         ));
       } catch {
         throw deliveryError;

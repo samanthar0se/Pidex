@@ -99,3 +99,28 @@ test("detach and Ctrl+C preserve the accepted receipt while cancel is an explici
   assert.equal((await client.cancel("op-2", "copy")).state, "cancelled");
   assert.deepEqual(methods, ["operation.invoke", "operation.cancel"]);
 });
+
+test("source update publishes first and submits only its content identity to the launcher", async () => {
+  const calls: Array<{ method: string; payload: unknown }> = [];
+  const receipt = makeRunningReceipt("inv-update", "op-update");
+  const transport: LocalControlTransport = { async request(method, payload) {
+    calls.push({ method, payload });
+    return receipt;
+  } };
+  const client = new CliControlClient(transport, () => "inv-update");
+
+  const result = await client.activateSourceUpdate({
+    releaseId: `sha256-${"a".repeat(64)}`,
+    closureSha256: "a".repeat(64),
+  });
+
+  assert.deepEqual(result, receipt);
+  assert.deepEqual(calls, [{
+    method: "source-update.activate",
+    payload: {
+      invocationId: "inv-update",
+      releaseId: `sha256-${"a".repeat(64)}`,
+      closureSha256: "a".repeat(64),
+    },
+  }]);
+});

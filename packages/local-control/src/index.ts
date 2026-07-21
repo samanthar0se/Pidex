@@ -227,6 +227,18 @@ export const invocationSchema = z.strictObject({
   operation: identifierSchema,
   argumentsDigest: hex256BitSchema,
 });
+export function sourceReleaseIdFromClosureSha256(closureSha256: string): string {
+  return `sha256-${closureSha256}`;
+}
+export const sourceUpdateActivationSchema = z.strictObject({
+  invocationId: identifierSchema,
+  releaseId: z.string().regex(/^sha256-[a-f0-9]{64}$/),
+  closureSha256: hex256BitSchema,
+}).superRefine((value, context) => {
+  if (value.releaseId !== sourceReleaseIdFromClosureSha256(value.closureSha256)) {
+    context.addIssue({ code: "custom", path: ["closureSha256"], message: "closure fingerprint must match release identity" });
+  }
+});
 export const operationReceiptSchema = z.strictObject({
   invocationId: identifierSchema,
   operationId: identifierSchema,
