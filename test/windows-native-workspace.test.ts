@@ -149,3 +149,18 @@ test("the per-instance pipe reports a failed impersonation revert before token e
       pipeSource.indexOf("if (!opened)"),
   );
 });
+
+test("the Windows addon has one raw Node-API entry point without V8 or libuv", async () => {
+  const [workspaceCmake, addonCmake, addonSource] = await Promise.all([
+    readNativeFile("CMakeLists.txt"),
+    readNativeFile("addon/CMakeLists.txt"),
+    readNativeFile("addon/src/addon.cpp"),
+  ]);
+
+  assert.match(workspaceCmake, /add_subdirectory\(addon\)/);
+  assert.match(addonCmake, /OUTPUT_NAME "pidex_windows"/);
+  assert.match(addonCmake, /SUFFIX "\.node"/);
+  assert.match(addonSource, /NAPI_MODULE/);
+  assert.match(addonSource, /napi_create_promise/);
+  assert.doesNotMatch(addonSource, /\bv8\b|uv\.h|node-addon-api/i);
+});
