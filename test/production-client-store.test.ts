@@ -391,3 +391,50 @@ test("paging from a previously selected Session cannot leave the current Session
     assert.equal(store.getState().paging, "idle");
   }
 });
+
+test("FX-TRUST-01/02/03 FX-STATE-03/05 FX-RESP-06/07: recovery reconciles every scope and the original uncertain Command before restoring controls", async () => {
+  const reads: string[] = [];
+  const store = createClientStore({
+    host: {
+      async readCatalog() {
+        reads.push("catalog");
+        return { projects: [], sessions: [{ sessionId: "session", name: "Current", metadataRevision: 2, timelineRevision: 8 }], archivedSessions: [] };
+      },
+      async readSession(sessionId) {
+        reads.push(sessionId);
+        return { session: { sessionId, name: "Current", metadataRevision: 2, timelineRevision: 8 }, timeline: [], runs: [] };
+      },
+      async submitRun() { return { kind: "uncertain", reason: "transport-lost" }; },
+      async reconcileCommand(commandId) {
+        reads.push(commandId);
+        return { kind: "accepted" };
+      },
+    },
+    drafts: { async read() { return "cached draft"; }, async write() {} },
+    routing: { replace() {} }, commandIds: () => "original-command",
+  });
+
+  store.getState().authorityChanged({ status: "offline", lastSynchronizedAt: "2026-07-21T10:15:30.000Z" });
+  store.setState({
+    selectedSessionId: "session",
+    sessions: { session: { sessionId: "session", name: "Cached", metadataRevision: 1, timelineRevision: 7 } },
+    timelines: { session: [{ entryId: "cached", kind: "assistant", text: "cached answer" }] },
+    drafts: { session: "cached draft" },
+  });
+  await store.getState().setDraft("edited offline");
+  await store.getState().submitComposer();
+  assert.equal(store.getState().composerCommand, undefined);
+  assert.equal(store.getState().drafts.session, "edited offline");
+
+  store.setState({
+    commandOutcomes: [{ commandId: "original-command", action: "submit", phase: "uncertain", reason: "transport-lost" }],
+  });
+  await store.getState().recoverAuthority();
+
+  assert.deepEqual(reads, ["catalog", "session", "original-command"]);
+  assert.equal(store.getState().authority.status, "current");
+  assert.equal(store.getState().isSessionCurrent, true);
+  assert.equal(store.getState().sessions.session?.name, "Current");
+  assert.equal(store.getState().drafts.session, "edited offline");
+  assert.equal(store.getState().commandOutcomes[0]?.phase, "accepted-awaiting-projection");
+});

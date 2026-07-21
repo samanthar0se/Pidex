@@ -7,6 +7,7 @@ const runListeners = new Map<string, Set<(runs: RunFact[]) => void>>();
 const runsBySession = new Map<string, RunFact[]>();
 const interactionListeners = new Map<string, Set<(interactions: InteractionFact[]) => void>>();
 const interactionsBySession = new Map<string, InteractionFact[]>();
+const uncertainCommands = new Map<string, Record<string, unknown> & { commandId: string }>();
 
 function socketFor(onMessage: (message: any, socket: WebSocket, finish: <T>(value: T) => void) => void) {
   return new Promise<any>((resolve, reject) => {
@@ -154,7 +155,13 @@ function sendRunCommand(
 ): Promise<CommandResult> {
   return new Promise(resolve => {
     let settled = false; let close = () => {};
-    const finish = (result: CommandResult) => { if (settled) return; settled = true; close(); resolve(result); };
+    const finish = (result: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      if (result.kind === "uncertain") uncertainCommands.set(message.commandId, message);
+      else uncertainCommands.delete(message.commandId);
+      close(); resolve(result);
+    };
     close = connect(socket => socket.send(JSON.stringify(message)), incoming => {
       if (incoming.type !== "command.outcome" || incoming.commandId !== message.commandId) return;
       finish(incoming.outcome === "rejected" ? { kind: "rejected", reason: incoming.error ?? rejectionReason } : { kind: "accepted" });
@@ -179,6 +186,13 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
   actOnHeldRun: command => sendRunCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
   resolveInteraction: command => sendRunCommand(command),
+  async reconcileCommand(commandId) {
+    const original = uncertainCommands.get(commandId);
+    if (!original) return { kind: "indeterminate", reason: "original-command-envelope-unavailable" };
+    const result = await sendRunCommand(original);
+    if (result.kind === "accepted" || result.kind === "rejected") return result;
+    return { kind: "indeterminate", reason: result.reason };
+  },
   watchSession(sessionId, listener) {
     const sessionListeners = listeners.get(sessionId) ?? new Set();
     sessionListeners.add(listener);

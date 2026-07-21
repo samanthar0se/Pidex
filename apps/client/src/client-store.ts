@@ -54,6 +54,13 @@ export type CommandResult =
   | { kind: "rejected"; reason: string }
   | { kind: "uncertain"; reason: string };
 export type SessionCreateResult = CommandResult & { session?: SessionFact };
+export type ReconciledCommandResult =
+  | { kind: "accepted" }
+  | { kind: "rejected"; reason: string }
+  | { kind: "expired"; reason: string }
+  | { kind: "indeterminate"; reason: string };
+export type AuthorityStatus = "current" | "offline" | "reconnecting" | "update-required" | "revoked";
+export interface AuthorityState { status: AuthorityStatus; lastSynchronizedAt: string | null; reason?: string }
 type FailedCommandResult = Exclude<CommandResult, { kind: "accepted" }>;
 export type NewSessionProgress =
   | { phase: "editing"; reason?: string }
@@ -93,6 +100,7 @@ export interface ClientAdapters {
     watchInteractions?(sessionId: string, listener: (interactions: InteractionFact[]) => void): () => void;
     readOlder?(sessionId: string, cursor: string): Promise<TimelinePage>;
     markRead?(sessionId: string, timelineRevision: number): Promise<void>;
+    reconcileCommand?(commandId: string): Promise<ReconciledCommandResult>;
   };
   drafts: { read(sessionId: string): Promise<string>; write(sessionId: string, value: string): Promise<void>; };
   preferences?: {
@@ -125,6 +133,7 @@ export interface ClientState {
   searchQuery: string;
   discoveryMode: "available" | "archived";
   isSessionCurrent: boolean;
+  authority: AuthorityState;
   newSession?: NewSessionState;
   loadDiscovery(): Promise<void>;
   openSession(sessionId: string, history?: "push" | "replace" | "none"): Promise<void>;
@@ -145,6 +154,8 @@ export interface ClientState {
   restoreSession(sessionId: string): Promise<void>;
   loadOlder(): Promise<void>;
   presentTail(): Promise<void>;
+  authorityChanged(authority: Omit<AuthorityState, "lastSynchronizedAt"> & { lastSynchronizedAt?: string | null }): void;
+  recoverAuthority(): Promise<void>;
 }
 
 export type ClientStore = StoreApi<ClientState>;
@@ -155,18 +166,21 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
     timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
+    authority: { status: "current", lastSynchronizedAt: null },
     async loadDiscovery() {
       if (!adapters.host.readCatalog) return;
-      const [catalog, expanded] = await Promise.all([
-        adapters.host.readCatalog(),
-        adapters.preferences?.readExpandedProjects() ?? Promise.resolve([]),
-      ]);
-      set({
-        projects: catalog.projects,
-        sessions: byId(catalog.sessions), sessionOrder: catalog.sessions.map(item => item.sessionId),
-        archivedSessions: byId(catalog.archivedSessions), archivedOrder: catalog.archivedSessions.map(item => item.sessionId),
-        expandedProjectIds: expanded,
-      });
+      try {
+        const [catalog, expanded] = await Promise.all([
+          adapters.host.readCatalog(),
+          adapters.preferences?.readExpandedProjects() ?? Promise.resolve([]),
+        ]);
+        set({
+          ...discoveryStateFrom(catalog),
+          expandedProjectIds: expanded,
+        });
+      } catch (error) {
+        set(state => ({ authority: offlineAuthority(state.authority, error) }));
+      }
     },
     async openNewSession(scope = {}) {
       const draft = await adapters.drafts.read("new-session");
@@ -186,7 +200,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     },
     async submitNewSession(createEmpty = false) {
       const initial = get().newSession;
-      if (!initial || initial.progress.phase !== "editing" || !adapters.host.createSession) return;
+      if (!initial || initial.progress.phase !== "editing" || get().authority.status !== "current" || !adapters.host.createSession) return;
       const prompt = initial.draft;
       if (!createEmpty && !prompt.trim()) {
         set({ newSession: { ...initial, progress: {
@@ -227,7 +241,19 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const path = `/sessions/${encodeURIComponent(sessionId)}`;
       if (navigation === "push") (adapters.routing.push ?? adapters.routing.replace)(path);
       else if (navigation === "replace") adapters.routing.replace(path);
-      const [projection, draft] = await Promise.all([adapters.host.readSession(sessionId), adapters.drafts.read(sessionId)]);
+      let projection: SessionProjection;
+      let draft: string;
+      try {
+        [projection, draft] = await Promise.all([adapters.host.readSession(sessionId), adapters.drafts.read(sessionId)]);
+      } catch (error) {
+        const localDraft = await adapters.drafts.read(sessionId).catch(() => get().drafts[sessionId] ?? "");
+        if (get().selectedSessionId === sessionId) set(state => ({
+          drafts: { ...state.drafts, [sessionId]: localDraft },
+          authority: offlineAuthority(state.authority, error),
+          isSessionCurrent: false,
+        }));
+        return;
+      }
       if (get().selectedSessionId !== sessionId) return;
       set(state => ({
         sessions: { ...state.sessions, [sessionId]: projection.session },
@@ -321,7 +347,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const state = get();
       const sessionId = state.selectedSessionId;
       const run = sessionId ? state.runs[sessionId]?.find(item => item.runId === runId) : undefined;
-      if (!sessionId || run?.state !== "held" || !adapters.host.actOnHeldRun) return;
+      if (!sessionId || run?.state !== "held" || !state.isSessionCurrent || state.authority.status !== "current" || !adapters.host.actOnHeldRun) return;
       const id = commandId();
       const target = { action, runId };
       set({ composerCommand: pendingCommand(id, target) });
@@ -365,7 +391,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     },
     async restoreSession(sessionId) {
       const session = get().archivedSessions[sessionId];
-      if (!session || !adapters.host.restoreSession) return;
+      if (!session || get().authority.status !== "current" || !adapters.host.restoreSession) return;
       await adapters.host.restoreSession(session);
       set(state => ({
         archivedSessions: omit(state.archivedSessions, sessionId),
@@ -398,6 +424,67 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const revision = sessionId ? state.sessions[sessionId]?.timelineRevision : undefined;
       if (sessionId && revision && state.isSessionCurrent) await adapters.host.markRead?.(sessionId, revision);
     },
+    authorityChanged(authority) {
+      const previous = get().authority;
+      set({
+        authority: {
+          ...authority,
+          lastSynchronizedAt: authority.lastSynchronizedAt === undefined
+            ? previous.lastSynchronizedAt : authority.lastSynchronizedAt,
+        },
+        isSessionCurrent: authority.status === "current" && get().isSessionCurrent,
+      });
+    },
+    async recoverAuthority() {
+      const before = get().authority;
+      if (before.status === "update-required" || before.status === "revoked") return;
+      set({ authority: { ...before, status: "reconnecting" }, isSessionCurrent: false });
+      try {
+        const catalog = adapters.host.readCatalog ? await adapters.host.readCatalog() : undefined;
+        const sessionId = get().selectedSessionId;
+        const projection = sessionId ? await adapters.host.readSession(sessionId) : undefined;
+        const uncertain = get().commandOutcomes.filter(command => command.phase === "uncertain");
+        const uncertainInteractions = Object.entries(get().interactionIntents)
+          .filter(([, intent]) => intent.phase === "uncertain");
+        const reconciled = new Map<string, ReconciledCommandResult>();
+        if ((uncertain.length || uncertainInteractions.length) && !adapters.host.reconcileCommand) {
+          throw new Error("Original uncertain commands cannot be reconciled");
+        }
+        for (const command of uncertain) reconciled.set(command.commandId, await adapters.host.reconcileCommand!(command.commandId));
+        for (const [, intent] of uncertainInteractions) reconciled.set(intent.commandId, await adapters.host.reconcileCommand!(intent.commandId));
+        const synchronizedAt = new Date().toISOString();
+        set(state => ({
+          ...(catalog ? discoveryStateFrom(catalog) : {}),
+          ...(sessionId && projection ? {
+            sessions: { ...(catalog ? byId(catalog.sessions) : state.sessions), [sessionId]: projection.session },
+            timelines: { ...state.timelines, [sessionId]: projection.timeline },
+            runs: { ...state.runs, [sessionId]: projection.runs ?? [] },
+            interactions: { ...state.interactions, [sessionId]: activeInteractions(projection.interactions ?? []) },
+            olderCursors: { ...state.olderCursors, [sessionId]: projection.olderCursor ?? null },
+          } : {}),
+          commandOutcomes: state.commandOutcomes.map(command => {
+            const result = reconciled.get(command.commandId);
+            if (!result) return command;
+            if (result.kind === "accepted") return { ...command, phase: "accepted-awaiting-projection" as const, reason: undefined };
+            return { ...command, phase: "rejected" as const, reason: `${result.kind}: ${result.reason}` };
+          }),
+          interactionIntents: Object.fromEntries(Object.entries(state.interactionIntents).map(([id, intent]) => {
+            const result = reconciled.get(intent.commandId);
+            if (!result) return [id, intent];
+            return [id, result.kind === "accepted"
+              ? { ...intent, phase: "accepted-awaiting-projection" as const, reason: undefined }
+              : { ...intent, phase: "rejected" as const, reason: `${result.kind}: ${result.reason}` }];
+          })),
+          authority: { status: "current", lastSynchronizedAt: synchronizedAt },
+          isSessionCurrent: !sessionId || Boolean(projection),
+        }));
+      } catch (error) {
+        set({
+          authority: offlineAuthority(before, error),
+          isSessionCurrent: false,
+        });
+      }
+    },
   }));
 }
 
@@ -412,6 +499,24 @@ function compareTimelineEntries(left: TimelineFact, right: TimelineFact): number
 
 function activeInteractions(interactions: readonly InteractionFact[]): InteractionFact[] {
   return interactions.filter(item => item.state === "open" || item.state === "resolving");
+}
+
+function discoveryStateFrom(catalog: DiscoveryProjection) {
+  return {
+    projects: catalog.projects,
+    sessions: byId(catalog.sessions),
+    sessionOrder: catalog.sessions.map(item => item.sessionId),
+    archivedSessions: byId(catalog.archivedSessions),
+    archivedOrder: catalog.archivedSessions.map(item => item.sessionId),
+  };
+}
+
+function offlineAuthority(authority: AuthorityState, error: unknown): AuthorityState {
+  return {
+    ...authority,
+    status: "offline",
+    reason: error instanceof Error ? error.message : "Host unavailable",
+  };
 }
 
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }
