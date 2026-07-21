@@ -5,15 +5,15 @@ import {
   type RunnableHostValidationInput,
 } from "../packages/launch-manifest/src/index.js";
 
-const digest = (value: string) => value.repeat(64);
+const repeatedHexDigest = (value: string) => value.repeat(64);
 
 function passingInput(): RunnableHostValidationInput {
   return {
     candidate: "runnable-host-prd-80-2026-07-21",
     attemptedAt: "2026-07-21T12:00:00.000Z",
     identities: {
-      closureSha256: digest("1"), addonSha256: digest("2"), sbomSha256: digest("3"),
-      launcherSha256: digest("4"), configSha256: digest("5"), piVersion: "0.80.10",
+      closureSha256: repeatedHexDigest("1"), addonSha256: repeatedHexDigest("2"), sbomSha256: repeatedHexDigest("3"),
+      launcherSha256: repeatedHexDigest("4"), configSha256: repeatedHexDigest("5"), piVersion: "0.80.10",
       schemaGeneration: 1, toolchain: "msvc-19.44.35207/windows-sdk-10.0.26100.0",
       runtimes: [
         { lane: "primary" as const, nodeVersion: "24.18.0", nodeApi: 10 },
@@ -21,9 +21,9 @@ function passingInput(): RunnableHostValidationInput {
       ],
     },
     evidence: [
-      { gate: "traceability" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: digest("a") },
-      { gate: "windows-vm" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: digest("b"), authoritativeAttempt: 1 },
-      { gate: "primary-hyper-v" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: digest("c"), authoritativeAttempt: 1 },
+      { gate: "traceability" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("a") },
+      { gate: "windows-vm" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("b"), authoritativeAttempt: 1 },
+      { gate: "primary-hyper-v" as const, status: "passed" as const, candidate: "runnable-host-prd-80-2026-07-21", artifactSha256: repeatedHexDigest("c"), authoritativeAttempt: 1 },
     ],
     retiredScaffolds: {
       oldProductAdapter: "unreachable" as const,
