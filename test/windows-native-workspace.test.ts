@@ -123,6 +123,14 @@ test("a managed process cannot run before its fresh kill-on-close Job contains i
   assert.match(processSource, /std::call_once/);
 });
 
+test("process encoding preserves empty arguments and rejects reserved environment entries", async () => {
+  const processSource = await readNativeFile("common/src/process.cpp");
+
+  assert.match(processSource, /argument\.empty\(\)/);
+  assert.match(processSource, /name\.front\(\) == L'='/);
+  assert.match(processSource, /CompareStringOrdinal/);
+});
+
 test("the per-instance pipe rejects squatting, remote access, and unauthenticated tokens", async () => {
   const [cmake, pipeSource] = await Promise.all([
     readNativeFile("common/CMakeLists.txt"),

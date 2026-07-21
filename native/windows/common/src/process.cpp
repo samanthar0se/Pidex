@@ -3,6 +3,7 @@
 #include "pidex/windows/raii.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <utility>
 
@@ -10,7 +11,8 @@ namespace pidex::windows {
 namespace {
 
 std::wstring quote_argument(const std::wstring& argument) {
-  if (argument.find_first_of(L" \t\"") == std::wstring::npos) {
+  if (!argument.empty() &&
+      argument.find_first_of(L" \t\"") == std::wstring::npos) {
     return argument;
   }
   std::wstring quoted(1, L'\"');
@@ -44,8 +46,14 @@ std::wstring command_line(const contained_process_request& request) {
 
 std::vector<wchar_t> environment_block(
     const std::map<std::wstring, std::wstring, std::less<>>& environment) {
+  std::vector<std::pair<std::wstring, std::wstring>> entries(
+      environment.begin(), environment.end());
+  std::ranges::sort(entries, [](const auto& left, const auto& right) {
+    return CompareStringOrdinal(left.first.c_str(), -1, right.first.c_str(), -1,
+                                TRUE) == CSTR_LESS_THAN;
+  });
   std::vector<wchar_t> result;
-  for (const auto& [name, value] : environment) {
+  for (const auto& [name, value] : entries) {
     result.insert(result.end(), name.begin(), name.end());
     result.push_back(L'=');
     result.insert(result.end(), value.begin(), value.end());
@@ -170,12 +178,26 @@ std::variant<managed_process, native_error> spawn_contained(
                          ERROR_BAD_PATHNAME);
     }
     for (const auto& [name, value] : request.environment) {
-      if (name.empty() || name.find(L'=') != std::wstring::npos ||
+      if (name.empty() || name.front() == L'=' ||
+          name.find(L'=') != std::wstring::npos ||
           name.find(L'\0') != std::wstring::npos ||
           value.find(L'\0') != std::wstring::npos) {
         return win32_error("spawn_contained.environment",
                            native_error_category::invalid_input,
                            ERROR_INVALID_PARAMETER);
+      }
+    }
+    for (auto left = request.environment.begin();
+         left != request.environment.end(); ++left) {
+      for (auto right = std::next(left); right != request.environment.end();
+           ++right) {
+        if (CompareStringOrdinal(left->first.c_str(), -1,
+                                 right->first.c_str(), -1, TRUE) ==
+            CSTR_EQUAL) {
+          return win32_error("spawn_contained.environment.duplicate",
+                             native_error_category::invalid_input,
+                             ERROR_INVALID_PARAMETER);
+        }
       }
     }
 
