@@ -9,6 +9,7 @@ import {
   resolveCliTarget,
   type LocalControlTransport,
 } from "../packages/cli/src/local-control.js";
+import { runCli } from "../packages/cli/src/main.js";
 
 function makeRunningReceipt(invocationId: string, operationId: string) {
   return { invocationId, operationId, phase: "copy", state: "running", cancellable: true } as const;
@@ -123,4 +124,28 @@ test("source update publishes first and submits only its content identity to the
       closureSha256: "a".repeat(64),
     },
   }]);
+});
+
+test("emitted CLI dispatches status and every mutation through local control in human and JSON modes", async () => {
+  const calls: Array<{ method: string; payload: unknown }> = [];
+  const output: string[] = [];
+  const transport: LocalControlTransport = { async request(method, payload) {
+    calls.push({ method, payload });
+    if (method === "status") return { launcher: { state: "ready", attempts: 1 } };
+    return makeRunningReceipt("inv-cli", "op-cli");
+  } };
+  const client = new CliControlClient(transport, () => "inv-cli");
+
+  assert.equal(await runCli(["status", "--json"], { client, stdout: value => output.push(value) }), 0);
+  assert.equal(await runCli(["backup", "--detach", "--json"], { client, stdout: value => output.push(value) }), 0);
+
+  assert.deepEqual(calls.map(call => call.method), ["status", "operation.invoke"]);
+  assert.deepEqual(calls[1]?.payload, {
+    invocationId: "inv-cli",
+    policyOwner: "daemon",
+    operation: "backup",
+    argumentsDigest: "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  });
+  assert.equal(JSON.parse(output[0]!).launcher.state, "ready");
+  assert.equal(JSON.parse(output[1]!).operationId, "op-cli");
 });
