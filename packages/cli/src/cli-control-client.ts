@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { invocationSchema, operationReceiptSchema } from "../../local-control/src/index.js";
+import { invocationSchema, operationReceiptSchema, sourceUpdateActivationSchema } from "../../local-control/src/index.js";
 import { projectStatus, type LocalStatus, type StatusProjection } from "./status-projection.js";
 
 type Receipt = z.output<typeof operationReceiptSchema>;
@@ -30,6 +30,23 @@ export class CliControlClient {
         return operationReceiptSchema.parse(await this.transport.request(
           "operation.lookup-invocation",
           { invocationId: invocation.invocationId },
+        ));
+      } catch {
+        throw deliveryError;
+      }
+    }
+  }
+
+  /** The source driver has already published bytes; the launcher receives no mutable path. */
+  async activateSourceUpdate(input: Omit<z.input<typeof sourceUpdateActivationSchema>, "invocationId">): Promise<Receipt> {
+    const request = sourceUpdateActivationSchema.parse({ ...input, invocationId: this.createInvocationId() });
+    try {
+      return operationReceiptSchema.parse(await this.transport.request("source-update.activate", request));
+    } catch (deliveryError) {
+      try {
+        return operationReceiptSchema.parse(await this.transport.request(
+          "operation.lookup-invocation",
+          { invocationId: request.invocationId },
         ));
       } catch {
         throw deliveryError;
