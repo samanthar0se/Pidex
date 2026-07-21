@@ -21,3 +21,4 @@ if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR NOT CMAKE_GENERATOR_PLATFORM STREQUAL "x64
 endif()
 
 add_subdirectory(common)
+add_subdirectory(addon)
