@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Duplex, PassThrough } from "node:stream";
@@ -14,6 +14,7 @@ import type { PiTimelineEvent } from "../packages/adapters/src/index.js";
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import {
   ExactPiChild,
+  PiCheckpointStore,
   ExactPiWorkerEndpoint,
   EXACT_PI_VERSION,
 } from "../packages/pi-worker/src/index.js";
@@ -294,6 +295,64 @@ test("one exact Pi generation loads only its synthetic profile/cwd and translate
     assert.equal(faux.state.callCount, 2);
     await child.dispose();
     await assert.rejects(child.execute("after dispose"), /generation-disposed/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("durable Pi checkpoints deduplicate chunks and Fork/migration never mutate their source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-pi-checkpoints-"));
+  try {
+    const store = new PiCheckpointStore({
+      chunksDirectory: join(root, "chunks"),
+      manifestsDirectory: join(root, "manifests"),
+    });
+    const source = await store.publish({
+      sessionId: "parent",
+      sourceCheckpointId: null,
+      workerGeneration: 2,
+      releaseGeneration: "release-a",
+      piGeneration: EXACT_PI_VERSION,
+      privateLeafId: "leaf-1",
+      privateFormatVersion: 3,
+      bytes: Buffer.from("private pi state"),
+    });
+    const duplicate = await store.publish({
+      sessionId: "parent",
+      sourceCheckpointId: source.checkpointId,
+      workerGeneration: 2,
+      releaseGeneration: "release-a",
+      piGeneration: EXACT_PI_VERSION,
+      privateLeafId: "leaf-2",
+      privateFormatVersion: 3,
+      bytes: Buffer.from("private pi state"),
+    });
+    assert.deepEqual(source.chunkIds, duplicate.chunkIds);
+
+    const fork = await store.fork(source.checkpointId, {
+      childSessionId: "child",
+      workerGeneration: 1,
+      releaseGeneration: "release-a",
+    });
+    const migrated = await store.migrate(source.checkpointId, {
+      sessionId: "parent",
+      workerGeneration: 3,
+      releaseGeneration: "release-b",
+      piGeneration: EXACT_PI_VERSION,
+      privateFormatVersion: 4,
+      convert: bytes => Buffer.concat([bytes, Buffer.from(" migrated")]),
+    });
+
+    assert.equal((await store.read(source.checkpointId)).toString(), "private pi state");
+    assert.equal((await store.read(fork.checkpointId)).toString(), "private pi state");
+    assert.equal((await store.read(migrated.checkpointId)).toString(), "private pi state migrated");
+    assert.notEqual(fork.checkpointId, source.checkpointId);
+    assert.notEqual(migrated.checkpointId, source.checkpointId);
+    const sourceManifest = JSON.parse(await readFile(
+      join(root, "manifests", `${source.checkpointId}.json`), "utf8",
+    ));
+    assert.equal(sourceManifest.sessionId, "parent");
+    assert.equal(sourceManifest.publicationState, "published");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

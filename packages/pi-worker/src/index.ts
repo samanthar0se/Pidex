@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile } from "node:fs/promises";
 import { realpath } from "node:fs/promises";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createAgentSession,
@@ -20,8 +22,149 @@ import {
   type WorkerFrame,
   type WorkerGenerationIdentity,
 } from "../../worker-protocol/src/index.js";
+import { publishImmutableFile } from "../../durability/src/index.js";
 
 export const EXACT_PI_VERSION = "0.80.10";
+
+const CHECKPOINT_CHUNK_BYTES = 1024 * 1024;
+
+export interface PiCheckpointManifest {
+  schema: "pidex-pi-checkpoint-v1";
+  checkpointId: string;
+  sessionId: string;
+  sourceCheckpointId: string | null;
+  workerGeneration: number;
+  releaseGeneration: string;
+  piGeneration: string;
+  privateLeafId: string;
+  privateFormatVersion: number;
+  byteLength: number;
+  chunkIds: string[];
+  publicationState: "published";
+}
+
+export interface PiCheckpointStoreOptions {
+  chunksDirectory: string;
+  manifestsDirectory: string;
+}
+
+type CheckpointPublication = Omit<PiCheckpointManifest, "schema" | "checkpointId" | "byteLength" | "chunkIds" | "publicationState"> & {
+  bytes: Uint8Array;
+};
+
+/** Publishes opaque Pi state as immutable, verified content-addressed artifacts. */
+export class PiCheckpointStore {
+  readonly #options: PiCheckpointStoreOptions;
+
+  constructor(options: PiCheckpointStoreOptions) {
+    this.#options = { ...options };
+  }
+
+  async publish(request: CheckpointPublication): Promise<PiCheckpointManifest> {
+    assertCheckpointFields(request);
+    await Promise.all([
+      mkdir(this.#options.chunksDirectory, { recursive: true }),
+      mkdir(this.#options.manifestsDirectory, { recursive: true }),
+    ]);
+    const bytes = Buffer.from(request.bytes);
+    const chunks = bytes.length === 0 ? [Buffer.alloc(0)] : Array.from(
+      { length: Math.ceil(bytes.length / CHECKPOINT_CHUNK_BYTES) },
+      (_, index) => bytes.subarray(index * CHECKPOINT_CHUNK_BYTES, (index + 1) * CHECKPOINT_CHUNK_BYTES),
+    );
+    const chunkIds = chunks.map(hashBytes);
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index]!;
+      const chunkId = chunkIds[index]!;
+      publishImmutableFile({
+        target: join(this.#options.chunksDirectory, chunkId),
+        materialize: stage => writeFileSync(stage, chunk),
+        validate: candidate => {
+          const actual = hashBytes(writeFileSafeRead(candidate));
+          if (actual !== chunkId) throw new Error("checkpoint-chunk-integrity-failed");
+        },
+      });
+    }
+    const body = {
+      schema: "pidex-pi-checkpoint-v1" as const,
+      sessionId: request.sessionId,
+      sourceCheckpointId: request.sourceCheckpointId,
+      workerGeneration: request.workerGeneration,
+      releaseGeneration: request.releaseGeneration,
+      piGeneration: request.piGeneration,
+      privateLeafId: request.privateLeafId,
+      privateFormatVersion: request.privateFormatVersion,
+      byteLength: bytes.length,
+      chunkIds,
+      publicationState: "published" as const,
+    };
+    const checkpointId = hashBytes(Buffer.from(JSON.stringify(body)));
+    const manifest: PiCheckpointManifest = { ...body, checkpointId };
+    const encoded = Buffer.from(JSON.stringify(manifest));
+    publishImmutableFile({
+      target: join(this.#options.manifestsDirectory, `${checkpointId}.json`),
+      materialize: stage => writeFileSync(stage, encoded),
+      validate: candidate => {
+        validateCheckpointManifest(JSON.parse(writeFileSafeRead(candidate).toString()), checkpointId);
+      },
+    });
+    return manifest;
+  }
+
+  async read(checkpointId: string): Promise<Buffer> {
+    const manifest = validateCheckpointManifest(JSON.parse(await readFile(
+      join(this.#options.manifestsDirectory, `${checkpointId}.json`), "utf8",
+    )), checkpointId);
+    const chunks = await Promise.all(manifest.chunkIds.map(async chunkId => {
+      const bytes = await readFile(join(this.#options.chunksDirectory, chunkId));
+      if (hashBytes(bytes) !== chunkId) throw new Error("checkpoint-chunk-integrity-failed");
+      return bytes;
+    }));
+    const bytes = Buffer.concat(chunks);
+    if (bytes.length !== manifest.byteLength) throw new Error("checkpoint-length-mismatch");
+    return bytes;
+  }
+
+  async fork(checkpointId: string, target: {
+    childSessionId: string; workerGeneration: number; releaseGeneration: string;
+  }): Promise<PiCheckpointManifest> {
+    const source = await this.#manifest(checkpointId);
+    return this.publish({
+      sessionId: target.childSessionId,
+      sourceCheckpointId: checkpointId,
+      workerGeneration: target.workerGeneration,
+      releaseGeneration: target.releaseGeneration,
+      piGeneration: source.piGeneration,
+      privateLeafId: source.privateLeafId,
+      privateFormatVersion: source.privateFormatVersion,
+      bytes: await this.read(checkpointId),
+    });
+  }
+
+  async migrate(checkpointId: string, target: {
+    sessionId: string; workerGeneration: number; releaseGeneration: string;
+    piGeneration: string; privateFormatVersion: number;
+    convert(bytes: Buffer): Promise<Uint8Array> | Uint8Array;
+  }): Promise<PiCheckpointManifest> {
+    const source = await this.#manifest(checkpointId);
+    const converted = await target.convert(await this.read(checkpointId));
+    return this.publish({
+      sessionId: target.sessionId,
+      sourceCheckpointId: checkpointId,
+      workerGeneration: target.workerGeneration,
+      releaseGeneration: target.releaseGeneration,
+      piGeneration: target.piGeneration,
+      privateLeafId: source.privateLeafId,
+      privateFormatVersion: target.privateFormatVersion,
+      bytes: converted,
+    });
+  }
+
+  async #manifest(checkpointId: string): Promise<PiCheckpointManifest> {
+    return validateCheckpointManifest(JSON.parse(await readFile(
+      join(this.#options.manifestsDirectory, `${checkpointId}.json`), "utf8",
+    )), checkpointId);
+  }
+}
 
 export interface ExactPiChildBinding {
   sessionId: string;
@@ -39,6 +182,10 @@ export interface ExactPiRunDependencies {
 export interface ExactPiRunResult {
   text: string;
   checkpoint: string;
+  /** Opaque private Pi state; only a configured checkpoint publisher may persist it. */
+  checkpointArtifact?: Uint8Array;
+  privateLeafId?: string;
+  privateFormatVersion?: number;
 }
 
 interface ToolResultContent {
@@ -107,7 +254,13 @@ export class ExactPiChild {
       const checkpoint = createHash("sha256")
         .update(JSON.stringify(session.messages))
         .digest("hex");
-      return { text, checkpoint };
+      return {
+        text,
+        checkpoint,
+        checkpointArtifact: Buffer.from(JSON.stringify(session.messages)),
+        privateLeafId: checkpoint,
+        privateFormatVersion: 1,
+      };
     } finally {
       unsubscribe?.();
       this.#running = false;
@@ -193,6 +346,7 @@ export interface ExactPiWorkerEndpointOptions {
   agentDir: string;
   bind?: (binding: ExactPiChildBinding) => Promise<BoundPiChild>;
   heartbeatIntervalMs?: number;
+  checkpointStore?: PiCheckpointStore;
 }
 
 /** Real child-side owner for one authenticated Session duplex generation. */
@@ -213,6 +367,7 @@ export class ExactPiWorkerEndpoint {
   }>();
   #heartbeat?: NodeJS.Timeout;
   #closed = false;
+  #releaseGeneration?: string;
 
   constructor(
     stream: Duplex,
@@ -247,6 +402,7 @@ export class ExactPiWorkerEndpoint {
       if (frame.piGeneration !== EXACT_PI_VERSION) {
         throw new Error("unsupported-pi-generation");
       }
+      this.#releaseGeneration = frame.releaseGeneration;
       const bind = this.#options.bind ?? ExactPiChild.bind;
       this.#child = await bind({
         sessionId: frame.sessionId,
@@ -321,15 +477,31 @@ export class ExactPiWorkerEndpoint {
       const result = await this.#child!.execute(frame.prompt, fact => {
         this.#send("fact", { correlationId: frame.correlationId, fact });
       });
+      let checkpointId = result.checkpoint;
+      let checkpointState: "exported" | "published" = "exported";
+      if (this.#options.checkpointStore && result.checkpointArtifact) {
+        const manifest = await this.#options.checkpointStore.publish({
+          sessionId: this.#identity.sessionId,
+          sourceCheckpointId: null,
+          workerGeneration: this.#identity.generation,
+          releaseGeneration: this.#releaseGeneration!,
+          piGeneration: EXACT_PI_VERSION,
+          privateLeafId: result.privateLeafId ?? result.checkpoint,
+          privateFormatVersion: result.privateFormatVersion ?? 1,
+          bytes: result.checkpointArtifact,
+        });
+        checkpointId = manifest.checkpointId;
+        checkpointState = "published";
+      }
       this.#send("checkpoint", {
         correlationId: frame.correlationId,
-        checkpointId: result.checkpoint,
-        state: "exported",
+        checkpointId,
+        state: checkpointState,
       });
       this.#send("outcome", {
         correlationId: frame.correlationId,
         outcome: this.#stopRequested ? "cancelled" : "completed",
-        checkpointId: result.checkpoint,
+        checkpointId,
       });
     } catch (cause) {
       this.#sendFault(cause, frame.correlationId);
@@ -430,6 +602,36 @@ function assertValidBinding(binding: ExactPiChildBinding): void {
   if (!hasValidIdentity || !hasValidGeneration) {
     throw new Error("invalid-pi-child-binding");
   }
+}
+
+function hashBytes(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function writeFileSafeRead(path: string): Buffer {
+  return readFileSync(path);
+}
+
+function assertCheckpointFields(request: CheckpointPublication): void {
+  if (
+    !request.sessionId || !request.releaseGeneration || !request.piGeneration ||
+    !request.privateLeafId || !Number.isSafeInteger(request.workerGeneration) ||
+    request.workerGeneration < 0 || !Number.isSafeInteger(request.privateFormatVersion) ||
+    request.privateFormatVersion < 0
+  ) throw new Error("invalid-checkpoint-publication");
+}
+
+function validateCheckpointManifest(value: unknown, expectedId: string): PiCheckpointManifest {
+  if (!value || typeof value !== "object") throw new Error("invalid-checkpoint-manifest");
+  const manifest = value as PiCheckpointManifest;
+  const { checkpointId, ...body } = manifest;
+  if (
+    manifest.schema !== "pidex-pi-checkpoint-v1" || checkpointId !== expectedId ||
+    manifest.publicationState !== "published" || !Array.isArray(manifest.chunkIds) ||
+    manifest.chunkIds.length === 0 || manifest.chunkIds.some(id => !/^[a-f0-9]{64}$/.test(id)) ||
+    hashBytes(Buffer.from(JSON.stringify(body))) !== checkpointId
+  ) throw new Error("invalid-checkpoint-manifest");
+  return manifest;
 }
 
 function translateTimelineEvent(
