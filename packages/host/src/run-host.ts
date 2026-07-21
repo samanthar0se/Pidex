@@ -11,6 +11,11 @@ export async function runHost(
   adapterMode: AdapterMode,
   certificateProvisioner?: HostCertificateProvisioner,
 ): Promise<void> {
+  if (adapterMode === "product") {
+    throw new Error(
+      "product Host startup requires the verified manifest composition root",
+    );
+  }
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
   const port = Number(process.env.PIDEX_PORT ?? 7443);
   const hostname =

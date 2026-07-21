@@ -5,8 +5,9 @@ import {
 
 export type HealthScope =
   | "local-control" | "authority" | "lan" | "tls-origin" | "firewall"
-  | "private-interfaces" | "mdns" | "pi-configuration" | "durability-coverage"
-  | "optional-capabilities" | `session:${string}`;
+  | "private-interfaces" | "mdns" | "pi-execution" | "pi-configuration"
+  | "durability-coverage" | "optional-capabilities"
+  | `session:${string}:artifact` | `session:${string}:worker`;
 export type Availability = "pending" | "available" | "degraded" | "unavailable" | "recovery-only";
 export type HealthFreshness = "current" | "stale";
 export type HealthSeverity = "info" | "warning" | "error" | "critical";
@@ -120,7 +121,13 @@ export interface ManifestHostFactories {
   openAuthenticatedLocalControl(manifest: ResolvedLaunchManifest): Promise<CompositionOwner>;
   verifyReleaseAndNativeIdentity(manifest: ResolvedLaunchManifest): Promise<void>;
   openAuthority(manifest: ResolvedLaunchManifest): Promise<AuthorityOwner>;
+  openDurability(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
+  openWindows(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
+  openModules(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
+  openLifecycle(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
+  openBackupRecovery(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
   probePi(manifest: ResolvedLaunchManifest): Promise<void>;
+  openPiSupervisor(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
   openLan(manifest: ResolvedLaunchManifest, health: HostHealthGraph): Promise<CompositionOwner>;
   openRunAdmission(manifest: ResolvedLaunchManifest): Promise<CompositionOwner>;
 }
@@ -155,8 +162,8 @@ export interface PortableManifestHost extends ManifestHost {
 
 const SCOPES: readonly HealthScope[] = [
   "local-control", "authority", "lan", "tls-origin", "firewall",
-  "private-interfaces", "mdns", "pi-configuration", "durability-coverage",
-  "optional-capabilities",
+  "private-interfaces", "mdns", "pi-execution", "pi-configuration",
+  "durability-coverage", "optional-capabilities",
 ];
 
 /**
@@ -226,14 +233,23 @@ async function composeValidatedManifestHost(
     owners.push(authority);
     health.set("authority", authority.mode === "normal" ? "available" : "recovery-only", authority.mode);
 
+    owners.push(await factories.openDurability(manifest, health));
+    owners.push(await factories.openWindows(manifest, health));
+    owners.push(await factories.openModules(manifest, health));
+    owners.push(await factories.openLifecycle(manifest, health));
+    owners.push(await factories.openBackupRecovery(manifest, health));
+
     if (authority.mode === "normal") {
       await factories.probePi(manifest);
       health.set("pi-configuration", "available", "static-probe-passed");
+      owners.push(await factories.openPiSupervisor(manifest, health));
+      health.set("pi-execution", "available", "supervisor-ready");
       owners.push(await factories.openLan(manifest, health));
       health.set("lan", "available", "edge-open");
       owners.push(await factories.openRunAdmission(manifest));
     } else {
       health.set("lan", "unavailable", "authority-recovery-only", "Complete local Authority recovery");
+      health.set("pi-execution", "unavailable", "authority-recovery-only");
       health.set("pi-configuration", "unavailable", "authority-recovery-only");
     }
 
@@ -255,8 +271,9 @@ async function composeValidatedManifestHost(
 function assertCompleteFactories(factories: ManifestHostFactories): void {
   for (const component of [
     "proveLauncherContainment", "openAuthenticatedLocalControl",
-    "verifyReleaseAndNativeIdentity", "openAuthority", "probePi", "openLan",
-    "openRunAdmission",
+    "verifyReleaseAndNativeIdentity", "openAuthority", "openDurability",
+    "openWindows", "openModules", "openLifecycle", "openBackupRecovery",
+    "probePi", "openPiSupervisor", "openLan", "openRunAdmission",
   ] as const) {
     if (typeof factories[component] !== "function") {
       throw new Error(`missing production composition component: ${component}`);

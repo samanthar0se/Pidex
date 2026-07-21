@@ -45,7 +45,13 @@ function createCompleteManifestHostFactories(): ManifestHostFactories {
     openAuthenticatedLocalControl: async () => owner(),
     verifyReleaseAndNativeIdentity: async () => {},
     openAuthority: async () => ({ mode: "normal", ...owner() }),
+    openDurability: async () => owner(),
+    openWindows: async () => owner(),
+    openModules: async () => owner(),
+    openLifecycle: async () => owner(),
+    openBackupRecovery: async () => owner(),
     probePi: async () => {},
+    openPiSupervisor: async () => owner(),
     openLan: async () => owner(),
     openRunAdmission: async () => owner(),
   };

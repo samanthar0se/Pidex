@@ -7,6 +7,7 @@ import {
   type HealthFinding,
   type ManifestHostFactories,
 } from "../packages/host/src/daemon-composition.js";
+import { runHost } from "../packages/host/src/run-host.js";
 
 const hash = "a".repeat(64);
 const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
@@ -41,6 +42,14 @@ function recordingFactories(
   authorityMode: "normal" | "recovery-only",
 ): ManifestHostFactories {
   const owner = () => ({ close: async () => {} });
+  const requiredOwners = {
+    openDurability: async () => { calls.push("durability"); return owner(); },
+    openWindows: async () => { calls.push("windows"); return owner(); },
+    openPiSupervisor: async () => { calls.push("pi-supervisor"); return owner(); },
+    openLifecycle: async () => { calls.push("lifecycle"); return owner(); },
+    openBackupRecovery: async () => { calls.push("backup-recovery"); return owner(); },
+    openModules: async () => { calls.push("modules"); return owner(); },
+  };
   return {
     proveLauncherContainment: async () => { calls.push("containment"); },
     openAuthenticatedLocalControl: async () => {
@@ -61,6 +70,7 @@ function recordingFactories(
       calls.push("runs");
       return owner();
     },
+    ...requiredOwners,
   };
 }
 
@@ -71,7 +81,10 @@ test("manifest Host proves containment and local control before opening Authorit
     recordingFactories(calls, "normal"),
   );
 
-  assert.deepEqual(calls, ["containment", "control", "release", "authority", "pi", "lan", "runs"]);
+  assert.deepEqual(calls, [
+    "containment", "control", "release", "authority", "durability", "windows",
+    "modules", "lifecycle", "backup-recovery", "pi", "pi-supervisor", "lan", "runs",
+  ]);
   assert.equal(host.health.scope("authority").availability, "available");
   await host.close();
 });
@@ -83,10 +96,14 @@ test("recovery-only Authority keeps authenticated local recovery open without LA
     recordingFactories(calls, "recovery-only"),
   );
 
-  assert.deepEqual(calls, ["containment", "control", "release", "authority"]);
+  assert.deepEqual(calls, [
+    "containment", "control", "release", "authority", "durability", "windows",
+    "modules", "lifecycle", "backup-recovery",
+  ]);
   assert.equal(host.mode, "recovery-only");
   assert.equal(host.health.scope("local-control").availability, "available");
   assert.equal(host.health.scope("lan").availability, "unavailable");
+  assert.equal(host.health.scope("pi-execution").availability, "unavailable");
   await host.close();
 });
 
@@ -99,6 +116,13 @@ test("product composition cannot select deterministic manifests", async () => {
   await assert.rejects(
     composeManifestHost(deterministic, {} as never),
     /real resolved launch manifest/,
+  );
+});
+
+test("direct product startup cannot bypass the manifest-only composition root", async () => {
+  await assert.rejects(
+    runHost("product"),
+    /product Host startup requires the verified manifest composition root/,
   );
 });
 
@@ -146,7 +170,7 @@ test("Session generation findings are independent and preserve observation histo
   health.set("authority", "available", "normal");
   const workerGenerationLost = {
     code: "worker-generation-lost",
-    scope: "session:one",
+    scope: "session:one:worker",
     stage: "worker",
     severity: "error",
     availability: "unavailable",
@@ -169,8 +193,8 @@ test("Session generation findings are independent and preserve observation histo
   });
 
   assert.equal(health.scope("authority").availability, "available");
-  assert.deepEqual(health.scope("session:one"), {
-    scope: "session:one",
+  assert.deepEqual(health.scope("session:one:worker"), {
+    scope: "session:one:worker",
     availability: "unavailable",
     freshness: "stale",
     code: "worker-generation-lost",

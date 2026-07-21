@@ -9,7 +9,6 @@ import {
   sessionReadStateResourceId,
 } from "../../../apps/pwa/read-state.mjs";
 import {
-  adaptersFor,
   executePidexFirewallOperation,
   type HostAdapters,
   type PiPresentationEffect,
@@ -226,7 +225,7 @@ export interface HostOptions {
   /** Overrides packaged certificate provisioning, for example during development. */
   certificateProvisioner?: HostCertificateProvisioner;
   port?: number;
-  adapters?: HostAdapters;
+  adapters: HostAdapters;
   hostname?: string;
   label?: string;
   authorization?: string;
@@ -279,7 +278,7 @@ export interface StartedHost {
 }
 
 export async function startHost(options: HostOptions): Promise<StartedHost> {
-  const adapters = options.adapters ?? adaptersFor("product");
+  const adapters = options.adapters;
   // Refuse to advertise or accept authority until the exact worker generation
   // has proved the daily-driver semantic baseline.
   const workerCapabilities = await PiSessionWorker.probe(adapters.pi);
