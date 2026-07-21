@@ -101,11 +101,11 @@ export async function prepareSourceInstance(
   if (!state) {
     const tls = await options.createTlsMaterial();
     const caPath = join(sourceRoot, "tls", "pidex-ca.pem");
-    writeFileSync(join(sourceRoot, "control", "control.key"), randomBytes(32), { flag: "wx", mode: 0o600 });
-    writeFileSync(caPath, tls.caCertificate, { flag: "wx", mode: 0o600 });
-    writeFileSync(join(sourceRoot, "tls", "pidex-ca-key.pem"), tls.caPrivateKey, { flag: "wx", mode: 0o600 });
-    writeFileSync(join(sourceRoot, "tls", "host.pem"), tls.hostCertificate, { flag: "wx", mode: 0o600 });
-    writeFileSync(join(sourceRoot, "tls", "host-key.pem"), tls.hostPrivateKey, { flag: "wx", mode: 0o600 });
+    writePrivateFileExclusive(join(sourceRoot, "control", "control.key"), randomBytes(32));
+    writePrivateFileExclusive(caPath, tls.caCertificate);
+    writePrivateFileExclusive(join(sourceRoot, "tls", "pidex-ca-key.pem"), tls.caPrivateKey);
+    writePrivateFileExclusive(join(sourceRoot, "tls", "host.pem"), tls.hostCertificate);
+    writePrivateFileExclusive(join(sourceRoot, "tls", "host-key.pem"), tls.hostPrivateKey);
     state = {
       schemaVersion: 1,
       instanceId: marker.instanceId,
@@ -175,7 +175,11 @@ function readJsonIfPresent<T>(path: string): T | undefined {
 }
 
 function writeJsonExclusive(path: string, value: unknown): void {
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+  writePrivateFileExclusive(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function writePrivateFileExclusive(path: string, value: string | Uint8Array): void {
+  writeFileSync(path, value, { flag: "wx", mode: 0o600 });
 }
 
 function sha256(bytes: Uint8Array): string {

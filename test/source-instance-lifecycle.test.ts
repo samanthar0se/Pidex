@@ -26,12 +26,12 @@ test("source prepare rejects a different elevation identity before filesystem or
         appContainer: false,
       },
       integrations: {
-        ensureCertificate: async () => { integrationCalls += 1; return matching(); },
-        ensureFirewallRule: async () => { integrationCalls += 1; return matching(); },
+        ensureCertificate: async () => { integrationCalls += 1; return matchingIntegrationResult(); },
+        ensureFirewallRule: async () => { integrationCalls += 1; return matchingIntegrationResult(); },
       },
       createTlsMaterial: async () => {
         integrationCalls += 1;
-        return { caCertificate: "certificate", caPrivateKey: "ca-key", hostCertificate: "host", hostPrivateKey: "host-key" };
+        return tlsMaterial();
       },
     }),
     /same owning Windows identity/i,
@@ -42,8 +42,12 @@ test("source prepare rejects a different elevation identity before filesystem or
   assert.equal(existsSync(profileDirectory), false);
 });
 
-function matching() {
+function matchingIntegrationResult() {
   return { changed: false, inspection: { state: "matches" as const, reasons: [] } };
+}
+
+function tlsMaterial() {
+  return { caCertificate: "certificate", caPrivateKey: "ca-key", hostCertificate: "host", hostPrivateKey: "host-key" };
 }
 
 test("source prepare is idempotent and copied markers intentionally resolve the same profile instance", async () => {
@@ -59,12 +63,12 @@ test("source prepare is idempotent and copied markers intentionally resolve the 
     profileDirectory,
     identity: validIdentity(),
     integrations: {
-      ensureCertificate: async () => { ensured.push("certificate"); return matching(); },
-      ensureFirewallRule: async () => { ensured.push("firewall"); return matching(); },
+      ensureCertificate: async () => { ensured.push("certificate"); return matchingIntegrationResult(); },
+      ensureFirewallRule: async () => { ensured.push("firewall"); return matchingIntegrationResult(); },
     },
     createTlsMaterial: async () => {
       tlsCreations += 1;
-      return { caCertificate: "certificate", caPrivateKey: "ca-key", hostCertificate: "host", hostPrivateKey: "host-key" };
+      return tlsMaterial();
     },
   });
 
@@ -102,8 +106,8 @@ test("source unprepare removes only exact trust and firewall integrations while 
   const profileDirectory = join(root, "profile");
   const removed: Array<{ kind: string; input: unknown }> = [];
   const integrations = {
-    ensureCertificate: async () => matching(),
-    ensureFirewallRule: async () => matching(),
+    ensureCertificate: async () => matchingIntegrationResult(),
+    ensureFirewallRule: async () => matchingIntegrationResult(),
     removeCertificate: async (input: unknown) => { removed.push({ kind: "certificate", input }); },
     removeFirewallRule: async (input: unknown) => { removed.push({ kind: "firewall", input }); },
   };
@@ -112,7 +116,7 @@ test("source unprepare removes only exact trust and firewall integrations while 
     profileDirectory,
     identity: validIdentity(),
     integrations,
-    createTlsMaterial: async () => ({ caCertificate: "certificate", caPrivateKey: "ca-key", hostCertificate: "host", hostPrivateKey: "host-key" }),
+    createTlsMaterial: async () => tlsMaterial(),
   });
 
   await unprepareSourceInstance({ checkoutDirectory, profileDirectory, identity: validIdentity(), integrations });
