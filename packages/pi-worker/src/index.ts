@@ -10,7 +10,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
+import type { Duplex } from "node:stream";
 import type { PiTimelineEvent } from "../../adapters/src/index.js";
+import {
+  SessionWorkerTransport,
+  type WorkerFrame,
+  type WorkerGenerationIdentity,
+} from "../../worker-protocol/src/index.js";
 
 export const EXACT_PI_VERSION = "0.80.10";
 
@@ -143,6 +149,125 @@ export class ExactPiChild {
     });
     this.#session = session;
     return this.#session;
+  }
+}
+
+interface BoundPiChild {
+  readonly binding: Readonly<ExactPiChildBinding>;
+  execute(
+    prompt: string,
+    onTimelineEvent?: (event: PiTimelineEvent) => void,
+  ): Promise<ExactPiRunResult>;
+  dispose(): Promise<void>;
+}
+
+export interface ExactPiWorkerEndpointOptions {
+  authenticationToken: string;
+  agentDir: string;
+  bind?: (binding: ExactPiChildBinding) => Promise<BoundPiChild>;
+  heartbeatIntervalMs?: number;
+}
+
+/** Real child-side owner for one authenticated Session duplex generation. */
+export class ExactPiWorkerEndpoint {
+  readonly #identity: WorkerGenerationIdentity;
+  readonly #options: ExactPiWorkerEndpointOptions;
+  readonly #transport: SessionWorkerTransport;
+  #child?: BoundPiChild;
+  #nextSequence = 0;
+  #work = Promise.resolve();
+  #heartbeat?: NodeJS.Timeout;
+  #closed = false;
+
+  constructor(
+    stream: Duplex,
+    identity: WorkerGenerationIdentity,
+    options: ExactPiWorkerEndpointOptions,
+  ) {
+    this.#identity = Object.freeze({ ...identity });
+    this.#options = options;
+    this.#transport = new SessionWorkerTransport(stream, identity, {
+      authenticationToken: options.authenticationToken,
+      onFrame: frame => {
+        this.#work = this.#work.then(() => this.#accept(frame)).catch(cause => {
+          this.#sendFault(cause);
+        });
+      },
+    });
+  }
+
+  async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#heartbeat) clearInterval(this.#heartbeat);
+    await this.#work;
+    await this.#child?.dispose();
+    this.#transport.close();
+  }
+
+  async #accept(frame: WorkerFrame): Promise<void> {
+    if (frame.type === "bootstrap") {
+      if (frame.piGeneration !== EXACT_PI_VERSION) {
+        throw new Error("unsupported-pi-generation");
+      }
+      const bind = this.#options.bind ?? ExactPiChild.bind;
+      this.#child = await bind({
+        sessionId: frame.sessionId,
+        workerId: frame.workerId,
+        generation: frame.generation,
+        cwd: frame.cwd,
+        agentDir: this.#options.agentDir,
+      });
+      this.#send("ready", {
+        capabilities: [
+          { id: "run.execute", version: 1 },
+          { id: "input.text", version: 1, constraints: { maximumBytes: 100_000 } },
+          { id: "model.select", version: 1 },
+          { id: "mode.select", version: 1 },
+          { id: "checkpoint.durable", version: 1 },
+        ],
+      });
+      const interval = this.#options.heartbeatIntervalMs ?? 10_000;
+      this.#heartbeat = setInterval(() => {
+        this.#send("heartbeat", { monotonicMs: Math.floor(performance.now()) });
+      }, interval);
+      this.#heartbeat.unref();
+      return;
+    }
+    if (frame.type !== "execute") return;
+    if (!this.#child) throw new Error("generation-not-ready");
+    const result = await this.#child.execute(frame.prompt, fact => {
+      this.#send("fact", { correlationId: frame.correlationId, fact });
+    });
+    this.#send("checkpoint", {
+      correlationId: frame.correlationId,
+      checkpointId: result.checkpoint,
+      state: "exported",
+    });
+    this.#send("outcome", {
+      correlationId: frame.correlationId,
+      outcome: "completed",
+      checkpointId: result.checkpoint,
+    });
+  }
+
+  #send(type: WorkerFrame["type"], body: Record<string, unknown>): void {
+    const frame = {
+      ...this.#identity,
+      type,
+      sequence: this.#nextSequence++,
+      ...body,
+    } as WorkerFrame;
+    this.#transport.send(frame);
+  }
+
+  #sendFault(cause: unknown): void {
+    if (this.#closed) return;
+    this.#send("fault", {
+      scope: this.#child ? "run" : "readiness",
+      code: cause instanceof Error ? cause.message : "worker-failed",
+      retryable: false,
+    });
   }
 }
 
