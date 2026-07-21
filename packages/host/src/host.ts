@@ -134,6 +134,11 @@ interface PwaAsset {
   cacheControl?: string;
 }
 
+interface ViteManifestEntry {
+  file: string;
+  css?: string[];
+}
+
 interface RunPresentationContext {
   client: WebSocket;
   invokingView?: ViewIdentity;
@@ -161,20 +166,45 @@ interface ClientDelivery {
   queue: OutboundMessage[];
 }
 
+const CLIENT_DIST = "apps/client/dist";
+const clientManifest = JSON.parse(
+  readFileSync(resolve(CLIENT_DIST, ".vite/manifest.json"), "utf8"),
+) as Record<string, ViteManifestEntry>;
+const clientEntry = clientManifest["index.html"];
+if (!clientEntry) {
+  throw new Error("production Client manifest has no index entry");
+}
+
 const PWA_ASSETS: Record<string, PwaAsset> = {
-  "/": { file: "apps/pwa/index.html", contentType: "text/html" },
-  "/app.js": { file: "apps/pwa/app.js", contentType: "text/javascript" },
-  "/browser-compatibility.mjs": {
-    file: "apps/pwa/browser-compatibility.mjs",
-    contentType: "text/javascript",
+  "/": {
+    file: `${CLIENT_DIST}/index.html`,
+    contentType: "text/html",
+    cacheControl: "no-cache",
   },
+  "/index.html": {
+    file: `${CLIENT_DIST}/index.html`,
+    contentType: "text/html",
+    cacheControl: "no-cache",
+  },
+  [`/${clientEntry.file}`]: {
+    file: `${CLIENT_DIST}/${clientEntry.file}`,
+    contentType: "text/javascript",
+    cacheControl: "public, max-age=31536000, immutable",
+  },
+  ...Object.fromEntries(
+    (clientEntry.css ?? []).map(file => [`/${file}`, {
+      file: `${CLIENT_DIST}/${file}`,
+      contentType: "text/css",
+      cacheControl: "public, max-age=31536000, immutable",
+    }]),
+  ),
   "/service-worker.js": {
-    file: "apps/pwa/service-worker.js",
+    file: `${CLIENT_DIST}/service-worker.js`,
     contentType: "text/javascript",
     cacheControl: "no-cache",
   },
   "/manifest.webmanifest": {
-    file: "apps/pwa/manifest.webmanifest",
+    file: `${CLIENT_DIST}/manifest.webmanifest`,
     contentType: "application/manifest+json",
   },
   "/icons/pidex-app-icon-white.png": {
