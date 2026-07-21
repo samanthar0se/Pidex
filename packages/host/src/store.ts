@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
 import type {
@@ -37,6 +37,10 @@ import {
 import { pendingDurabilityCoverage } from "./durability.js";
 import { initializeAuthoritySchema } from "./authority-schema.js";
 import { RunArtifactStore } from "./run-artifacts.js";
+import {
+  PiCheckpointPublisher,
+  type PiCheckpointExport,
+} from "../../durability/src/pi-checkpoints.js";
 
 export type { RunRecord, TimelineEntry } from "../../protocol/src/status.js";
 
@@ -333,12 +337,16 @@ export interface MaintenanceResult {
 export class AuthorityStore {
   readonly #db: DatabaseSync;
   readonly #runArtifacts: RunArtifactStore;
+  readonly #checkpointPublisher: PiCheckpointPublisher;
   readonly #storage: StorageFaultAdapter;
 
   constructor(path: string, adapters: HostAdapters, catalog: InitialCatalog = {}) {
     const dataDir = dirname(path);
     mkdirSync(dataDir, { recursive: true });
     this.#runArtifacts = new RunArtifactStore(dataDir);
+    this.#checkpointPublisher = new PiCheckpointPublisher(
+      join(dataDir, "checkpoints"),
+    );
     this.#storage = adapters.storage;
     this.#db = new DatabaseSync(path);
     initializeAuthoritySchema(this.#db);
@@ -1466,6 +1474,22 @@ export class AuthorityStore {
       .run(sessionId);
 
     return withdrawnInteractions;
+  }
+
+  /** Publish immutable bytes first, then atomically reference them and settle once. */
+  settleRunWithCheckpoint(
+    runId: string,
+    outcome: TerminalRun["state"],
+    text: string,
+    checkpoint: PiCheckpointExport,
+    now: number,
+  ): { run: TerminalRun; timeline: TimelineEntry[] } {
+    const run = this.loadRun(runId);
+    if (run.sessionId !== checkpoint.sessionId) {
+      throw new Error("checkpoint-session-mismatch");
+    }
+    const checkpointId = this.#checkpointPublisher.publish(checkpoint);
+    return this.settleRun(runId, outcome, text, checkpointId, now);
   }
 
   /** Publish immutable bytes first, then atomically reference them and settle once. */
