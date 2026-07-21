@@ -25,7 +25,6 @@ export interface ClientAdapters {
     write(sessionId: string, value: string): Promise<void>;
   };
   routing: { replace(path: string): void };
-  identity: { newId(): string; now(): number };
 }
 
 export interface ClientState {
@@ -33,7 +32,7 @@ export interface ClientState {
   sessions: Readonly<Record<string, SessionFact>>;
   timelines: Readonly<Record<string, readonly TimelineFact[]>>;
   drafts: Readonly<Record<string, string>>;
-  current: boolean;
+  isSessionCurrent: boolean;
   openSession(sessionId: string): Promise<void>;
   setDraft(value: string): Promise<void>;
 }
@@ -45,9 +44,9 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     sessions: {},
     timelines: {},
     drafts: {},
-    current: false,
+    isSessionCurrent: false,
     async openSession(sessionId) {
-      set({ selectedSessionId: sessionId, current: false });
+      set({ selectedSessionId: sessionId, isSessionCurrent: false });
       adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
       const [projection, draft] = await Promise.all([
         adapters.host.readSession(sessionId),
@@ -58,7 +57,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         sessions: { ...state.sessions, [sessionId]: projection.session },
         timelines: { ...state.timelines, [sessionId]: projection.timeline },
         drafts: { ...state.drafts, [sessionId]: draft },
-        current: true,
+        isSessionCurrent: true,
       }));
     },
     async setDraft(value) {

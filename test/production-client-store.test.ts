@@ -32,7 +32,6 @@ test("the Client resumes a routed Session from current Host facts and a Device d
       async write(sessionId, value) { drafts.set(sessionId, value); },
     },
     routing: { replace(path) { routed.push(path); } },
-    identity: { newId: () => "device_command_1", now: () => 1_234 },
   });
 
   await store.getState().openSession("session_one");

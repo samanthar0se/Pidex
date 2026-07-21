@@ -8,7 +8,7 @@ export function App() {
   const session = useStore(store, selectCurrentSession);
   const timeline = useStore(store, selectCurrentTimeline);
   const draft = useStore(store, selectDraft);
-  const current = useStore(store, state => state.current);
+  const isSessionCurrent = useStore(store, state => state.isSessionCurrent);
   useEffect(() => {
     const match = location.pathname.match(/^\/sessions\/([^/]+)$/);
     if (match) void store.getState().openSession(decodeURIComponent(match[1]));
@@ -16,7 +16,7 @@ export function App() {
   return <div className="shell">
     <aside><strong>PIDEX</strong><button><Plus size={16}/> New Session</button><nav>Chats</nav></aside>
     <main>
-      <header><button className="menu" aria-label="Open Session drawer"><Menu/></button><div><h1>{session?.name ?? "Pidex"}</h1><small>{current ? "Current" : "Reconciling current Host data"}</small></div></header>
+      <header><button className="menu" aria-label="Open Session drawer"><Menu/></button><div><h1>{session?.name ?? "Pidex"}</h1><small>{isSessionCurrent ? "Current" : "Reconciling current Host data"}</small></div></header>
       <section className="timeline" aria-label="Session Timeline">
         {timeline.map(entry => <article key={entry.entryId} data-kind={entry.kind}><small>{entry.kind}</small>{entry.text}</article>)}
       </section>
