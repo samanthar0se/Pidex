@@ -3,6 +3,7 @@ import { win32 } from "node:path";
 import { z } from "zod";
 
 const REAL_CANONICAL_PORT = 47831;
+const PINNED_PI_VERSION = "0.80.10";
 
 const sha256Schema = z
   .string()
@@ -320,11 +321,11 @@ function validateRuntimeCompatibility(
       "Pi generation/version mismatch",
     );
   }
-  if (manifest.runtimes.pi.version !== "0.80.10") {
+  if (manifest.runtimes.pi.version !== PINNED_PI_VERSION) {
     addValidationIssue(
       context,
       ["runtimes", "pi", "version"],
-      "Pi version must be exactly 0.80.10",
+      `Pi version must be exactly ${PINNED_PI_VERSION}`,
     );
   }
   if (manifest.runtimes.addonAbi !== `napi-${manifest.runtimes.nodeApi}`) {
@@ -401,46 +402,55 @@ export async function verifyImmutableClosure(
     ...Object.values(manifest.artifacts),
     manifest.closure.sbom,
   ];
-  const declared = new Map(
-    declaredArtifacts.map(artifact => [
+  const declaredArtifactsByPath = new Map(
+    declaredArtifacts.map((artifact) => [
       normalizeWindowsPath(artifact.path),
       artifact,
     ]),
   );
-  if (declared.size !== declaredArtifacts.length) {
+  if (declaredArtifactsByPath.size !== declaredArtifacts.length) {
     throw new Error("Closure contains duplicate declared paths");
   }
 
-  const actual = (await reader.listFiles()).map(path => ({
-    original: path,
-    normalized: normalizeWindowsPath(path),
+  const listedFiles = (await reader.listFiles()).map((path) => ({
+    originalPath: path,
+    normalizedPath: normalizeWindowsPath(path),
   }));
-  if (new Set(actual.map(file => file.normalized)).size !== actual.length) {
+  const listedPaths = new Set(
+    listedFiles.map((file) => file.normalizedPath),
+  );
+  if (listedPaths.size !== listedFiles.length) {
     throw new Error("Closure contains duplicate files");
   }
-  for (const path of declared.keys()) {
-    if (!actual.some(file => file.normalized === path)) {
+
+  for (const path of declaredArtifactsByPath.keys()) {
+    if (!listedPaths.has(path)) {
       throw new Error(`Closure file is missing: ${path}`);
     }
   }
-  for (const file of actual) {
-    if (!declared.has(file.normalized)) {
-      throw new Error(`Closure contains undeclared content: ${file.original}`);
+
+  const matchedFiles = listedFiles.map((file) => {
+    const declaredArtifact = declaredArtifactsByPath.get(file.normalizedPath);
+    if (declaredArtifact === undefined) {
+      throw new Error(
+        `Closure contains undeclared content: ${file.originalPath}`,
+      );
     }
-  }
+    return { ...file, declaredArtifact };
+  });
 
   const verifiedFiles: Array<{ path: string; sha256: string }> = [];
-  for (const file of actual.sort((left, right) =>
-    left.normalized.localeCompare(right.normalized)
+  for (const file of matchedFiles.sort((left, right) =>
+    left.normalizedPath.localeCompare(right.normalizedPath),
   )) {
-    if (!(await reader.isImmutable(file.original))) {
-      throw new Error(`Closure file is mutable: ${file.original}`);
+    if (!(await reader.isImmutable(file.originalPath))) {
+      throw new Error(`Closure file is mutable: ${file.originalPath}`);
     }
-    const digest = sha256(await reader.readFile(file.original));
-    if (digest !== declared.get(file.normalized)!.sha256) {
-      throw new Error(`Closure file hash mismatch: ${file.original}`);
+    const digest = sha256(await reader.readFile(file.originalPath));
+    if (digest !== file.declaredArtifact.sha256) {
+      throw new Error(`Closure file hash mismatch: ${file.originalPath}`);
     }
-    verifiedFiles.push({ path: file.normalized, sha256: digest });
+    verifiedFiles.push({ path: file.normalizedPath, sha256: digest });
   }
 
   const generations = {
@@ -461,7 +471,7 @@ export async function verifyImmutableClosure(
     closureSha256: sha256(Buffer.from(JSON.stringify(verifiedFiles))),
     node: { ...manifest.runtimes.node, nodeApi: manifest.runtimes.nodeApi },
     pi: {
-      version: "0.80.10",
+      version: PINNED_PI_VERSION,
       integrity: manifest.runtimes.pi.integrity,
     },
     addon: {

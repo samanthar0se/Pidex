@@ -8,6 +8,8 @@ import {
 } from "../packages/launch-manifest/src/index.js";
 
 const hash = "a".repeat(64);
+const closureFileHash =
+  "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
 const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
 
 function createManifestFixture(): unknown {
@@ -112,6 +114,42 @@ function createManifestFixture(): unknown {
   };
 }
 
+function createClosureVerificationFixture() {
+  const manifest = parseResolvedLaunchManifest(createManifestFixture());
+  const declaredArtifacts = [
+    ...Object.values(manifest.artifacts),
+    manifest.closure.sbom,
+  ];
+  const files = new Map(
+    declaredArtifacts.map((artifact) => [
+      artifact.path.toLowerCase(),
+      Buffer.from("x"),
+    ]),
+  );
+
+  for (const artifact of declaredArtifacts) {
+    artifact.sha256 = closureFileHash;
+  }
+  manifest.runtimes.node.sha256 = manifest.artifacts.node.sha256;
+
+  const createReader = (
+    overrides: Partial<ClosureReader> = {},
+  ): ClosureReader => ({
+    listFiles: async () => [...files.keys()],
+    readFile: async (path) => {
+      const contents = files.get(path.toLowerCase());
+      if (contents === undefined) {
+        throw new Error(`Test closure file not found: ${path}`);
+      }
+      return contents;
+    },
+    isImmutable: async () => true,
+    ...overrides,
+  });
+
+  return { createReader, files, manifest };
+}
+
 test("canonical serialization is independent of object key insertion order", () => {
   const manifest = parseResolvedLaunchManifest(createManifestFixture());
   const reorderedManifest = structuredClone(manifest);
@@ -158,27 +196,11 @@ test("the trust class must match the selected profile root", () => {
   assert.throws(() => parseResolvedLaunchManifest(manifest), /trust class/i);
 });
 
-test("immutable closure verification fails closed and emits reproducible lane evidence", async () => {
-  const manifest = parseResolvedLaunchManifest(createManifestFixture());
-  const declared = [
-    ...Object.values(manifest.artifacts),
-    manifest.closure.sbom,
-  ];
-  const files = new Map(
-    declared.map(artifact => [artifact.path.toLowerCase(), Buffer.from("x")]),
-  );
-  for (const artifact of declared) artifact.sha256 =
-    "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
-  manifest.runtimes.node.sha256 = manifest.artifacts.node.sha256;
+test("immutable closure verification emits reproducible evidence for both Node lanes", async () => {
+  const { createReader, manifest } = createClosureVerificationFixture();
+  const first = await verifyImmutableClosure(manifest, createReader());
+  const second = await verifyImmutableClosure(manifest, createReader());
 
-  const reader = (overrides: Partial<ClosureReader> = {}): ClosureReader => ({
-    listFiles: async () => [...files.keys()],
-    readFile: async path => files.get(path.toLowerCase())!,
-    isImmutable: async () => true,
-    ...overrides,
-  });
-  const first = await verifyImmutableClosure(manifest, reader());
-  const second = await verifyImmutableClosure(manifest, reader());
   assert.deepEqual(first, second);
   assert.equal(first.node.lane, "primary");
   assert.equal(first.pi.version, "0.80.10");
@@ -186,42 +208,120 @@ test("immutable closure verification fails closed and emits reproducible lane ev
   const secondary = structuredClone(manifest);
   secondary.runtimes.node.lane = "secondary";
   assert.equal(
-    (await verifyImmutableClosure(secondary, reader())).node.lane,
+    (await verifyImmutableClosure(secondary, createReader())).node.lane,
     "secondary",
   );
+});
 
+test("immutable closure verification rejects missing files", async () => {
+  const { createReader, manifest } = createClosureVerificationFixture();
   await assert.rejects(
-    verifyImmutableClosure(manifest, reader({ listFiles: async () => [] })),
+    verifyImmutableClosure(
+      manifest,
+      createReader({ listFiles: async () => [] }),
+    ),
     /missing/i,
   );
+});
+
+test("immutable closure verification rejects undeclared files", async () => {
+  const { createReader, files, manifest } = createClosureVerificationFixture();
   await assert.rejects(
-    verifyImmutableClosure(manifest, reader({
-      listFiles: async () => [...files.keys(), `${root}\\releases\\r1\\extra.dll`],
-    })),
+    verifyImmutableClosure(
+      manifest,
+      createReader({
+        listFiles: async () => [
+          ...files.keys(),
+          `${root}\\releases\\r1\\extra.dll`,
+        ],
+      }),
+    ),
     /undeclared/i,
   );
+});
+
+test("immutable closure verification rejects duplicate declared paths", async () => {
+  const { createReader, manifest } = createClosureVerificationFixture();
+  manifest.closure.sbom.path = manifest.artifacts.launcher.path;
+
   await assert.rejects(
-    verifyImmutableClosure(manifest, reader({ isImmutable: async () => false })),
+    verifyImmutableClosure(manifest, createReader()),
+    /duplicate declared paths/i,
+  );
+});
+
+test("immutable closure verification rejects duplicate listed files", async () => {
+  const { createReader, files, manifest } = createClosureVerificationFixture();
+
+  await assert.rejects(
+    verifyImmutableClosure(
+      manifest,
+      createReader({
+        listFiles: async () => [
+          ...files.keys(),
+          manifest.artifacts.launcher.path,
+        ],
+      }),
+    ),
+    /duplicate files/i,
+  );
+});
+
+test("immutable closure verification rejects mutable files", async () => {
+  const { createReader, manifest } = createClosureVerificationFixture();
+  await assert.rejects(
+    verifyImmutableClosure(
+      manifest,
+      createReader({ isImmutable: async () => false }),
+    ),
     /mutable/i,
   );
+});
+
+test("immutable closure verification rejects file hash mismatches", async () => {
+  const { createReader, manifest } = createClosureVerificationFixture();
   await assert.rejects(
-    verifyImmutableClosure(manifest, reader({ readFile: async () => Buffer.from("wrong") })),
+    verifyImmutableClosure(
+      manifest,
+      createReader({ readFile: async () => Buffer.from("wrong") }),
+    ),
     /hash/i,
   );
 });
 
-test("exact Pi, architecture, addon ABI, and generation lanes fail closed", () => {
-  const mutations: Array<[string, (manifest: ReturnType<typeof parseResolvedLaunchManifest>) => void]> = [
-    ["Pi", manifest => { manifest.runtimes.pi.version = "0.80.11"; }],
-    ["architecture", manifest => {
-      (manifest.runtimes.node as { architecture: string }).architecture = "arm64";
-    }],
-    ["Node-API", manifest => { manifest.runtimes.addonAbi = "napi-9"; }],
-    ["generation", manifest => { manifest.compatibility.schema = [2]; }],
-  ];
-  for (const [expected, mutate] of mutations) {
-    const manifest = parseResolvedLaunchManifest(createManifestFixture());
-    mutate(manifest);
-    assert.throws(() => parseResolvedLaunchManifest(manifest), new RegExp(expected, "i"));
-  }
+test("resolved manifests require Pi 0.80.10", () => {
+  const manifest = parseResolvedLaunchManifest(createManifestFixture());
+  manifest.runtimes.pi.version = "0.80.11";
+
+  assert.throws(() => parseResolvedLaunchManifest(manifest), /Pi/i);
+});
+
+test("resolved manifests require an x64 Node runtime", () => {
+  const manifest = parseResolvedLaunchManifest(createManifestFixture());
+  const invalidManifest = {
+    ...manifest,
+    runtimes: {
+      ...manifest.runtimes,
+      node: { ...manifest.runtimes.node, architecture: "arm64" },
+    },
+  };
+
+  assert.throws(
+    () => parseResolvedLaunchManifest(invalidManifest),
+    /architecture/i,
+  );
+});
+
+test("resolved manifests require the addon ABI to match Node-API", () => {
+  const manifest = parseResolvedLaunchManifest(createManifestFixture());
+  manifest.runtimes.addonAbi = "napi-9";
+
+  assert.throws(() => parseResolvedLaunchManifest(manifest), /Node-API/i);
+});
+
+test("resolved manifests require current generations in compatibility lanes", () => {
+  const manifest = parseResolvedLaunchManifest(createManifestFixture());
+  manifest.compatibility.schema = [2];
+
+  assert.throws(() => parseResolvedLaunchManifest(manifest), /generation/i);
 });
