@@ -60,6 +60,7 @@ test("forks stable history into an inert, independently scoped child with durabl
       undefined,
       "session_child",
       "stable",
+      "stable-child-genesis",
       5,
     ).session;
     assert.equal(child.parentSessionId, parent.sessionId);
@@ -87,6 +88,7 @@ test("forks stable history into an inert, independently scoped child with durabl
           null,
           "session_bad",
           "stable",
+          "stable-child-genesis-2",
           6,
         ),
       /unknown-project/,
@@ -100,6 +102,7 @@ test("forks stable history into an inert, independently scoped child with durabl
           undefined,
           "session_bad2",
           "wrong-runtime-proof",
+          "stable-child-genesis-3",
           6,
         ),
       /invalid-fork-point/,
@@ -141,6 +144,8 @@ test("fork command validates the runtime checkpoint and publishes the child sess
         childSessionId: string;
       }
     | undefined;
+  const bootstrapLifecycle: string[] = [];
+  let forkFailure: "publication" | null = null;
   const pi: PiAdapter = {
     ...baseAdapters.pi,
     forkCheckpoint: async (
@@ -149,7 +154,15 @@ test("fork command validates the runtime checkpoint and publishes the child sess
       childSessionId,
     ) => {
       forkRequest = { parentSessionId, checkpoint, childSessionId };
-      return checkpoint;
+      bootstrapLifecycle.push("bootstrap");
+      return {
+        publish: async () => {
+          bootstrapLifecycle.push("publish", "validate");
+          if (forkFailure === "publication") throw new Error("publication-interrupted");
+          return "sha256:" + "a".repeat(64);
+        },
+        close: async () => { bootstrapLifecycle.push("close"); },
+      };
     },
   };
   const host = await startHost({
@@ -231,6 +244,57 @@ test("fork command validates the runtime checkpoint and publishes the child sess
       checkpoint: `checkpoint:${parentSessionId}`,
       childSessionId: child.sessionId,
     });
+    assert.deepEqual(bootstrapLifecycle, [
+      "bootstrap", "publish", "validate", "close",
+    ]);
+    const childStore = new AuthorityStore(
+      join(dataDir, "authority.sqlite"),
+      baseAdapters,
+    );
+    assert.equal(
+      childStore.latestCheckpoint(child.sessionId),
+      "sha256:" + "a".repeat(64),
+    );
+    assert.equal(
+      childStore.latestCheckpoint(parentSessionId),
+      `checkpoint:${parentSessionId}`,
+    );
+    childStore.close();
+
+    forkFailure = "publication";
+    socket.send(JSON.stringify({
+      type: "session.fork", commandId: "fork-publication-failure",
+      parentSessionId, forkPointEntryId,
+    }));
+    const publicationFailure = await nextControlMessage(socket);
+    assert.equal(
+      publicationFailure.type === "command.outcome" && publicationFailure.outcome,
+      "rejected",
+    );
+    assert.equal(bootstrapLifecycle.at(-1), "close");
+
+    forkFailure = null;
+    baseAdapters.storage.beforeCommit = () => { throw new Error("commit-interrupted"); };
+    socket.send(JSON.stringify({
+      type: "session.fork", commandId: "fork-commit-failure",
+      parentSessionId, forkPointEntryId,
+    }));
+    const commitFailure = await nextControlMessage(socket);
+    assert.equal(
+      commitFailure.type === "command.outcome" && commitFailure.outcome,
+      "rejected",
+    );
+    assert.equal(bootstrapLifecycle.at(-1), "close");
+
+    const afterFailures = new AuthorityStore(
+      join(dataDir, "authority.sqlite"), adaptersFor("deterministic"),
+    );
+    assert.equal(afterFailures.projection().sessions.length, 2);
+    assert.equal(
+      afterFailures.latestCheckpoint(parentSessionId),
+      `checkpoint:${parentSessionId}`,
+    );
+    afterFailures.close();
   } finally {
     socket.close();
     await host.close();
