@@ -88,6 +88,10 @@ function resolvePreparedInstance(options: Pick<SourceLaunchOptions, "checkoutDir
   if (state.schemaVersion !== 1 || state.instanceId !== marker.instanceId || state.owningSid !== options.owningSid) {
     throw new Error("source checkout is not prepared for the owning Windows identity");
   }
+  const preparation = readJson<Marker>(join(sourceRoot, "prepared.json"));
+  if (preparation.schemaVersion !== 1 || preparation.instanceId !== marker.instanceId) {
+    throw new Error("source checkout is not prepared");
+  }
   return { sourceRoot, launcherDirectory: join(sourceRoot, "launcher") };
 }
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { publishImmutableSourceClosure, type SourceClosureFile } from "../packages/source/src/source-closure.js";
-import { prepareSourceInstance } from "../packages/source/src/source-instance.js";
+import { prepareSourceInstance, unprepareSourceInstance } from "../packages/source/src/source-instance.js";
 import { startSourceRelease, updateSourceRelease, rollbackSourceRelease } from "../packages/source/src/source-launch.js";
 
 const owningSid = "S-1-5-21-100";
@@ -116,4 +116,45 @@ test("update cannot replace the stable launcher while it is running", async () =
     runtime: { isLauncherStopped: async () => false, inspectCanonicalOrigin: async () => assert.fail("must not inspect"), invokeStableLauncher: async () => assert.fail("must not invoke") },
   }), /only while stopped/i);
   assert.equal(existsSync(join(prepared.sourceRoot, "launcher", "pidex-launcher.exe")), false);
+});
+
+test("unprepared source cannot start until re-prepare restores integration without replacing durable state", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pidex-source-launch-"));
+  const checkoutDirectory = join(root, "checkout");
+  const profileDirectory = join(root, "profile");
+  const integrations = {
+    ensureCertificate: async () => ({ changed: false, inspection: { state: "matches" as const, reasons: [] } }),
+    ensureFirewallRule: async () => ({ changed: false, inspection: { state: "matches" as const, reasons: [] } }),
+    removeCertificate: async () => {},
+    removeFirewallRule: async () => {},
+  };
+  const sourceOptions = {
+    checkoutDirectory,
+    profileDirectory,
+    identity: { owningSid, tokenSid: owningSid, administrator: true, elevated: true, appContainer: false },
+    integrations,
+  };
+  const prepared = await prepareSourceInstance({
+    ...sourceOptions,
+    createTlsMaterial: async () => ({ caCertificate: "ca", caPrivateKey: "ca-key", hostCertificate: "host", hostPrivateKey: "host-key" }),
+  });
+  const release = publishImmutableSourceClosure({ releasesDirectory: join(prepared.sourceRoot, "releases"), plan: plan("durable") });
+  const controlKey = readFileSync(join(prepared.sourceRoot, "control", "control.key"));
+  const invocations: string[] = [];
+  const runtime = {
+    isLauncherStopped: async () => true,
+    inspectCanonicalOrigin: async () => "available" as const,
+    invokeStableLauncher: async (_launcher: string, releaseId: string) => { invocations.push(releaseId); },
+  };
+
+  await unprepareSourceInstance(sourceOptions);
+  await assert.rejects(startSourceRelease({ checkoutDirectory, profileDirectory, owningSid, releaseDirectory: release.directory, runtime }), /not prepared/i);
+  await prepareSourceInstance({
+    ...sourceOptions,
+    createTlsMaterial: async () => assert.fail("re-prepare must retain TLS material"),
+  });
+  await startSourceRelease({ checkoutDirectory, profileDirectory, owningSid, releaseDirectory: release.directory, runtime });
+
+  assert.deepEqual(readFileSync(join(prepared.sourceRoot, "control", "control.key")), controlKey);
+  assert.deepEqual(invocations, [release.releaseId]);
 });

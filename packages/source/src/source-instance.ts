@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -117,6 +118,10 @@ export async function prepareSourceInstance(
 
   await options.integrations.ensureCertificate(certificateIntegration(sourceRoot, state));
   await options.integrations.ensureFirewallRule(firewallIntegration(state.instanceId));
+  const preparationPath = join(sourceRoot, "prepared.json");
+  const preparation = readJsonIfPresent<SourceMarker>(preparationPath);
+  if (preparation) validatePreparedMarker(preparation, state.instanceId);
+  else writeJsonExclusive(preparationPath, { schemaVersion: 1, instanceId: state.instanceId } satisfies SourceMarker);
   return { instanceId: state.instanceId, sourceRoot, markerPath, created: !existingState };
 }
 
@@ -136,6 +141,9 @@ export async function unprepareSourceInstance(
   if (!options.integrations.removeCertificate || !options.integrations.removeFirewallRule) {
     throw new Error("source unprepare requires removal integrations");
   }
+  // Once integration removal begins, start must fail even if a native removal
+  // reports a partial failure. A later explicit prepare inspects and repairs it.
+  rmSync(join(sourceRoot, "prepared.json"), { force: true });
   await options.integrations.removeCertificate(certificateIntegration(sourceRoot, state));
   await options.integrations.removeFirewallRule(firewallIntegration(state.instanceId));
   return { instanceId: state.instanceId, sourceRoot, markerPath, created: false };
@@ -150,6 +158,11 @@ function assertSourceIdentity(identity: SourceExecutionIdentity): void {
 
 function validateMarker(marker: SourceMarker): void {
   if (marker.schemaVersion !== 1 || !/^[0-9a-f-]{36}$/i.test(marker.instanceId)) throw new Error("invalid source checkout marker");
+}
+
+function validatePreparedMarker(marker: SourceMarker, instanceId: string): void {
+  validateMarker(marker);
+  if (marker.instanceId !== instanceId) throw new Error("source preparation identity mismatch");
 }
 
 function validatePreparedState(state: PreparedState, instanceId: string, owningSid: string): void {
