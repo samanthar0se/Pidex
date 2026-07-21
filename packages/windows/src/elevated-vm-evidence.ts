@@ -93,16 +93,37 @@ export const requiredChecks = {
   ],
 } as const;
 
+type ScenarioName = keyof typeof requiredChecks;
+
+interface ElevatedWindowsVmScenarioOutput {
+  artifactSha256: string;
+  passedChecks?: readonly string[];
+  observedIdentity?: ObservedWindowsLaneIdentity;
+  secondarySoak?: SecondarySoakObservation;
+}
+
 export interface ElevatedWindowsVmScenario {
-  name: keyof typeof requiredChecks;
-  run(context: ElevatedWindowsVmContext): Promise<{
-    artifactSha256: string;
-    passedChecks?: readonly string[];
-    observedIdentity?: ObservedWindowsLaneIdentity;
-    secondarySoak?: SecondarySoakObservation;
-  }>;
+  name: ScenarioName;
+  run(context: ElevatedWindowsVmContext): Promise<ElevatedWindowsVmScenarioOutput>;
   cleanup(context: ElevatedWindowsVmContext): Promise<void>;
 }
+
+interface ScenarioPolicy {
+  lane?: WindowsNodeLane["lane"];
+  validate?(output: ElevatedWindowsVmScenarioOutput): void;
+}
+
+const scenarioPolicies: Record<ScenarioName, ScenarioPolicy> = {
+  "native-capabilities": {},
+  "two-checkout-source-lifecycle": {},
+  "launcher-cli-maintenance-states": {},
+  "secondary-readiness-and-soak": {
+    lane: "secondary",
+    validate(output) {
+      assertSecondarySoak(output.secondarySoak);
+    },
+  },
+};
 
 type EvidenceStatus = "passed" | "failed" | "incomplete";
 
@@ -145,7 +166,8 @@ export class ElevatedWindowsVmCampaign {
     for (const lane of this.candidate.nodeLanes) {
       const results: ScenarioEvidence[] = [];
       for (const scenario of this.scenarios) {
-        if (scenario.name === "secondary-readiness-and-soak" && lane.lane === "primary") continue;
+        const policy = scenarioPolicies[scenario.name];
+        if (policy.lane && policy.lane !== lane.lane) continue;
         const context = { candidate: this.candidate.candidate, lane, vm: input.vm };
         let result: ScenarioEvidence;
         try {
@@ -156,7 +178,7 @@ export class ElevatedWindowsVmCampaign {
           // must enumerate every observable gate rather than report one aggregate success.
           if (missing.length > 0) throw new Error(`scenario missing required checks: ${missing.join(", ")}`);
           assertIdentity(output.observedIdentity, this.candidate.identities, lane);
-          if (scenario.name === "secondary-readiness-and-soak") assertSecondarySoak(output.secondarySoak);
+          policy.validate?.(output);
           result = { name: scenario.name, status: "passed", artifactSha256: output.artifactSha256 };
         } catch (error) {
           result = { name: scenario.name, status: "failed", failure: coarseFailure(error) };

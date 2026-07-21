@@ -22,6 +22,20 @@ const candidate = {
   },
 };
 
+const passingSecondarySoak = {
+  readinessObservations: 20,
+  wakeObservations: 20,
+  durationMinutes: 30,
+  residentSessions: 4,
+  executingSessions: 2,
+  maxHostRssMiB: 300,
+  maxWorkerRssMiB: 300,
+  quiescentCpuPercent: 1,
+  readinessSeconds: 15,
+  sleepingWorkerReadinessSeconds: 5,
+  monotonicallyGrowingHandles: false,
+};
+
 function passingScenario(
   name: ElevatedWindowsVmScenario["name"],
   artifactSha256: string,
@@ -35,12 +49,7 @@ function passingScenario(
         artifactSha256,
         passedChecks: requiredChecks[name],
         observedIdentity: { ...candidate.identities, nodeVersion: context.lane.version, nodeApi: context.lane.nodeApi },
-        secondarySoak: name === "secondary-readiness-and-soak" ? {
-          readinessObservations: 20, wakeObservations: 20, durationMinutes: 30,
-          residentSessions: 4, executingSessions: 2, maxHostRssMiB: 300,
-          maxWorkerRssMiB: 300, quiescentCpuPercent: 1, readinessSeconds: 15,
-          sleepingWorkerReadinessSeconds: 5, monotonicallyGrowingHandles: false,
-        } : undefined,
+        secondarySoak: passingSecondarySoak,
       };
     },
     async cleanup(context) {
