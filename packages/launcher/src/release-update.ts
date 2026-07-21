@@ -263,10 +263,12 @@ function assertPiArtifactCompatibility(
 ): void {
   if (heads.length === 0) return;
   const target = manifest.piArtifactGeneration;
-  const paths = manifest.piArtifactCompatibility ?? [];
+  const converterPaths = manifest.piArtifactCompatibility ?? [];
   const unsupported = heads.filter(head =>
     target === undefined || (head.generation !== target &&
-      !paths.some(path => path.from === head.generation && path.to === target)),
+      !converterPaths.some(converterPath =>
+        converterPath.from === head.generation && converterPath.to === target
+      )),
   );
   if (unsupported.length > 0) {
     throw new ReleaseUpdateError(

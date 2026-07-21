@@ -207,28 +207,18 @@ export interface PiArtifactMetadata {
 export class PiArtifactMigrationManager {
   constructor(readonly root: string) {}
 
-  /** Advances Host authority only after the copied target manifest is durable and validated. */
-  async wakeAndAdvance(
-    source: PiArtifactMetadata,
-    target: PiArtifactTarget,
-    worker: PiAdapter,
-    advanceUsableHead: (head: PiArtifactMetadata) => Promise<void> | void,
-  ): Promise<PiArtifactMetadata> {
-    const migrated = await this.wake(source, target, worker);
-    await advanceUsableHead(migrated);
-    return migrated;
-  }
-
   async wake(
     source: PiArtifactMetadata,
     target: PiArtifactTarget,
     worker: PiAdapter,
+    advanceUsableHead?: (head: PiArtifactMetadata) => Promise<void> | void,
   ): Promise<PiArtifactMetadata> {
     artifactSchema.parse(source);
     if (
       source.pidexVersion === target.pidexVersion &&
       source.piVersion === target.piVersion
     ) {
+      await advanceUsableHead?.(source);
       return source;
     }
     if (!worker.migrateArtifact || !worker.flushCheckpoint) {
@@ -257,6 +247,7 @@ export class PiArtifactMigrationManager {
     const stagedPath = join(directory, `${randomUUID()}.stage`);
     copyFileSync(sourcePath, stagedPath);
 
+    let migrated: PiArtifactMetadata;
     try {
       const result = await worker.migrateArtifact({
         ...target,
@@ -295,11 +286,14 @@ export class PiArtifactMigrationManager {
       writeFileSync(manifestPath, JSON.stringify(metadata), { flag: "wx" });
       flushPath(manifestPath);
       flushPath(directory);
-      return metadata;
+      migrated = metadata;
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
       throw new MigrationError("artifact-migration-failed", message);
     }
+
+    await advanceUsableHead?.(migrated);
+    return migrated;
   }
 }
 

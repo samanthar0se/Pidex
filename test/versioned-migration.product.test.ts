@@ -75,7 +75,7 @@ test("authority migration validates a new generation before atomic activation an
   }
 });
 
-test("Pi artifacts migrate lazily by copy and a typed failure leaves source and other history readable", async () => {
+test("Pi artifacts migrate by copy, advance the usable head only on success, and preserve source history on failure", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-pi-migration-"));
   try {
     await mkdir(join(root, "artifacts", "source"), { recursive: true });
@@ -98,7 +98,7 @@ test("Pi artifacts migrate lazily by copy and a typed failure leaves source and 
       },
       flushCheckpoint: async (_session, checkpoint) => checkpoint,
     };
-    const migrated = await manager.wakeAndAdvance(
+    const migrated = await manager.wake(
       source,
       { pidexVersion: "0.2", piVersion: "pi-new" },
       worker,
@@ -118,7 +118,7 @@ test("Pi artifacts migrate lazily by copy and a typed failure leaves source and 
       },
     };
     await assert.rejects(
-      manager.wakeAndAdvance(
+      manager.wake(
         { ...source, sessionId: "broken" },
         { pidexVersion: "0.3", piVersion: "pi-bad" },
         failingWorker,
