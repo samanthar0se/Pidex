@@ -3,6 +3,7 @@ import test from "node:test";
 import { parseResolvedLaunchManifest } from "../packages/launch-manifest/src/index.js";
 import {
   composeManifestHost,
+  HostHealthGraph,
   type ManifestHostFactories,
 } from "../packages/host/src/daemon-composition.js";
 
@@ -98,4 +99,90 @@ test("product composition cannot select deterministic manifests", async () => {
     composeManifestHost(deterministic, {} as never),
     /real resolved launch manifest/,
   );
+});
+
+test("a stable finding degrades only its decided service scope and can recover", () => {
+  const health = new HostHealthGraph(["lan", "firewall"]);
+  health.set("lan", "available", "edge-open");
+  health.set("firewall", "available", "canonical-rule");
+
+  health.report({
+    code: "firewall-rule-drift",
+    scope: "firewall",
+    stage: "runtime",
+    severity: "warning",
+    availability: "degraded",
+    retryability: "manual",
+    remediation: "Repair the canonical Private-profile firewall rule",
+    observedAt: "2026-07-21T12:00:00.000Z",
+  });
+
+  assert.deepEqual(health.scope("firewall"), {
+    scope: "firewall",
+    availability: "degraded",
+    freshness: "current",
+    code: "firewall-rule-drift",
+    stage: "runtime",
+    severity: "warning",
+    retryability: "manual",
+    firstObservedAt: "2026-07-21T12:00:00.000Z",
+    latestObservedAt: "2026-07-21T12:00:00.000Z",
+    remediation: "Repair the canonical Private-profile firewall rule",
+  });
+  assert.equal(health.scope("lan").availability, "available");
+
+  health.resolve("firewall", "firewall-rule-drift");
+  assert.deepEqual(health.scope("firewall"), {
+    scope: "firewall",
+    availability: "available",
+    freshness: "current",
+    code: "canonical-rule",
+  });
+});
+
+test("Session generation findings are independent and preserve observation history", () => {
+  const health = new HostHealthGraph(["authority"]);
+  health.set("authority", "available", "normal");
+
+  health.report({
+    code: "worker-generation-lost",
+    scope: "session:one",
+    stage: "worker",
+    severity: "error",
+    availability: "unavailable",
+    retryability: "manual",
+    remediation: "Wake the Session to create a new worker generation",
+    observedAt: "2026-07-21T12:00:00.000Z",
+    releaseId: "r1",
+    configGeneration: 1,
+  });
+  health.report({
+    code: "worker-generation-lost",
+    scope: "session:one",
+    stage: "worker",
+    severity: "error",
+    availability: "unavailable",
+    retryability: "automatic",
+    remediation: "Retry worker generation readiness",
+    observedAt: "2026-07-21T12:00:30.000Z",
+    freshness: "stale",
+    releaseId: "r1",
+    configGeneration: 1,
+  });
+
+  assert.equal(health.scope("authority").availability, "available");
+  assert.deepEqual(health.scope("session:one"), {
+    scope: "session:one",
+    availability: "unavailable",
+    freshness: "stale",
+    code: "worker-generation-lost",
+    stage: "worker",
+    severity: "error",
+    retryability: "automatic",
+    firstObservedAt: "2026-07-21T12:00:00.000Z",
+    latestObservedAt: "2026-07-21T12:00:30.000Z",
+    releaseId: "r1",
+    configGeneration: 1,
+    remediation: "Retry worker generation readiness",
+  });
 });

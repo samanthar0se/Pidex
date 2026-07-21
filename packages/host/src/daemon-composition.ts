@@ -8,16 +8,48 @@ export type HealthScope =
   | "private-interfaces" | "mdns" | "pi-configuration" | "durability-coverage"
   | "optional-capabilities" | `session:${string}`;
 export type Availability = "pending" | "available" | "degraded" | "unavailable" | "recovery-only";
+export type HealthFreshness = "current" | "stale";
+export type HealthSeverity = "info" | "warning" | "error" | "critical";
+export type HealthRetryability = "automatic" | "manual" | "not-retryable";
 
 export interface HealthState {
   readonly scope: HealthScope;
   readonly availability: Availability;
+  readonly freshness: HealthFreshness;
   readonly code: string;
+  readonly stage?: string;
+  readonly severity?: HealthSeverity;
+  readonly retryability?: HealthRetryability;
+  readonly firstObservedAt?: string;
+  readonly latestObservedAt?: string;
+  readonly instanceId?: string;
+  readonly releaseId?: string;
+  readonly configGeneration?: number;
+  readonly evidence?: Readonly<Record<string, string | number | boolean>>;
+  readonly remediation?: string;
+}
+
+export interface HealthFinding {
+  readonly code: string;
+  readonly scope: HealthScope;
+  readonly stage: string;
+  readonly severity: HealthSeverity;
+  readonly availability: Availability;
+  readonly retryability: HealthRetryability;
+  readonly observedAt: string;
+  readonly freshness?: HealthFreshness;
+  readonly instanceId?: string;
+  readonly releaseId?: string;
+  readonly configGeneration?: number;
+  /** Redacted, bounded evidence only. */
+  readonly evidence?: Readonly<Record<string, string | number | boolean>>;
   readonly remediation?: string;
 }
 
 export class HostHealthGraph {
   readonly #states = new Map<HealthScope, HealthState>();
+  readonly #baselines = new Map<HealthScope, HealthState>();
+  readonly #findings = new Map<string, HealthState>();
   constructor(scopes: readonly HealthScope[]) {
     for (const scope of scopes) this.set(scope, "pending", "not-assessed");
   }
@@ -27,9 +59,50 @@ export class HostHealthGraph {
     return state;
   }
   states(): readonly HealthState[] { return [...this.#states.values()]; }
+  findings(): readonly HealthState[] { return [...this.#findings.values()]; }
   set(scope: HealthScope, availability: Availability, code: string, remediation?: string): void {
-    this.#states.set(scope, Object.freeze({ scope, availability, code, ...(remediation ? { remediation } : {}) }));
+    const state = Object.freeze({ scope, availability, freshness: "current" as const, code, ...(remediation ? { remediation } : {}) });
+    this.#baselines.set(scope, state);
+    if (![...this.#findings.values()].some(finding => finding.scope === scope)) this.#states.set(scope, state);
   }
+  report(finding: HealthFinding): void {
+    const key = findingKey(finding.scope, finding.code);
+    const existing = this.#findings.get(key);
+    if (!this.#baselines.has(finding.scope) && !finding.scope.startsWith("session:")) {
+      throw new Error(`unknown health scope: ${finding.scope}`);
+    }
+    if (!this.#baselines.has(finding.scope)) this.set(finding.scope, "available", "generation-ready");
+    const state: HealthState = Object.freeze({
+      scope: finding.scope,
+      availability: finding.availability,
+      freshness: finding.freshness ?? "current",
+      code: finding.code,
+      stage: finding.stage,
+      severity: finding.severity,
+      retryability: finding.retryability,
+      firstObservedAt: existing?.firstObservedAt ?? finding.observedAt,
+      latestObservedAt: finding.observedAt,
+      ...(finding.instanceId ? { instanceId: finding.instanceId } : {}),
+      ...(finding.releaseId ? { releaseId: finding.releaseId } : {}),
+      ...(finding.configGeneration !== undefined ? { configGeneration: finding.configGeneration } : {}),
+      ...(finding.evidence ? { evidence: Object.freeze({ ...finding.evidence }) } : {}),
+      ...(finding.remediation ? { remediation: finding.remediation } : {}),
+    });
+    this.#findings.set(key, state);
+    this.#states.set(finding.scope, state);
+  }
+  resolve(scope: HealthScope, code: string): void {
+    const key = findingKey(scope, code);
+    const finding = this.#findings.get(key);
+    if (!finding) return;
+    this.#findings.delete(key);
+    const remaining = [...this.#findings.values()].reverse().find(candidate => candidate.scope === finding.scope);
+    this.#states.set(finding.scope, remaining ?? this.#baselines.get(finding.scope)!);
+  }
+}
+
+function findingKey(scope: HealthScope, code: string): string {
+  return `${scope}\0${code}`;
 }
 
 export interface CompositionOwner { close(): Promise<void>; }
