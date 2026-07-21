@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_WORKER_FRAME_BYTES,
+  SessionGenerationLifecycle,
   SessionWorkerProtocol,
   WorkerGenerationFailure,
+  configGeneration,
   decodeWorkerFrame,
+  interactionId,
+  runCorrelationId,
 } from "../packages/worker-protocol/src/index.js";
 
 const identity = {
@@ -127,4 +131,57 @@ test("one protocol owner fails only its generation on identity, ordering, pressu
         error instanceof WorkerGenerationFailure && error.generation === 7,
     );
   }
+});
+
+test("a generation lifecycle cancels cooperatively and never replays uncertain work", () => {
+  const configA = configGeneration("config-a");
+  const run1 = runCorrelationId("run-1");
+  const lifecycle = new SessionGenerationLifecycle(identity, {
+    requiredCapabilities: ["run.execute", "input.text", "model.select", "mode.select", "checkpoint.durable"],
+  });
+  lifecycle.ready([
+    { id: "run.execute", version: 1 },
+    { id: "input.text", version: 1 },
+    { id: "model.select", version: 1 },
+    { id: "mode.select", version: 1 },
+    { id: "checkpoint.durable", version: 1 },
+    { id: "runtime.cancel", version: 1 },
+  ], configA);
+  lifecycle.execute(run1);
+  assert.equal(lifecycle.stop(run1), "requested");
+  lifecycle.settle(run1, "cancelled", "checkpoint-1");
+  assert.equal(lifecycle.runState, "cancelled");
+
+  assert.throws(() => lifecycle.execute(run1), /run-correlation-reused/);
+  assert.throws(() => lifecycle.configurationChanged(configGeneration("config-b")), /generation-replacement-required/);
+
+  const disconnectedLifecycle = new SessionGenerationLifecycle(identity);
+  disconnectedLifecycle.ready([{ id: "run.execute", version: 1 }], configA);
+  disconnectedLifecycle.execute(runCorrelationId("run-uncertain"));
+  disconnectedLifecycle.fail();
+  assert.equal(disconnectedLifecycle.runState, "interrupted");
+  assert.equal(disconnectedLifecycle.shouldReplay, false);
+});
+
+test("Interaction values require worker acknowledgement and generation loss withdraws them", () => {
+  const interaction1 = interactionId("interaction-1");
+  const interaction2 = interactionId("interaction-2");
+  const run1 = runCorrelationId("run-1");
+  const lifecycle = new SessionGenerationLifecycle(identity);
+  lifecycle.ready([
+    { id: "run.execute", version: 1 },
+    { id: "interaction.basic", version: 1 },
+  ], configGeneration("config-a"));
+  lifecycle.execute(run1);
+  lifecycle.openInteraction(interaction1, run1);
+  lifecycle.respondInteraction(interaction1);
+  assert.equal(lifecycle.interactionState(interaction1), "applying");
+  lifecycle.acknowledgeInteraction(interaction1);
+  assert.equal(lifecycle.interactionState(interaction1), "responded");
+
+  lifecycle.openInteraction(interaction2, run1);
+  lifecycle.respondInteraction(interaction2);
+  lifecycle.fail();
+  assert.equal(lifecycle.interactionState(interaction2), "withdrawn");
+  assert.throws(() => lifecycle.acknowledgeInteraction(interaction2), /interaction-not-applying/);
 });
