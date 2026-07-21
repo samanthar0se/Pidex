@@ -391,6 +391,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const webSocketServer = new WebSocketServer({ noServer: true });
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
+  const publishedReadStateRevisions = new Map<string, number>();
   const admittedCapabilityBasisByClient = new Map<WebSocket, Set<string>>();
   const scopedSessionIdsByClient = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
@@ -657,10 +658,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const revisionCompatible = Object.entries(
       request.resourceRevisions ?? {},
     ).every(
-      ([sessionId, expected]) =>
-        sessionId === "timeline" ||
-        sessionId.startsWith("timeline:") ||
-        sessionsById.get(sessionId)?.metadataRevision === expected,
+      ([resourceId, expected]) => {
+        if (resourceId === "timeline" || resourceId.startsWith("timeline:")) {
+          return true;
+        }
+        if (resourceId.startsWith("readState:")) {
+          return sessionsById.get(resourceId.slice("readState:".length))
+            ?.readState.readStateRevision === expected;
+        }
+        return sessionsById.get(resourceId)?.metadataRevision === expected;
+      },
     );
 
     if (basis?.compatible && protocolCompatible && revisionCompatible) {
@@ -1099,6 +1106,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         markReadOutcomeMessage(command.commandId, outcome),
       );
       if (result.kind === "accepted" && result.effect === "advanced") {
+        publishedReadStateRevisions.set(
+          command.sessionId,
+          result.readState.readStateRevision,
+        );
         const changeSet: ServerMessage = {
           type: "host.change-set",
           cursor: result.cursor,
@@ -1631,6 +1642,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function publishRunCompletion(sessionId: string, run: TerminalRun): void {
+    publishCanonicalReadState(sessionId);
     const message: ServerMessage = {
       type: "run.completed",
       run,
@@ -1788,6 +1800,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       });
       interactionResolvers.set(created.interaction.interactionId, resolve);
       publishTimelineChange(sessionId, created.timelineChange);
+      publishCanonicalReadState(sessionId);
       publishInteraction(created.interaction);
       scheduleInteractionDeadline(created.interaction);
     });
@@ -1884,6 +1897,31 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(socket, { type: "interaction.change", interaction });
       }
     }
+  }
+
+  function publishCanonicalReadState(sessionId: string): void {
+    const projection = store.projection();
+    const readState = [...projection.sessions, ...projection.archivedSessions]
+      .find(session => session.sessionId === sessionId)?.readState;
+    if (!readState) return;
+    if (
+      publishedReadStateRevisions.get(sessionId) ===
+      readState.readStateRevision
+    ) return;
+    const item = store.changesAfter(0).reverse().find(change =>
+      change.change.type === "session.read-state-changed" &&
+      change.change.sessionId === sessionId &&
+      change.change.readState.readStateRevision ===
+        readState.readStateRevision
+    );
+    if (!item) return;
+    publishedReadStateRevisions.set(sessionId, readState.readStateRevision);
+    const message: ServerMessage = {
+      type: "host.change-set",
+      cursor: item.cursor,
+      changes: [item.change],
+    };
+    for (const socket of admittedClients) sendServerMessage(socket, message);
   }
 
   function handleInteractionResolve(

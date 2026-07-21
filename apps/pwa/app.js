@@ -1,4 +1,8 @@
 import { assessBrowser, browserSemantics } from "./browser-compatibility.mjs";
+import {
+  installSessionReadState,
+  reconcileSessionReadState,
+} from "./read-state.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
 
@@ -10,7 +14,7 @@ const IDENTITY_STORE = "identity";
 const DRAFT_STORE = "drafts";
 const PREFERENCES_STORE = "preferences";
 const DEVICE_STORES = [IDENTITY_STORE, DRAFT_STORE, PREFERENCES_STORE];
-const PROTOCOL_BASIS = "1.1";
+const PROTOCOL_BASIS = "1.2";
 const MAX_CACHED_SESSION_PROJECTIONS = 10;
 const MAX_FINALIZED_PAGES = 25;
 const BYTES_PER_MEGABYTE = 1024 * 1024;
@@ -63,6 +67,7 @@ const supportedCapabilities = [
   "pi.input.text",
   "presentation.effects",
   "pi.interaction.basic",
+  "session.read-state",
 ];
 const state = {
   projects: [],
@@ -71,8 +76,10 @@ const state = {
   archivedSessions: [],
   capabilities: new Map(),
   scopes: new Map(),
+  readStates: new Map(),
   current: false,
-  pending: new Set(),
+  pending: new Map(),
+  optimisticReadStates: new Map(),
   apiToken: null,
   hostId: null,
   epoch: null,
@@ -133,7 +140,7 @@ function send(command) {
   }
 
   command.commandId ??= crypto.randomUUID();
-  state.pending.add(command.commandId);
+  state.pending.set(command.commandId, { ...command });
   socket.send(JSON.stringify(command));
   renderCurrentView();
   return true;
@@ -326,6 +333,7 @@ async function authenticateStoredDeviceOnce() {
 function openControl(token) {
   closeControlSocket();
   state.currentScopes.clear();
+  state.optimisticReadStates.clear();
   const controlSocket = new WebSocket(
     `wss://${location.host}/control?session=${encodeURIComponent(token)}`,
   );
@@ -423,7 +431,7 @@ async function handleMessage(message) {
       return;
     case "host.change-set":
       for (const change of message.changes) {
-        applyHostChange(change);
+        if (!applyHostChange(change)) return;
       }
       renderSidebar();
       renderCurrentView();
@@ -465,7 +473,7 @@ function sendClientHello(hostId) {
   socket.send(JSON.stringify({
     type: "client.hello",
     expectedHostId,
-    protocols: [{ major: 1, minor: 1 }],
+    protocols: [{ major: 1, minor: 2 }],
     capabilities: supportedCapabilities.map(id => ({
       id,
       minVersion: 1,
@@ -475,12 +483,16 @@ function sendClientHello(hostId) {
 }
 
 async function handleHostSnapshot(message) {
+  state.optimisticReadStates.clear();
+  state.scopes.clear();
+  state.readStates.clear();
   Object.assign(state, {
     projects: message.projects,
     workspaces: message.workspaces,
     sessions: message.sessions,
     archivedSessions: message.archivedSessions,
   });
+  if (!installCatalogReadStates()) return;
   state.hostId = message.status.hostId;
   state.epoch = message.status.synchronization.epoch;
   state.cursor = message.status.synchronization.cursor;
@@ -499,8 +511,19 @@ async function resetSessionScope(message) {
     ...(snapshot.timelineWindow?.entries || snapshot.timeline || []),
   ];
 
+  const candidate = snapshot.session?.readState;
+  const reconciliation = reconcileSessionReadState(
+    state,
+    scope.sessionId,
+    candidate,
+  );
+  if (reconciliation === "inconsistent" || reconciliation === "missing") {
+    forceAuthoritativeResynchronization();
+    return;
+  }
   state.scopes.set(scope.sessionId, {
     ...snapshot,
+    session: { ...snapshot.session, readState: state.readStates.get(scope.sessionId) },
     timeline,
     olderCursor: snapshot.timelineWindow?.olderCursor || null,
   });
@@ -512,6 +535,7 @@ async function resetSessionScope(message) {
 }
 
 async function handleScopeReset(message) {
+  state.optimisticReadStates.clear();
   if (message.barrier.scope.kind === "session") {
     await resetSessionScope(message);
     return;
@@ -524,6 +548,8 @@ async function handleScopeReset(message) {
 
 function installHostReset(message) {
   Object.assign(state, message.snapshot);
+  state.readStates.clear();
+  if (!installCatalogReadStates()) return;
   state.cursor = message.barrier.cursor;
   state.currentScopes.delete(HOST_SCOPE_KEY);
   renderCatalogControls();
@@ -577,7 +603,24 @@ function replaceOrAppend(items, replacement, identityProperty) {
 }
 
 function handleCommandOutcome(message) {
+  const command = state.pending.get(message.commandId);
   state.pending.delete(message.commandId);
+  if (command?.type === "session.mark-read") {
+    state.optimisticReadStates.delete(command.sessionId);
+    if (message.readState) {
+      const result = reconcileSessionReadState(
+        state,
+        command.sessionId,
+        message.readState,
+      );
+      if (result === "inconsistent" || result === "missing") {
+        forceAuthoritativeResynchronization();
+        return;
+      }
+    } else if (message.outcome === "rejected") {
+      forceAuthoritativeResynchronization();
+    }
+  }
   if (message.outcome === "rejected") {
     announce(`Command rejected: ${message.error}`);
   }
@@ -585,6 +628,23 @@ function handleCommandOutcome(message) {
 }
 
 function applyHostChange(change) {
+  if (change.type === "session.read-state-changed") {
+    const result = reconcileSessionReadState(
+      state,
+      change.sessionId,
+      change.readState,
+    );
+    if (result === "inconsistent" || result === "missing") {
+      forceAuthoritativeResynchronization();
+      return false;
+    }
+    const optimistic = state.optimisticReadStates.get(change.sessionId);
+    if (
+      optimistic &&
+      change.readState.readStateRevision > optimistic.observedReadStateRevision
+    ) state.optimisticReadStates.delete(change.sessionId);
+    return true;
+  }
   const changedSessionId = change.session.sessionId;
   state.sessions = state.sessions.filter(
     session => session.sessionId !== changedSessionId,
@@ -598,6 +658,31 @@ function applyHostChange(change) {
   } else {
     state.sessions.push(change.session);
   }
+  const result = installSessionReadState(state, change.session);
+  if (result === "inconsistent") {
+    forceAuthoritativeResynchronization();
+    return false;
+  }
+  return true;
+}
+
+function installCatalogReadStates() {
+  state.readStates.clear();
+  for (const session of sessionCatalog()) {
+    if (installSessionReadState(state, session) === "inconsistent") {
+      forceAuthoritativeResynchronization();
+      return false;
+    }
+  }
+  return true;
+}
+
+function forceAuthoritativeResynchronization() {
+  state.cursor = null;
+  state.currentScopes.clear();
+  state.optimisticReadStates.clear();
+  setCurrent(false, "Resynchronizing");
+  if (socket?.readyState === WebSocket.OPEN) sendScopeSet(currentSessionId());
 }
 
 function setCurrent(current, label) {
@@ -1273,6 +1358,7 @@ function scopeResourceRevisions(session) {
 
   const resourceRevisions = {
     [session.sessionId]: session.metadataRevision,
+    [`readState:${session.sessionId}`]: session.readState.readStateRevision,
   };
   const projection = state.scopes.get(session.sessionId);
   const timelineRevision = projection?.session?.timelineRevision;
@@ -1372,9 +1458,9 @@ async function writeWorkingSet(database, sessions) {
   );
   transaction.objectStore(CACHE_STORES.discovery).put({
     ...cacheBasis(HOST_SCOPE_KEY, Object.fromEntries(
-      sessions.map(session => [
-        session.sessionId,
-        session.metadataRevision,
+      sessions.flatMap(session => [
+        [session.sessionId, session.metadataRevision],
+        [`readState:${session.sessionId}`, session.readState.readStateRevision],
       ]),
     )),
     projects: state.projects,
@@ -1394,6 +1480,7 @@ async function writeWorkingSet(database, sessions) {
       ...cacheBasis(sessionScopeKey(sessionId), {
         metadata: projection.session?.metadataRevision,
         timeline: projection.session?.timelineRevision,
+        readState: projection.session?.readState?.readStateRevision,
       }),
       projection,
       lastViewed: state.lastSuccessfulSync,
@@ -1521,6 +1608,7 @@ async function loadCachedWorkingSet() {
         item.scope.slice(SESSION_SCOPE_PREFIX.length),
       item.projection,
     ]));
+    if (!installCatalogReadStates()) return;
     renderCatalogControls();
     route();
     setCurrent(false, OFFLINE_STATUS);

@@ -43,6 +43,19 @@ test("an accepted prompt completes durably and its receipt survives a Host resta
       accepted.type === "command.outcome" && accepted.outcome,
       "accepted",
     );
+    const readStateChanged = await nextControlMessage(socket);
+    assert.equal(readStateChanged.type, "host.change-set");
+    if (readStateChanged.type === "host.change-set") {
+      assert.deepEqual(readStateChanged.changes[0], {
+        type: "session.read-state-changed",
+        sessionId,
+        readState: {
+          readThroughTimelineRevision: 1,
+          readStatus: "unread",
+          readStateRevision: 2,
+        },
+      });
+    }
     const completed = await nextControlMessage(socket);
     assert.equal(completed.type, "run.completed");
     if (completed.type === "run.completed") {
