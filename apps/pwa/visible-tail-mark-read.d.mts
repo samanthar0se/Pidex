@@ -6,7 +6,7 @@ type TailPresentation = {
   foreground: boolean;
   tailVisible: boolean;
   online: boolean;
-  loading: boolean;
+  loading?: boolean;
 };
 
 export class VisibleTailMarkRead {

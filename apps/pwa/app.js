@@ -4,10 +4,8 @@ import {
   reconcileSessionReadState,
   sessionReadStateResourceId,
 } from "./read-state.mjs";
-import {
-  accessibleSessionStatus,
-  discoverSessions,
-} from "./session-discovery.mjs";
+import { accessibleSessionStatus } from "./accessible-session-status.mjs";
+import { discoverSessions } from "./session-discovery.mjs";
 import { VisibleTailMarkRead } from "./visible-tail-mark-read.mjs";
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -792,8 +790,7 @@ function renderSidebar() {
   const matchingSessions = discoverSessions(
     catalog.map(session => ({
       ...session,
-      name: `${session.name} ${sessionGroupName(session)}`,
-      displayName: session.name,
+      searchText: `${session.name} ${sessionGroupName(session)}`,
     })),
     { query, unreadOnly },
   );
@@ -826,14 +823,11 @@ function createSessionLink(session) {
     "aria-current",
     currentSessionId() === session.sessionId ? "page" : "false",
   );
-  link.append(document.createTextNode(session.displayName || session.name));
+  link.append(document.createTextNode(session.name));
 
   const status = accessibleSessionStatus(session, sessionAttention(session));
   if (status) {
-    link.setAttribute(
-      "aria-label",
-      `${session.displayName || session.name}, ${status}`,
-    );
+    link.setAttribute("aria-label", `${session.name}, ${status}`);
   }
 
   const cue = document.createElement("small");
@@ -990,7 +984,6 @@ function observeAuthoritativeTail(scope, tail) {
       foreground: !document.hidden,
       tailVisible: entries.some(entry => entry.isIntersecting),
       online: navigator.onLine && socket?.readyState === WebSocket.OPEN,
-      loading: false,
     });
     if (!command || !send(command)) return;
     state.optimisticReadStates.set(scope.session.sessionId, {

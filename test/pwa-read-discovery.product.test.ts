@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  accessibleSessionStatus,
-  discoverSessions,
-} from "../apps/pwa/session-discovery.mjs";
+import { accessibleSessionStatus } from
+  "../apps/pwa/accessible-session-status.mjs";
+import { discoverSessions } from "../apps/pwa/session-discovery.mjs";
 import { VisibleTailMarkRead } from "../apps/pwa/visible-tail-mark-read.mjs";
 
 test("unread discovery filters canonical available and archived catalogs without changing recency order", () => {
   const sessions = [
-    { sessionId: "older-unread", name: "Older", timelineRevision: 5,
+    { sessionId: "older-unread", searchText: "Older", timelineRevision: 5,
       readState: { readStatus: "unread" as const } },
-    { sessionId: "newer-read", name: "Newer", timelineRevision: 9,
+    { sessionId: "newer-read", searchText: "Newer", timelineRevision: 9,
       readState: { readStatus: "read" as const } },
-    { sessionId: "newer-unread", name: "Newest", timelineRevision: 12,
+    { sessionId: "newer-unread", searchText: "Newest", timelineRevision: 12,
       readState: { readStatus: "unread" as const } },
   ];
 
@@ -49,26 +48,23 @@ test("visible-tail acknowledgement uses the exact committed revision and exclude
     presentedTimelineRevision: 7, requiredCapabilityBasis: "1.2",
   });
   assert.equal(acknowledgements.command(eligible), undefined);
-  assert.equal(
-    acknowledgements.command({ ...eligible, presentedTimelineRevision: 8,
-      foreground: false }),
-    undefined,
-  );
-  assert.equal(
-    acknowledgements.command({ ...eligible, presentedTimelineRevision: 8,
-      online: false }),
-    undefined,
-  );
-  assert.equal(
-    acknowledgements.command({ ...eligible, presentedTimelineRevision: 8,
-      loading: true }),
-    undefined,
-  );
-  assert.equal(
-    acknowledgements.command({ ...eligible, presentedTimelineRevision: 8,
-      tailVisible: false }),
-    undefined,
-  );
+  const ineligiblePresentations = [
+    { condition: "background", override: { foreground: false } },
+    { condition: "offline", override: { online: false } },
+    { condition: "loading", override: { loading: true } },
+    { condition: "above the tail", override: { tailVisible: false } },
+  ];
+  for (const { condition, override } of ineligiblePresentations) {
+    assert.equal(
+      acknowledgements.command({
+        ...eligible,
+        presentedTimelineRevision: 8,
+        ...override,
+      }),
+      undefined,
+      `${condition} presentation must not create a command`,
+    );
+  }
   assert.equal(
     acknowledgements.command({ ...eligible, presentedTimelineRevision: 9 })
       ?.presentedTimelineRevision,
