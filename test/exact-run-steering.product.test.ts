@@ -18,7 +18,6 @@ test("steering is durable, idempotent, and cannot cross an execution boundary", 
   try {
     const session = store.createSession(null, null, 1).session;
     const submitted = store.submitRun(
-      "device",
       {
         commandId: "submit",
         sessionId: session.sessionId,
@@ -45,18 +44,16 @@ test("steering is durable, idempotent, and cannot cross an execution boundary", 
       observedTimelineRevision: revision,
       text: "also run tests",
     };
-    const accepted = store.acceptSteering("device", command, "worker-1", 3);
+    const accepted = store.acceptSteering(command, "worker-1", 3);
     assert.equal(accepted.kind, "accepted");
     const steeringEntry = store.timeline(session.sessionId).at(-1);
     assert.equal(steeringEntry?.kind, "steering");
     assert.equal(steeringEntry?.runId, submitted.run.runId);
     assert.equal(
-      store.acceptSteering("device", command, "worker-1", 4).kind,
+      store.acceptSteering(command, "worker-1", 4).kind,
       "replayed",
     );
-    const conflict = store.acceptSteering(
-      "another device",
-      { ...command, text: "different intent" },
+    const conflict = store.acceptSteering({ ...command, text: "different intent" },
       "worker-1",
       4,
     );
@@ -67,7 +64,6 @@ test("steering is durable, idempotent, and cannot cross an execution boundary", 
 
     store.settleRun(submitted.run.runId, "interrupted", "lost", null, 5);
     const stale = store.acceptSteering(
-      "device",
       {
         ...command,
         commandId: "late",

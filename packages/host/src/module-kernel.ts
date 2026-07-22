@@ -59,7 +59,6 @@ export interface ModuleManifest {
 
 export interface ModuleCommand<T = unknown> {
   commandId: string;
-  deviceId: string;
   kind: QualifiedName;
   target: ResourceId;
   capability: QualifiedName;
@@ -200,21 +199,15 @@ export class ModuleKernel {
     this.preserved.set(id, { kind, provenance, bytes: bytes.slice() });
   }
 
-  async dispatch(
-    command: ModuleCommand,
-    authenticatedDeviceId: string,
-  ): Promise<ModuleCommandResult> {
+  async dispatch(command: ModuleCommand): Promise<ModuleCommandResult> {
     if (!this.#isReady) {
       throw new Error("kernel is not ready");
-    }
-    if (command.deviceId !== authenticatedDeviceId) {
-      throw new Error("authentication mismatch");
     }
     if (this.unavailableKinds.has(resourceKindFromId(command.target))) {
       throw new Error("resource kind unavailable");
     }
 
-    const receipt = `${command.deviceId}/${command.commandId}`;
+    const receipt = command.commandId;
     const previousResult = this.#commandReceipts.get(receipt);
     if (previousResult) {
       return previousResult;
@@ -260,10 +253,7 @@ export class ModuleKernel {
    * Workers receive no store/runtime handle; they can only submit this
    * validated envelope to daemon dispatch.
    */
-  dispatchWorkerRequest(
-    request: WorkerActionRequest,
-    authenticatedDeviceId: string,
-  ): Promise<ModuleCommandResult> {
+  dispatchWorkerRequest(request: WorkerActionRequest): Promise<ModuleCommandResult> {
     if (
       !request.correlationId ||
       !request.sessionId ||
@@ -271,7 +261,7 @@ export class ModuleKernel {
     ) {
       throw new Error("invalid worker request");
     }
-    return this.dispatch(request.command, authenticatedDeviceId);
+    return this.dispatch(request.command);
   }
 }
 
@@ -286,7 +276,7 @@ function resourceKindFromId(id: ResourceId): QualifiedName {
 export const futureWorkspaceContracts = Object.freeze({
   terminalAndManagedProcess: "separate-host-owned-job",
   sessionRelationship: "provenance-only",
-  electron: "device-client",
+  electron: "browser-client",
   tunnel: "transport-adapter",
   thirdPartyLoader: false,
 } as const);

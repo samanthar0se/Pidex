@@ -24,7 +24,7 @@ test("Session authority persists milestones and serializes Host-global max mark-
     assert.deepEqual(session.readState, {
       readThroughTimelineRevision: 1, readStatus: "read", readStateRevision: 1,
     });
-    const submitted = store.submitRun("device-a", {
+    const submitted = store.submitRun({
       commandId: "run", sessionId: session.sessionId, prompt: "hello",
       requiredCapability: "run.submit",
     }, 2);
@@ -40,14 +40,14 @@ test("Session authority persists milestones and serializes Host-global max mark-
       commandId: "mark", sessionId: session.sessionId,
       presentedTimelineRevision: unread.timelineRevision, requiredCapabilityBasis: basis,
     };
-    const accepted = store.markSessionRead("device-a", command, 4);
+    const accepted = store.markSessionRead(command, 4);
     assert.equal(accepted.kind, "accepted");
     assert.equal("effect" in accepted && accepted.effect, "advanced");
-    const replay = store.markSessionRead("device-a", command, 5);
+    const replay = store.markSessionRead(command, 5);
     assert.equal(replay.kind, "replayed");
-    const independent = store.markSessionRead("device-b", command, 6);
+    const independent = store.markSessionRead(command, 6);
     assert.equal(independent.kind, "replayed");
-    const conflict = store.markSessionRead("device-a", {
+    const conflict = store.markSessionRead({
       ...command, presentedTimelineRevision: 1,
     }, 7);
     assert.deepEqual([conflict.kind, "error" in conflict && conflict.error], ["rejected", "command-id-conflict"]);
@@ -58,7 +58,7 @@ test("Session authority persists milestones and serializes Host-global max mark-
       readThroughTimelineRevision: unread.timelineRevision,
       readStatus: "read", readStateRevision: 3,
     });
-    const invalid = store.markSessionRead("device-a", {
+    const invalid = store.markSessionRead({
       ...command,
       commandId: "ahead",
       presentedTimelineRevision: unread.timelineRevision + 1,
@@ -67,7 +67,7 @@ test("Session authority persists milestones and serializes Host-global max mark-
       [invalid.kind, "error" in invalid && invalid.error],
       ["rejected", "invalid-revision"],
     );
-    const zero = store.markSessionRead("device-a", {
+    const zero = store.markSessionRead({
       ...command,
       commandId: "zero",
       presentedTimelineRevision: 0,

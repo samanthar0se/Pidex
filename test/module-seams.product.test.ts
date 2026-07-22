@@ -64,7 +64,6 @@ test("bundled modules use the kernel authority, storage, worker, UI, and future 
   assert.match(target, /^pidex\.workspace\/managed-process:[0-9a-f-]+$/);
   const command = {
     commandId: "c1",
-    deviceId: "device",
     kind: `${id}/start` as const,
     target,
     capability,
@@ -78,21 +77,12 @@ test("bundled modules use the kernel authority, storage, worker, UI, and future 
       workerGeneration: 1,
       command,
     },
-    "device",
   );
   assert.equal(accepted.revision, 4);
   assert.equal(
-    (await kernel.dispatch(command, "device")).receipt,
+    (await kernel.dispatch(command)).receipt,
     accepted.receipt,
   );
-  await assert.rejects(
-    kernel.dispatch(
-      { ...command, commandId: "c2", deviceId: "other" },
-      "device",
-    ),
-    /authentication/,
-  );
-
   kernel.preserveUnavailable(
     target,
     kind,
@@ -100,14 +90,14 @@ test("bundled modules use the kernel authority, storage, worker, UI, and future 
     Uint8Array.of(1, 2),
   );
   await assert.rejects(
-    kernel.dispatch({ ...command, commandId: "c3" }, "device"),
+    kernel.dispatch({ ...command, commandId: "c3" }),
     /unavailable/,
   );
   assert.deepEqual(kernel.preserved.get(target)?.bytes, Uint8Array.of(1, 2));
   assert.deepEqual(futureWorkspaceContracts, {
     terminalAndManagedProcess: "separate-host-owned-job",
     sessionRelationship: "provenance-only",
-    electron: "device-client",
+    electron: "browser-client",
     tunnel: "transport-adapter",
     thirdPartyLoader: false,
   });

@@ -6,7 +6,7 @@ import {
 } from "../packages/protocol/src/status.js";
 import { controlWebSocketUrl } from "./control-client.js";
 
-/** Test-only Device-protocol helper for public-protocol parity evidence. */
+/** Test-only Anonymous Client helper for public-protocol parity evidence. */
 export async function readStatus(origin: string, authorization?: string): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
     const controlSocket = new WebSocket(controlWebSocketUrl(origin), {

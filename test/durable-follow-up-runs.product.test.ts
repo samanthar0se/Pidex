@@ -131,7 +131,6 @@ test("an undispatched follow-up survives restart held and can be cancelled witho
     let store = new AuthorityStore(join(dataDir, "authority.sqlite"), adapters);
     const session = store.createSession(null, null, 1).session;
     const first = store.submitRun(
-      "device",
       {
         commandId: "one",
         sessionId: session.sessionId,
@@ -141,7 +140,6 @@ test("an undispatched follow-up survives restart held and can be cancelled witho
       2,
     );
     const next = store.submitRun(
-      "device",
       {
         commandId: "two",
         sessionId: session.sessionId,

@@ -6,7 +6,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import {
   sessionIdFromReadStateResourceId,
   sessionReadStateResourceId,
-} from "../../../apps/pwa/read-state.mjs";
+} from "./session-read-state-resource.js";
 import {
   type HostAdapters,
   type PiPresentationEffect,
@@ -96,7 +96,6 @@ const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
 const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
 const DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS = 2_000;
-const ANONYMOUS_CLIENT_ID = "anonymous";
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -265,7 +264,6 @@ export interface StartedHost {
   origin: string;
   /** Host-local administration action. Its result must never be logged or projected. */
   status(): HostStatus;
-  /** Host-local administration bypasses Device authentication. */
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
   storageProtection(): StorageProtectionStatus;
@@ -408,7 +406,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       client.ping();
     }
   }, options.controlLivenessIntervalMs ?? 30_000);
-  const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
   const initialProjection = store.projection();
   const publishedReadStateRevisions = new Map(
@@ -519,7 +516,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     webSocketServer.handleUpgrade(request, socket, head, webSocket => {
-      clientDeviceIds.set(webSocket, ANONYMOUS_CLIENT_ID);
       webSocketServer.emit("connection", webSocket, request);
     });
   });
@@ -528,7 +524,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     liveClients.add(webSocket);
     webSocket.on("pong", () => liveClients.add(webSocket));
     webSocket.once("close", () => {
-      clientDeviceIds.delete(webSocket);
       admittedClients.delete(webSocket);
       admittedCapabilityBasisByClient.delete(webSocket);
       synchronizedClients.delete(webSocket);
@@ -922,15 +917,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     client: WebSocket,
     command: SessionRenameMessage,
   ): void {
-    const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) {
-      return;
-    }
-
     try {
       adapters.storage.beforeCommit();
       const result = store.renameSession(
-        deviceId,
         command,
         adapters.clock.now(),
       );
@@ -1029,18 +1018,12 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     client: WebSocket,
     command: SessionAvailabilityMessage,
   ): void {
-    const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) {
-      return;
-    }
-
     try {
       adapters.storage.beforeCommit();
       const availability = command.type === "session.archive"
         ? "archived"
         : "available";
       const result = store.changeSessionAvailability(
-        deviceId,
         command,
         availability,
         adapters.clock.now(),
@@ -1106,11 +1089,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       });
       return;
     }
-    const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) return;
     try {
       const result = store.markSessionRead(
-        deviceId,
         command,
         adapters.clock.now(),
       );
@@ -1148,11 +1128,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function handleRunSubmit(client: WebSocket, command: RunSubmitMessage): void {
-    const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) {
-      return;
-    }
-
     const admittedBasis = admittedCapabilityBasisByClient.get(client);
     if (!supportsCapabilityBasis(admittedBasis, command.requiredCapabilityBasis)) {
       sendServerMessage(client, {
@@ -1174,7 +1149,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         });
       }
       adapters.storage.beforeCommit();
-      const result = store.submitRun(deviceId, command, adapters.clock.now());
+      const result = store.submitRun(command, adapters.clock.now());
       if (result.kind === "command-id-conflict") {
         sendServerMessage(client, {
           type: "command.outcome",
@@ -1256,14 +1231,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function handleRunSteer(client: WebSocket, command: RunSteerMessage): void {
-    const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) {
-      return;
-    }
-
     try {
       const result = store.acceptSteering(
-        deviceId,
         command,
         workerGenerations.get(command.sessionId),
         adapters.clock.now(),
@@ -1296,8 +1265,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         });
         const worker = workers.get(command.sessionId);
         void worker?.steer(command.text).then(
-          () => store.markSteering(command.commandId, deviceId, true),
-          () => store.markSteering(command.commandId, deviceId, false),
+          () => store.markSteering(command.commandId, true),
+          () => store.markSteering(command.commandId, false),
         );
       }
     } catch {
@@ -1311,15 +1280,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function handleRunStop(client: WebSocket, command: RunStopMessage): void {
-    const deviceId = clientDeviceIds.get(client);
-    if (!deviceId) {
-      return;
-    }
-
     try {
       adapters.storage.beforeCommit();
       const result = store.acceptStop(
-        deviceId,
         command,
         workerGenerations.get(command.sessionId),
         adapters.clock.now(),

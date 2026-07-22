@@ -217,9 +217,7 @@ async function makeBase(label: string): Promise<string> {
     adaptersFor("deterministic"),
   );
   const session = store.createSession(null, null, 1).session;
-  store.submitRun(
-    "device",
-    {
+  store.submitRun({
       commandId: label,
       sessionId: session.sessionId,
       prompt: label,

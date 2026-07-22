@@ -21,7 +21,6 @@ test("checkpoint chunks and manifest publish before atomic Run settlement", asyn
     );
     const session = store.createSession(null, null, 1).session;
     const accepted = store.submitRun(
-      "device",
       {
         commandId: "run",
         sessionId: session.sessionId,
@@ -108,13 +107,13 @@ test("an uncertain Host transaction preserves the prior checkpoint and never rep
     const adapters = adaptersFor("deterministic");
     const store = new AuthorityStore(databasePath, adapters);
     const session = store.createSession(null, null, 1).session;
-    const first = store.submitRun("device", {
+    const first = store.submitRun({
       commandId: "first", sessionId: session.sessionId, prompt: "one", requiredCapability: "run.submit",
     }, 2);
     if (first.kind !== "accepted") throw new Error("expected acceptance");
     store.settleRun(first.run.runId, "completed", "one", "sha256:" + "1".repeat(64), 3);
 
-    const second = store.submitRun("device", {
+    const second = store.submitRun({
       commandId: "second", sessionId: session.sessionId, prompt: "two", requiredCapability: "run.submit",
     }, 4);
     if (second.kind !== "accepted") throw new Error("expected acceptance");

@@ -245,7 +245,7 @@ function session(
   };
 }
 
-test("the Client resumes a routed Session from current Host facts and a Device draft", async () => {
+test("the Client resumes a routed Session from current Host facts and a local draft", async () => {
   const routed: string[] = [];
   const drafts = new Map([["session_one", "keep this local"]]);
   const store = createClientStore({
@@ -279,12 +279,12 @@ test("the Client resumes a routed Session from current Host facts and a Device d
   assert.equal(selectDraft(store.getState()), "keep this local");
   assert.deepEqual(routed, ["/sessions/session_one"]);
 
-  await store.getState().setDraft("edited on this Device");
-  assert.equal(drafts.get("session_one"), "edited on this Device");
+  await store.getState().setDraft("edited in this Client environment");
+  assert.equal(drafts.get("session_one"), "edited in this Client environment");
   assert.equal(selectCurrentSession(store.getState())?.metadataRevision, 7);
 });
 
-test("FX-STATE-01 FX-DISC-05 FX-DISC-06: expansion is Device-owned and Restore uses the exact archived revision", async () => {
+test("FX-STATE-01 FX-DISC-05 FX-DISC-06: expansion is local and Restore uses the exact archived revision", async () => {
   const writes: string[][] = [];
   const restores: Array<[string, number]> = [];
   const archived = session("old", "Old chat", null, "quiet", "read");

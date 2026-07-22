@@ -17,7 +17,6 @@ test("stop is exact, retryable, and atomically cancels continuation without touc
     const session = store.createSession(null, null, 1).session;
     const sibling = store.createSession(null, null, 1).session;
     const first = store.submitRun(
-      "device",
       {
         commandId: "first",
         sessionId: session.sessionId,
@@ -27,7 +26,6 @@ test("stop is exact, retryable, and atomically cancels continuation without touc
       2,
     );
     const next = store.submitRun(
-      "device",
       {
         commandId: "next",
         sessionId: session.sessionId,
@@ -37,7 +35,6 @@ test("stop is exact, retryable, and atomically cancels continuation without touc
       3,
     );
     const siblingRun = store.submitRun(
-      "device",
       {
         commandId: "sibling",
         sessionId: sibling.sessionId,
@@ -76,14 +73,13 @@ test("stop is exact, retryable, and atomically cancels continuation without touc
       observedTimelineRevision: revision,
     };
     const staleStop = store.acceptStop(
-      "device",
       { ...command, commandId: "stale", runId: "successor" },
       "worker-1",
       5,
     );
     assert.equal(staleStop.kind, "rejected");
 
-    const stopped = store.acceptStop("device", command, "worker-1", 5);
+    const stopped = store.acceptStop(command, "worker-1", 5);
     assert.equal(stopped.kind, "accepted");
     assert.deepEqual(
       store.runs(session.sessionId).map(run => run.state),
@@ -95,7 +91,7 @@ test("stop is exact, retryable, and atomically cancels continuation without touc
       "withdrawn",
     );
     assert.equal(
-      store.acceptStop("device", command, "worker-1", 6).kind,
+      store.acceptStop(command, "worker-1", 6).kind,
       "replayed",
     );
     const settled = store.settleRun(

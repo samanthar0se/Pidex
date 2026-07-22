@@ -28,9 +28,7 @@ test("forks stable history into an inert, independently scoped child with durabl
   try {
     store = new AuthorityStore(path, adapters, catalog);
     const parent = store.createSession("p", "w", 1).session;
-    const first = store.submitRun(
-      "d",
-      {
+    const first = store.submitRun({
         commandId: "one",
         sessionId: parent.sessionId,
         prompt: "one",
@@ -45,9 +43,7 @@ test("forks stable history into an inert, independently scoped child with durabl
     store.completeRun(first.run.runId, "answer", "stable", 3);
     const point = store.timeline(parent.sessionId).at(-1);
     assert.ok(point);
-    const active = store.submitRun(
-      "d",
-      {
+    const active = store.submitRun({
         commandId: "two",
         sessionId: parent.sessionId,
         prompt: "still running",
@@ -112,9 +108,7 @@ test("forks stable history into an inert, independently scoped child with durabl
       /invalid-fork-point/,
     );
 
-    const childRun = store.submitRun(
-      "d",
-      {
+    const childRun = store.submitRun({
         commandId: "child-run",
         sessionId: child.sessionId,
         prompt: "independent",

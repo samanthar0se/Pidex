@@ -15,8 +15,6 @@ export interface IntegrationRepairResult {
 }
 
 export interface ExactIntegrationPolicyOwner {
-  createPairing(): Promise<{ readonly secret: string; readonly expiresAt: number }>;
-  revokeDevice(deviceId: string): Promise<void>;
   inspectOrigin(): Promise<IntegrationInspectionResult>;
   repairOrigin(): Promise<IntegrationRepairResult>;
   inspectCertificate(): Promise<IntegrationInspectionResult>;
@@ -30,11 +28,6 @@ export interface ExactIntegrationPolicyOwner {
 export type ExactIntegrationOwnerState =
   | { readonly state: "live"; readonly owner: ExactIntegrationPolicyOwner }
   | { readonly state: "maintenance"; readonly owner: ExactIntegrationPolicyOwner };
-
-export interface PairingSecretOutput {
-  readonly channel: "interactive-console" | "inherited-secret-handle";
-  writeSecret(secret: string): Promise<void>;
-}
 
 interface ExactIntegrationOperations {
   inspect(owner: ExactIntegrationPolicyOwner): Promise<IntegrationInspectionResult>;
@@ -63,22 +56,6 @@ const operationsByTarget: Record<ExactIntegrationTarget, ExactIntegrationOperati
 /** Routes each operation directly to the selected instance's exact policy owner. */
 export class ExactIntegrationControl {
   constructor(private readonly selected: ExactIntegrationOwnerState) {}
-
-  async pair(output: PairingSecretOutput): Promise<{ readonly expiresAt: number }> {
-    this.requireLiveAuthority();
-    if (output.channel !== "interactive-console" && output.channel !== "inherited-secret-handle") {
-      throw new Error("pairing requires an approved pairing output channel");
-    }
-    const pairing = await this.selected.owner.createPairing();
-    await output.writeSecret(pairing.secret);
-    return { expiresAt: pairing.expiresAt };
-  }
-
-  async revoke(deviceId: string): Promise<void> {
-    this.requireLiveAuthority();
-    if (!deviceId) throw new Error("device identity is required");
-    await this.selected.owner.revokeDevice(deviceId);
-  }
 
   inspect(target: ExactIntegrationTarget): Promise<IntegrationInspectionResult> {
     return operationsByTarget[target].inspect(this.selected.owner);

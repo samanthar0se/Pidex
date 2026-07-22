@@ -15,7 +15,6 @@ test("archive and restore are exact, quiescent, durable, and preserve complete s
     store = new AuthorityStore(path, adapters);
     const session = store.createSession(null, null, 1).session;
     const run = store.submitRun(
-      "device",
       {
         commandId: "run",
         sessionId: session.sessionId,
@@ -30,7 +29,6 @@ test("archive and restore are exact, quiescent, durable, and preserve complete s
     }
 
     const raced = store.changeSessionAvailability(
-      "device",
       {
         commandId: "archive-busy",
         sessionId: session.sessionId,
@@ -46,7 +44,6 @@ test("archive and restore are exact, quiescent, durable, and preserve complete s
     store.settleRun(run.run.runId, "completed", "preserved response", null, 4);
     const current = store.projection().sessions[0]!;
     const archived = store.changeSessionAvailability(
-      "device",
       {
         commandId: "archive",
         sessionId: session.sessionId,
@@ -63,7 +60,6 @@ test("archive and restore are exact, quiescent, durable, and preserve complete s
     assert.equal(store.projection().sessions.length, 0);
     assert.equal(store.projection().archivedSessions.length, 1);
     const blocked = store.submitRun(
-      "device",
       {
         commandId: "blocked",
         sessionId: session.sessionId,
@@ -87,9 +83,7 @@ test("archive and restore are exact, quiescent, durable, and preserve complete s
       store.projection().archivedSessions[0]?.sessionId,
       session.sessionId,
     );
-    const stale = store.changeSessionAvailability(
-      "other",
-      {
+    const stale = store.changeSessionAvailability({
         commandId: "stale",
         sessionId: session.sessionId,
         observedMetadataRevision: current.metadataRevision,
@@ -101,9 +95,7 @@ test("archive and restore are exact, quiescent, durable, and preserve complete s
       "error" in stale ? stale.error : undefined,
       "stale-precondition",
     );
-    const restored = store.changeSessionAvailability(
-      "other",
-      {
+    const restored = store.changeSessionAvailability({
         commandId: "restore",
         sessionId: session.sessionId,
         observedMetadataRevision: archived.session.metadataRevision,

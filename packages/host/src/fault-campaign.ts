@@ -55,7 +55,6 @@ export const FAULT_SCENARIOS = {
     "certificate-expiry",
     "certificate-rotation",
     "firewall-drift",
-    "pairing-attack",
     "malformed-ipc",
     "malformed-protocol",
     "update-download-failure",

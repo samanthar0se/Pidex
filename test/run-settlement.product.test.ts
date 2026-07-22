@@ -15,7 +15,6 @@ test("an accepted Run is settled exactly once and references a published immutab
     const store = new AuthorityStore(join(dataDir, "authority.sqlite"), adapters);
     const session = store.createSession(null, null, 1).session;
     const accepted = store.submitRun(
-      "device",
       {
         commandId: "run",
         sessionId: session.sessionId,
@@ -64,7 +63,6 @@ test("an accepted Run is settled exactly once and references a published immutab
     );
 
     const second = store.submitRun(
-      "device",
       {
         commandId: "run-2",
         sessionId: session.sessionId,
@@ -128,7 +126,6 @@ test("Run settlement publishes dependencies before a FULL SQLite commit and retu
     const store = new AuthorityStore(databasePath, adapters);
     const session = store.createSession(null, null, 1).session;
     const accepted = store.submitRun(
-      "device",
       {
         commandId: "ordered-run",
         sessionId: session.sessionId,

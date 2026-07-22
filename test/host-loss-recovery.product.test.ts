@@ -16,7 +16,6 @@ test("Host restart conservatively converges all Sessions without rotating contin
     const interruptedSession = store.createSession(null, null, 1).session;
     const completedSession = store.createSession(null, null, 2).session;
     const interruptedRun = store.submitRun(
-      "device",
       {
         commandId: "uncertain",
         sessionId: interruptedSession.sessionId,
@@ -28,7 +27,6 @@ test("Host restart conservatively converges all Sessions without rotating contin
     assert.equal(interruptedRun.kind, "accepted");
 
     const completedRun = store.submitRun(
-      "device",
       {
         commandId: "proved",
         sessionId: completedSession.sessionId,
@@ -82,7 +80,6 @@ test("Host restart interrupts an unproved cancellation instead of assuming succe
     let store = new AuthorityStore(databasePath, adapters);
     const session = store.createSession(null, null, 1).session;
     const submittedRun = store.submitRun(
-      "device",
       {
         commandId: "run",
         sessionId: session.sessionId,
@@ -103,7 +100,6 @@ test("Host restart interrupts an unproved cancellation instead of assuming succe
     }
 
     const stopResult = store.acceptStop(
-      "device",
       {
         commandId: "stop",
         sessionId: session.sessionId,

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
-import { readStatus } from "./device-status-client.js";
+import { readStatus } from "./status-client.js";
 import { startHost } from "../packages/host/src/host.js";
 import { type HostStatus } from "../packages/protocol/src/status.js";
 import {
@@ -14,7 +14,7 @@ import {
   negotiateControl,
 } from "./control-client.js";
 
-async function readPwaStatus(
+async function readClientStatus(
   origin: string,
   authorization: string,
 ): Promise<HostStatus> {
@@ -26,7 +26,7 @@ async function readPwaStatus(
   return message.status;
 }
 
-function readPwaShell(origin: string): Promise<string> {
+function readClientShell(origin: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const request = get(origin, response => {
       response.setEncoding("utf8");
@@ -72,7 +72,7 @@ test("HTTP Client and control protocol observe durable authoritative Host status
     let initialStatus: HostStatus;
 
     try {
-      const shell = await readPwaShell(initialHost.origin);
+      const shell = await readClientShell(initialHost.origin);
       assert.match(shell, /Pidex Host/);
       const serviceWorkerHeaders = await readPwaHeaders(
         initialHost.origin,
@@ -81,7 +81,7 @@ test("HTTP Client and control protocol observe durable authoritative Host status
       assert.equal(serviceWorkerHeaders["cache-control"], "no-cache");
 
       const [pwaStatus, cliStatus] = await Promise.all([
-        readPwaStatus(initialHost.origin, authorization),
+        readClientStatus(initialHost.origin, authorization),
         readStatus(initialHost.origin, authorization),
       ]);
       assert.deepEqual(pwaStatus, cliStatus);

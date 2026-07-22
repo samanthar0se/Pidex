@@ -1,6 +1,6 @@
 # Pidex
 
-Pidex is a Windows-first, PWA-first control plane for durable [Pi](https://github.com/badlogic/pi-mono) coding sessions on a local LAN. One authoritative **Host** owns execution and state; paired desktop and mobile **Devices** can reconnect to, supervise, and control the same Sessions.
+Pidex is a Windows-first control plane for durable [Pi](https://github.com/badlogic/pi-mono) coding sessions on a local LAN. One authoritative **Host** owns execution and state; browser and CLI Clients can reconnect to supervise and control the same Sessions.
 
 > **Status:** the manifest-selected, source-runnable Windows Host has replaced the product scaffolds. This bounded claim does **not** claim installer readiness, signed distribution, daily-driver completion, or full v1 promotion.
 
@@ -8,15 +8,15 @@ Pidex is a Windows-first, PWA-first control plane for durable [Pi](https://githu
 
 - A **Session** is a durable conversation; a **Run** is one accepted execution cycle within it.
 - Session retention (`available`/`archived`) and runtime residency (`resident`/`sleeping`) are independent.
-- A **Device** is a paired app/browser identity; a **Client** is one live tab or window; a **View** is presentation only.
+- An **Anonymous Client** is one live browser tab or CLI process; a **View** is presentation only; a **Client environment** is shared non-authoritative browser storage.
 - The Host is the sole authority. Clients change shared state only through revision-preconditioned commands and reconcile through snapshots and typed Change Sets.
 - Accepted work receives durable receipts and exactly one terminal outcome. Uncertain mutations are never replayed to discover whether they committed.
-- Pi workers isolate Session failures but are not security sandboxes. The LAN is treated as hostile; product data requires authenticated Devices.
+- Pi workers isolate Session failures but are not security sandboxes. Prototype LAN reachability grants full control, so use only disposable, non-sensitive evaluation data on an operator-controlled LAN.
 
 ## Repository Map
 
-- `apps/pwa/` — dependency-free PWA, offline working set, pairing, and Session UI.
-- `packages/host/` — HTTPS/WebSocket Host, SQLite authority, workers, lifecycle, backup, recovery, and release gates.
+- `apps/client/` — React Client, offline working set, and service worker.
+- `packages/host/` — HTTP/WebSocket Host, SQLite authority, workers, lifecycle, backup, recovery, and release gates.
 - `packages/protocol/` — versioned Zod schemas and capability negotiation.
 - `packages/adapters/` — deterministic development/test adapters only; product startup cannot select them.
 - `packages/launcher/` — Windows installation, supervision, lifecycle, and signed-update logic.
@@ -82,17 +82,9 @@ Task output is appended to `.pidex-data-dev/development-host.log`. Manage or
 inspect the task with `npm run dev:task:status`, `npm run dev:task:stop`, and
 `npm run dev:task:uninstall`.
 
-Development CA setup is an explicit, one-time operation for the current Windows
-profile and must run before the first Host startup. It installs only the public
-certificate in Current User Root and reports `created` for a new CA or
-`unchanged` when the existing CA was validated and reused. Record the displayed
-SHA-256 fingerprint. The public certificate at the displayed export location is
-the only certificate file to distribute to a LAN client.
-
-The development Host serves `https://localhost:7443`. Its disposable leaf and
-private key remain in `.pidex-data-dev/`, while the shared Development CA stays
-under LocalAppData and survives checkout deletion. Startup never creates or
-repairs that CA. Open the printed pairing URL and select **Pair Device**.
+The development Host serves plain HTTP on IPv4 wildcard port 7443. Startup
+prints the unauthenticated-prototype warning and loopback/LAN URL guidance.
+Opening the URL goes directly to the React Client without credentials or setup.
 
 ### One-time clean break from older checkouts
 

@@ -15,9 +15,7 @@ test("Interaction ordering and revision reservation serialize competing terminal
 
   try {
     const session = store.createSession(null, null, 1).session;
-    const submitted = store.submitRun(
-      "test device",
-      {
+    const submitted = store.submitRun({
         commandId: "run",
         sessionId: session.sessionId,
         prompt: "prompt",

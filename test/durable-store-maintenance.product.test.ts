@@ -48,7 +48,6 @@ test("maintenance retains reachable ancestry and uses durable independent proofs
     store = new AuthorityStore(path, adaptersFor("deterministic"));
     const parent = store.createSession(null, null, 1).session;
     const accepted = store.submitRun(
-      "device",
       {
         commandId: "run",
         sessionId: parent.sessionId,
