@@ -8,21 +8,37 @@ const runsBySession = new Map<string, RunFact[]>();
 const interactionListeners = new Map<string, Set<(interactions: InteractionFact[]) => void>>();
 const interactionsBySession = new Map<string, InteractionFact[]>();
 const uncertainCommands = new Map<string, Record<string, unknown> & { commandId: string }>();
+const messageHandlers = new Set<(message: any, socket: WebSocket) => void>();
+let controlSocket: WebSocket | undefined;
+let lastHostSnapshot: any;
+
+function sharedControlSocket() {
+  if (controlSocket && controlSocket.readyState !== WebSocket.CLOSING && controlSocket.readyState !== WebSocket.CLOSED) return controlSocket;
+  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/control`);
+  controlSocket = socket;
+  socket.onmessage = event => {
+    const message = JSON.parse(String(event.data));
+    if (message.type === "host.hello") socket.send(JSON.stringify({
+      type: "client.hello", expectedHostId: message.hostId, protocols: [{ major: 1, minor: 2 }],
+      capabilities: capabilities.map(id => ({ id, minVersion: 1, maxVersion: 1 })),
+    }));
+    else {
+      if (message.type === "host.snapshot") lastHostSnapshot = message;
+      messageHandlers.forEach(handler => handler(message, socket));
+    }
+  };
+  socket.onclose = () => { if (controlSocket === socket) controlSocket = undefined; };
+  return socket;
+}
 
 function socketFor(onMessage: (message: any, socket: WebSocket, finish: <T>(value: T) => void) => void) {
   return new Promise<any>((resolve, reject) => {
-    const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/control`);
-    const timeout = window.setTimeout(() => { socket.close(); reject(new Error("Host synchronization timed out")); }, 10_000);
-    const finish = <T,>(value: T) => { window.clearTimeout(timeout); socket.close(); resolve(value); };
-    socket.onerror = () => reject(new Error("Host unavailable"));
-    socket.onmessage = event => {
-      const message = JSON.parse(String(event.data));
-      if (message.type === "host.hello") socket.send(JSON.stringify({
-        type: "client.hello", expectedHostId: message.hostId, protocols: [{ major: 1, minor: 2 }],
-        capabilities: capabilities.map(id => ({ id, minVersion: 1, maxVersion: 1 })),
-      }));
-      else onMessage(message, socket, finish);
-    };
+    const socket = sharedControlSocket();
+    const handler = (message: any) => onMessage(message, socket, finish);
+    const timeout = window.setTimeout(() => { messageHandlers.delete(handler); reject(new Error("Host synchronization timed out")); }, 10_000);
+    const finish = <T,>(value: T) => { window.clearTimeout(timeout); messageHandlers.delete(handler); resolve(value); };
+    messageHandlers.add(handler);
+    if (lastHostSnapshot) queueMicrotask(() => messageHandlers.has(handler) && handler(lastHostSnapshot));
   });
 }
 
@@ -41,20 +57,13 @@ async function readCatalog(): Promise<DiscoveryProjection> {
 
 function readSession(sessionId: string): Promise<SessionProjection> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/control`);
+    const socket = sharedControlSocket();
     const timeout = window.setTimeout(() => {
-      socket.close();
+      messageHandlers.delete(handler);
       reject(new Error("Host synchronization timed out"));
     }, 10_000);
-    socket.onerror = () => reject(new Error("Host unavailable"));
-    socket.onmessage = event => {
-      const message = JSON.parse(String(event.data));
-      if (message.type === "host.hello") {
-        socket.send(JSON.stringify({
-          type: "client.hello", expectedHostId: message.hostId, protocols: [{ major: 1, minor: 2 }],
-          capabilities: capabilities.map(id => ({ id, minVersion: 1, maxVersion: 1 })),
-        }));
-      } else if (message.type === "host.snapshot") {
+    const handler = (message: any) => {
+      if (message.type === "host.snapshot") {
         setScope(socket, [sessionId]);
       } else if (message.type === "scope.reset" && message.barrier?.scope?.kind === "session" && message.barrier.scope.sessionId === sessionId) {
         window.clearTimeout(timeout);
@@ -83,6 +92,8 @@ function readSession(sessionId: string): Promise<SessionProjection> {
         interactionListeners.get(sessionId)?.forEach(listener => listener(next));
       }
     };
+    messageHandlers.add(handler);
+    if (lastHostSnapshot) queueMicrotask(() => messageHandlers.has(handler) && handler(lastHostSnapshot));
   });
 }
 
@@ -96,35 +107,25 @@ async function restoreSession(session: SessionFact): Promise<void> {
 }
 
 function openControlSocket(onMessage: (message: any) => void) {
-  const socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/control`);
-  socket.onmessage = event => {
-    const message = JSON.parse(String(event.data));
-    if (message.type === "host.hello") {
-      socket.send(JSON.stringify({
-        type: "client.hello", expectedHostId: message.hostId, protocols: [{ major: 1, minor: 2 }],
-        capabilities: capabilities.map(id => ({ id, minVersion: 1, maxVersion: 1 })),
-      }));
-      return;
-    }
-    onMessage(message);
-  };
-  return socket;
+  const socket = sharedControlSocket();
+  const handler = (message: any) => onMessage(message);
+  messageHandlers.add(handler);
+  if (lastHostSnapshot) queueMicrotask(() => messageHandlers.has(handler) && handler(lastHostSnapshot));
+  return { socket, remove: () => messageHandlers.delete(handler) };
 }
 
 function connect(onReady: (socket: WebSocket) => void, onMessage: (message: any) => void, uncertain: () => void) {
   let sent = false;
-  const socket = openControlSocket(message => {
+  const connection = openControlSocket(message => {
     if (message.type === "host.snapshot" && !sent) {
       sent = true;
-      onReady(socket);
+      onReady(connection.socket);
       return;
     }
     onMessage(message);
   });
-  const timeout = window.setTimeout(() => { socket.close(); uncertain(); }, 10_000);
-  socket.onerror = uncertain;
-  socket.onclose = () => { if (sent) uncertain(); };
-  return () => { window.clearTimeout(timeout); socket.onclose = null; socket.close(); };
+  const timeout = window.setTimeout(() => { connection.remove(); uncertain(); }, 10_000);
+  return () => { window.clearTimeout(timeout); connection.remove(); };
 }
 
 function createSession(command: Parameters<NonNullable<ClientAdapters["host"]["createSession"]>>[0]): Promise<SessionCreateResult> {

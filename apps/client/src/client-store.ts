@@ -60,7 +60,7 @@ export type ReconciledCommandResult =
   | { kind: "rejected"; reason: string }
   | { kind: "expired"; reason: string }
   | { kind: "indeterminate"; reason: string };
-export type AuthorityStatus = "current" | "offline" | "reconnecting" | "update-required" | "revoked";
+export type AuthorityStatus = "current" | "offline" | "reconnecting" | "update-required";
 export interface AuthorityState { status: AuthorityStatus; lastSynchronizedAt: string | null; reason?: string }
 type FailedCommandResult = Exclude<CommandResult, { kind: "accepted" }>;
 export type NewSessionProgress =
@@ -438,7 +438,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     },
     async recoverAuthority() {
       const before = get().authority;
-      if (before.status === "update-required" || before.status === "revoked") return;
+      if (before.status === "update-required") return;
       set({ authority: { ...before, status: "reconnecting" }, isSessionCurrent: false });
       try {
         const catalog = adapters.host.readCatalog ? await adapters.host.readCatalog() : undefined;

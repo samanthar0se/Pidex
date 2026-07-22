@@ -12,18 +12,16 @@ export async function runHost(
 ): Promise<void> {
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
   const port = Number(process.env.PIDEX_PORT ?? 7443);
-  const hostname = process.env.PIDEX_HOSTNAME;
   const host = await startHost({
     dataDir,
     port,
-    hostname,
     adapters: adaptersFor(adapterMode),
     certificateProvisioner,
   });
 
   console.log("UNAUTHENTICATED PROTOTYPE: anyone who can reach this Host on the network can view and control Pidex. Do not expose it beyond a trusted LAN.");
-  console.log(`Pidex listening on 0.0.0.0:${port}`);
-  console.log(`Loopback: ${host.origin} (${host.status().hostId})`);
+  console.log(`Pidex ready on 0.0.0.0:${port}`);
+  console.log(`Loopback: http://localhost:${port}`);
   console.log(`LAN: http://<LAN-IP>:${port}`);
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {

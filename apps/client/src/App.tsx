@@ -142,7 +142,7 @@ function NewSessionView({ store, newSession }: { store: ClientStore; newSession:
 
 function AuthorityBanner({ authority }: { authority: import("./client-store.js").AuthorityState }) {
   if (authority.status === "current") return null;
-  const labels = { offline: "Offline", reconnecting: "Reconnecting", "update-required": "Update required", revoked: "Device revoked" } as const;
+  const labels = { offline: "Offline", reconnecting: "Reconnecting", "update-required": "Update required" } as const;
   return <section className={`authority-banner ${authority.status}`} role="status" aria-live="polite">
     <strong>{labels[authority.status]}</strong>
     <span>{authority.lastSynchronizedAt
