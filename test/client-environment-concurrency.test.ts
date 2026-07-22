@@ -2,9 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ClientEnvironment,
+  IndexedDbClientEnvironmentStorage,
   MemoryClientEnvironmentStorage,
   type CommandEnvelope,
 } from "../apps/client/src/client-environment.js";
+
+test("IndexedDB storage does not open a notification channel when browser storage is unavailable", () => {
+  const originalBroadcastChannel = globalThis.BroadcastChannel;
+  let openedChannels = 0;
+  class CountingBroadcastChannel {
+    constructor() { openedChannels += 1; }
+  }
+  Object.defineProperty(globalThis, "BroadcastChannel", {
+    configurable: true,
+    value: CountingBroadcastChannel as unknown as typeof BroadcastChannel,
+  });
+
+  try {
+    new IndexedDbClientEnvironmentStorage();
+    assert.equal(openedChannels, 0);
+  } finally {
+    Object.defineProperty(globalThis, "BroadcastChannel", {
+      configurable: true,
+      value: originalBroadcastChannel,
+    });
+  }
+});
 
 test("shared Client environments preserve competing drafts and fence stale continuity writes", async () => {
   const storage = new MemoryClientEnvironmentStorage();
