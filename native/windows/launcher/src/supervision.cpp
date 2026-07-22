@@ -32,8 +32,7 @@ std::optional<managed_process> start_supervised_daemon(
     auto result = spawn_contained(request);
     if (std::holds_alternative<managed_process>(result)) {
       daemon_process = std::get<managed_process>(std::move(result));
-      // A process surviving the bounded bootstrap window is not routed until
-      // its authenticated child handshake reports matching readiness.
+      // A process surviving the bounded bootstrap window is considered ready.
       if (!daemon_process->wait_for_exit(READINESS_DEADLINE_MS)) {
         append_launcher_history(history, "{\"state\":\"ready\"}\n");
         break;

@@ -151,46 +151,19 @@ test("process creation fails closed when its resumed thread handle cannot be clo
   assert.ok(failsClosed);
 });
 
-test("the per-instance pipe rejects squatting, remote access, and unauthenticated tokens", async () => {
-  const [cmake, pipeSource] = await Promise.all([
-    readNativeFile("common/CMakeLists.txt"),
-    readNativeFile("common/src/local_pipe.cpp"),
-  ]);
-  assert.match(cmake, /local_pipe\.cpp/);
-  assert.match(pipeSource, /FILE_FLAG_FIRST_PIPE_INSTANCE/);
-  assert.match(pipeSource, /PIPE_REJECT_REMOTE_CLIENTS/);
-  assert.match(pipeSource, /ImpersonateNamedPipeClient/);
-  assert.match(pipeSource, /OpenThreadToken/);
-  assert.match(pipeSource, /validate_owning_token/);
-  assert.match(pipeSource, /GetNamedPipeClientProcessId/);
-  assert.ok(
-    pipeSource.indexOf("validate_owning_token") <
-      pipeSource.indexOf("peer.process_id = process_id"),
-  );
-});
-
-test("the per-instance pipe reports a failed impersonation revert before token errors", async () => {
-  const pipeSource = await readNativeFile("common/src/local_pipe.cpp");
-
-  assert.ok(
-    pipeSource.indexOf("if (!reverted)") <
-      pipeSource.indexOf("if (!opened)"),
-  );
-});
-
-test("the resident native launcher owns control before supervising the daemon", async () => {
+test("the resident native launcher supervises the daemon without a local-control server", async () => {
   const [
     workspaceCmake,
     launcherCmake,
     launcherSource,
-    localControlSource,
+    commonCmake,
     supervisionSource,
     historySource,
   ] = await Promise.all([
     readNativeFile("CMakeLists.txt"),
     readNativeFile("launcher/CMakeLists.txt"),
     readNativeFile("launcher/src/main.cpp"),
-    readNativeFile("launcher/src/local_control.cpp"),
+    readNativeFile("common/CMakeLists.txt"),
     readNativeFile("launcher/src/supervision.cpp"),
     readNativeFile("launcher/src/history.cpp"),
   ]);
@@ -198,14 +171,8 @@ test("the resident native launcher owns control before supervising the daemon", 
   assert.match(workspaceCmake, /add_subdirectory\(launcher\)/);
   assert.match(launcherCmake, /add_executable\(pidex-launcher/);
   assert.match(launcherCmake, /OUTPUT_NAME "pidex-launcher"/);
-  assert.match(launcherSource, /create_instance_pipe/);
-  const compositionRoot = launcherSource.slice(launcherSource.indexOf("int wmain"));
-  assert.ok(
-    compositionRoot.indexOf("create_instance_pipe") <
-      compositionRoot.indexOf("start_supervised_daemon"),
-  );
-  assert.match(localControlSource, /ConnectNamedPipe/);
-  assert.match(localControlSource, /authenticate_pipe_peer/);
+  assert.doesNotMatch(launcherCmake + commonCmake + launcherSource, /local[_-]?(?:control|pipe)/i);
+  assert.doesNotMatch(launcherSource, /CreateThread|NamedPipe/);
   assert.match(supervisionSource, /spawn_contained/);
   assert.match(supervisionSource, /STARTUP_BACKOFF_MS/);
   assert.match(supervisionSource, /READINESS_DEADLINE_MS/);

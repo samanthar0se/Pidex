@@ -1,6 +1,5 @@
 add_executable(pidex-launcher
   src/history.cpp
-  src/local_control.cpp
   src/main.cpp
   src/supervision.cpp
 )

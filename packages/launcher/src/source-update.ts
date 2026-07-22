@@ -1,8 +1,11 @@
 import { resolve, join } from "node:path";
-import { sourceReleaseIdFromClosureSha256 } from "../../local-control/src/index.js";
 import { verifyPublishedSourceClosure, type SourceClosureEvidence } from "../../source/src/source-closure.js";
 
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
+
+function sourceReleaseIdFromClosureSha256(closureSha256: string): string {
+  return `sha256-${closureSha256}`;
+}
 
 export interface SourceUpdateCandidate {
   readonly releaseId: string;
