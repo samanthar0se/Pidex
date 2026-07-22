@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OfflineWorkingSet, workingSetKey } from "../apps/client/src/offline-working-set.js";
+import {
+  IndexedDbWorkingSetStorage,
+  OfflineWorkingSet,
+  workingSetKey,
+} from "../apps/client/src/offline-working-set.js";
 
 const basis = {
   origin: "http://pidex.test:7443",
@@ -51,6 +55,95 @@ test("a different Host removes reached facts and quarantines associated drafts",
   });
 });
 
+test("a missing reached cursor resets otherwise matching continuity", () => {
+  const workingSet = new OfflineWorkingSet({
+    basis: { ...basis, cursor: "cursor-old" },
+    lastSynchronizedAt: "2026-07-22T10:00:00.000Z",
+    facts: { sessions: [{ sessionId: "old", name: "Do not reuse" }] },
+    drafts: { old: "preserve me" },
+  });
+
+  assert.deepEqual(workingSet.reach(basis), {
+    kind: "continuity-reset",
+    facts: undefined,
+    drafts: { old: "preserve me" },
+    commandsEnabled: false,
+  });
+});
+
+test("missing reached resource revisions reset otherwise matching continuity", () => {
+  const workingSet = new OfflineWorkingSet({
+    basis: { ...basis, resourceRevisions: { discovery: 3 } },
+    lastSynchronizedAt: "2026-07-22T10:00:00.000Z",
+    facts: { sessions: [{ sessionId: "old", name: "Do not reuse" }] },
+    drafts: { old: "preserve me" },
+  });
+
+  assert.deepEqual(workingSet.reach(basis), {
+    kind: "continuity-reset",
+    facts: undefined,
+    drafts: { old: "preserve me" },
+    commandsEnabled: false,
+  });
+});
+
+test("Host facts cannot be committed without synchronization barrier proof", () => {
+  const workingSet = new OfflineWorkingSet({
+    basis,
+    lastSynchronizedAt: "2026-07-22T10:00:00.000Z",
+    facts: { sessions: [{ sessionId: "old", name: "Keep until proven" }] },
+    drafts: { old: "preserve me" },
+  });
+  assert.throws(
+    () => workingSet.commitAfterBarrier(
+      basis,
+      undefined as never,
+      { sessions: [] },
+      "2026-07-22T11:00:00.000Z",
+    ),
+    /synchronization barrier/i,
+  );
+});
+
+test("mismatched synchronization barriers cannot commit Host facts", () => {
+  const workingSet = new OfflineWorkingSet({
+    basis,
+    lastSynchronizedAt: "2026-07-22T10:00:00.000Z",
+    facts: { sessions: [{ sessionId: "old", name: "Keep until proven" }] },
+    drafts: { old: "preserve me" },
+  });
+  const reached = { ...basis, cursor: "cursor-new", resourceRevisions: { discovery: 4 } };
+  const mismatchedBarriers = [
+    { cursor: "cursor-new", resourceRevisions: { discovery: 4 }, protocolBasis: "1.1" },
+    { cursor: "cursor-old", resourceRevisions: { discovery: 4 }, protocolBasis: "1.2" },
+    { cursor: "cursor-new", resourceRevisions: { discovery: 3 }, protocolBasis: "1.2" },
+  ];
+
+  for (const barrier of mismatchedBarriers) {
+    assert.throws(
+      () => workingSet.commitAfterBarrier(reached, barrier, { sessions: [] }, "2026-07-22T11:00:00.000Z"),
+      /synchronization barrier/i,
+    );
+  }
+});
+
+test("explicit storage rejects records that omit their synchronization barrier basis", async () => {
+  const storage = new IndexedDbWorkingSetStorage<{ sessions: never[] }, Record<string, string>>();
+
+  await assert.rejects(
+    storage.writeAfterBarrier(
+      {
+        basis,
+        lastSynchronizedAt: "2026-07-22T11:00:00.000Z",
+        facts: { sessions: [] },
+        drafts: {},
+      },
+      { cursor: "cursor-new", resourceRevisions: {}, protocolBasis: "1.2" },
+    ),
+    /does not include its synchronization barrier basis/i,
+  );
+});
+
 test("incompatible same-Host continuity replaces facts only after a fresh synchronization barrier", () => {
   const workingSet = new OfflineWorkingSet({
     basis: { ...basis, cursor: "cursor-old", resourceRevisions: { discovery: 3 } },
@@ -58,12 +151,25 @@ test("incompatible same-Host continuity replaces facts only after a fresh synchr
     facts: { sessions: [{ sessionId: "old", name: "Replace me" }] },
     drafts: { old: "preserve me" },
   });
-  const reached = { ...basis, synchronizationEpoch: "epoch-two", cursor: "cursor-new" };
+  const reached = {
+    ...basis,
+    synchronizationEpoch: "epoch-two",
+    cursor: "cursor-new",
+    resourceRevisions: {},
+  };
+  const barrier = {
+    cursor: "cursor-new",
+    resourceRevisions: {},
+    protocolBasis: "1.2",
+  };
 
   assert.deepEqual(workingSet.reach(reached), {
     kind: "continuity-reset", facts: undefined, drafts: { old: "preserve me" }, commandsEnabled: false,
   });
-  assert.equal(workingSet.commitAfterBarrier(reached, { sessions: [] }, "2026-07-22T11:00:00.000Z").commandsEnabled, true);
+  assert.equal(
+    workingSet.commitAfterBarrier(reached, barrier, { sessions: [] }, "2026-07-22T11:00:00.000Z").commandsEnabled,
+    true,
+  );
   assert.deepEqual(workingSet.offline(reached)?.facts, { sessions: [] });
   assert.deepEqual(workingSet.offline(reached)?.drafts, { old: "preserve me" });
 });

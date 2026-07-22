@@ -8,6 +8,12 @@ export interface WorkingSetBasis {
   resourceRevisions?: Readonly<Record<string, number>>;
 }
 
+export interface SynchronizationBarrier {
+  cursor: string;
+  resourceRevisions: Readonly<Record<string, number>>;
+  protocolBasis: string;
+}
+
 export interface WorkingSetRecord<Facts, Drafts> {
   basis: WorkingSetBasis;
   lastSynchronizedAt: string;
@@ -25,7 +31,14 @@ export class IndexedDbWorkingSetStorage<Facts, Drafts> {
     return this.perform("readonly", store => store.get(workingSetKey(basis)));
   }
 
-  async writeAfterBarrier(record: WorkingSetRecord<Facts, Drafts>): Promise<void> {
+  async writeAfterBarrier(
+    record: WorkingSetRecord<Facts, Drafts>,
+    barrier: SynchronizationBarrier,
+  ): Promise<void> {
+    const provenBasis = basisProvenByBarrier(record.basis, barrier);
+    if (!sameBasis(record.basis, provenBasis)) {
+      throw new Error("Working-set record does not include its synchronization barrier basis");
+    }
     await this.perform("readwrite", store => store.put(record, workingSetKey(record.basis)));
   }
 
@@ -80,10 +93,38 @@ export class OfflineWorkingSet<Facts, Drafts> {
     return { kind: "matching" as const, commandsEnabled: false as const };
   }
 
-  commitAfterBarrier(basis: WorkingSetBasis, facts: Facts, lastSynchronizedAt: string) {
+  commitAfterBarrier(
+    reached: WorkingSetBasis,
+    barrier: SynchronizationBarrier,
+    facts: Facts,
+    lastSynchronizedAt: string,
+  ) {
+    const basis = basisProvenByBarrier(reached, barrier);
     this.record = { basis, facts, drafts: this.record.drafts, lastSynchronizedAt };
     return { commandsEnabled: true as const };
   }
+}
+
+function basisProvenByBarrier(
+  reached: WorkingSetBasis,
+  barrier: SynchronizationBarrier | undefined,
+): WorkingSetBasis {
+  if (!barrier) throw new Error("A current synchronization barrier is required");
+  if (reached.protocol !== barrier.protocolBasis) {
+    throw new Error("Synchronization barrier protocol does not match the reached basis");
+  }
+  if (reached.cursor !== undefined && reached.cursor !== barrier.cursor) {
+    throw new Error("Synchronization barrier cursor does not match the reached basis");
+  }
+  if (reached.resourceRevisions !== undefined
+    && !revisionsMatch(reached.resourceRevisions, barrier.resourceRevisions)) {
+    throw new Error("Synchronization barrier revisions do not match the reached basis");
+  }
+  return {
+    ...reached,
+    cursor: barrier.cursor,
+    resourceRevisions: barrier.resourceRevisions,
+  };
 }
 
 function sameBasis(left: WorkingSetBasis, right: WorkingSetBasis): boolean {
@@ -92,11 +133,11 @@ function sameBasis(left: WorkingSetBasis, right: WorkingSetBasis): boolean {
     && left.cacheSchema === right.cacheSchema
     && left.protocol === right.protocol
     && left.synchronizationEpoch === right.synchronizationEpoch
-    && (left.cursor === undefined || right.cursor === undefined || left.cursor === right.cursor)
+    && left.cursor === right.cursor
     && revisionsMatch(left.resourceRevisions, right.resourceRevisions);
 }
 
 function revisionsMatch(left?: Readonly<Record<string, number>>, right?: Readonly<Record<string, number>>): boolean {
-  if (!left || !right) return true;
+  if (!left || !right) return left === right;
   return JSON.stringify(Object.entries(left).sort()) === JSON.stringify(Object.entries(right).sort());
 }
