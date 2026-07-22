@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-test("README documents explicit profile CA setup and reset", async () => {
+test("README documents anonymous prototype startup and explicit CA recovery", async () => {
   const readme = await readFile("README.md", "utf8");
 
   assert.match(readme, /npm run dev:ca:setup.*npm run dev/s);
-  assert.match(readme, /`created`.*`unchanged`/s);
-  assert.match(readme, /fingerprint.*public certificate/is);
+  assert.match(readme, /plain HTTP.*without credentials or setup/is);
   assert.match(readme, /historical checkout-local\s+TLS material/i);
   assert.match(readme, /npm run dev:ca:reset.*npm run dev:ca:setup/s);
 });
