@@ -8,24 +8,27 @@ import {
 } from "../packages/protocol/src/status.js";
 
 export function nextControlMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const onMessage = (data: RawData): void => {
-      socket.off("error", onError);
+  let state = states.get(socket);
+  if (!state) {
+    state = { queued: [], waiting: [] };
+    states.set(socket, state);
+    socket.on("message", (data: RawData) => {
       try {
-        resolve(serverMessageSchema.parse(JSON.parse(data.toString())));
-      } catch (error) {
-        reject(error);
-      }
-    };
-    const onError = (error: Error): void => {
-      socket.off("message", onMessage);
-      reject(error);
-    };
-
-    socket.once("message", onMessage);
-    socket.once("error", onError);
-  });
+        const message = serverMessageSchema.parse(JSON.parse(data.toString()));
+        const waiter = state?.waiting.shift();
+        waiter ? waiter.resolve(message) : state?.queued.push(message);
+      } catch (error) { state?.waiting.shift()?.reject(error); }
+    });
+    socket.on("error", error => state?.waiting.splice(0).forEach(item => item.reject(error)));
+  }
+  const message = state.queued.shift();
+  return message ? Promise.resolve(message) : new Promise((resolve, reject) => state?.waiting.push({ resolve, reject }));
 }
+
+const states = new WeakMap<WebSocket, {
+  queued: ServerMessage[];
+  waiting: Array<{ resolve(message: ServerMessage): void; reject(error: unknown): void }>;
+}>();
 
 export async function synchronizeEmptyControlScope(
   socket: WebSocket,

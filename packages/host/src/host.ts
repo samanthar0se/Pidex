@@ -1,7 +1,6 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { readFileSync, statfsSync } from "node:fs";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { createServer } from "node:https";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
@@ -9,13 +8,11 @@ import {
   sessionReadStateResourceId,
 } from "../../../apps/pwa/read-state.mjs";
 import {
-  executePidexFirewallOperation,
   type HostAdapters,
   type PiPresentationEffect,
   type PiInteractionRequest,
   type PiInteractionResult,
   type SessionJob,
-  type WindowsPlatformAdapter,
 } from "../../adapters/src/index.js";
 import {
   clientHelloSchema,
@@ -34,20 +31,12 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import {
-  provisionPackagedHostCertificate,
-  type HostCertificateProvisioner,
-} from "./certificate.js";
+import type { HostCertificateProvisioner } from "./certificate.js";
 import {
   type CoverageDiagnostic,
   DurabilityCoverageMonitor,
   type DurabilityRole,
 } from "./durability-coverage.js";
-import {
-  PairingAuthority,
-  PairingError,
-  type PairingInstructions,
-} from "./pairing.js";
 import {
   PiSessionWorker,
   WorkerLossError,
@@ -268,10 +257,8 @@ export interface HostOptions {
 export interface StartedHost {
   origin: string;
   /** Host-local administration action. Its result must never be logged or projected. */
-  createPairing(): PairingInstructions;
   status(): HostStatus;
   /** Host-local administration bypasses Device authentication. */
-  revokeDevice(deviceId: string): void;
   /** Test/restore seam: continuity-breaking activation rotates the epoch atomically. */
   rotateSynchronizationEpoch(): void;
   storageProtection(): StorageProtectionStatus;
@@ -323,16 +310,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   store.reconcileAcceptedRuns(adapters.clock.now());
   store.resetResidencyOnStartup();
   const hostname = options.hostname ?? DEFAULT_HOSTNAME;
-  const firewallPort =
-    options.port && options.port > 0 ? options.port : DEFAULT_PORT;
-  const provisionCertificate =
-    options.certificateProvisioner ?? provisionPackagedHostCertificate;
-  const certificate = await provisionCertificate({
-    dataDir: options.dataDir,
-    hostname,
-    windows: adapters.windows,
-  });
-  const firewallWarnings = configureFirewall(adapters.windows, firewallPort);
+  const firewallWarnings: HostStatus["warnings"] = [];
   const coverage = new DurabilityCoverageMonitor(
     adapters.windows,
     {
@@ -349,7 +327,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const stopVolumeObservation = adapters.windows.observeVolumeChanges(() => {
     void refreshCoverage();
   });
-  const pairing = new PairingAuthority(adapters.clock, store);
 
   function status(): HostStatus {
     const durability = coverage.current();
@@ -382,35 +359,9 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   const server = createServer(
-    {
-      key: certificate.key,
-      cert: certificate.cert,
-    },
-    async (request, response) => {
-      const requestHost = request.headers.host?.split(":")[0];
-      if (hostname !== DEFAULT_HOSTNAME && requestHost !== hostname) {
-        response
-          .writeHead(421, {
-            location: `https://${hostname}:${options.port ?? DEFAULT_PORT}`,
-          })
-          .end();
-        return;
-      }
-
-      if (request.method === "POST" && request.url?.startsWith("/pair/")) {
-        await handlePairingRequest(request.url, request, response, pairing);
-        return;
-      }
-
+    (request, response) => {
       if (request.url?.startsWith("/api/")) {
-        handleApiRequest(
-          request.url,
-          request,
-          response,
-          store,
-          options.authorization,
-          pairing,
-        );
+        handleApiRequest(request.url, request, response, store);
         return;
       }
 
@@ -533,34 +484,15 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   server.on("upgrade", (request, socket, head) => {
-    const upgradeUrl = new URL(request.url ?? "/", "https://pidex.invalid");
-    const sessionToken = upgradeUrl.searchParams.get("session") ?? undefined;
-    const sessionDeviceId = pairing.sessionDevice(sessionToken);
-    const authorization = request.headers.authorization;
-    const hasValidBearerAuthorization = hasValidAuthorization(
-      authorization,
-      options.authorization,
-      pairing,
-    );
-    const isAuthorizedControlRequest =
-      upgradeUrl.pathname === "/control" &&
-      (sessionDeviceId !== undefined || hasValidBearerAuthorization);
-
-    if (!isAuthorizedControlRequest) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    const upgradeUrl = new URL(request.url ?? "/", "http://pidex.invalid");
+    if (upgradeUrl.pathname !== "/control") {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
 
     webSocketServer.handleUpgrade(request, socket, head, webSocket => {
-      if (sessionDeviceId !== undefined) {
-        clientDeviceIds.set(webSocket, sessionDeviceId);
-      } else if (hasValidBearerAuthorization) {
-        const tokenDigest = createHash("sha256")
-          .update(authorization ?? "")
-          .digest("hex");
-        clientDeviceIds.set(webSocket, `bearer:${tokenDigest}`);
-      }
+      clientDeviceIds.set(webSocket, "anonymous");
       webSocketServer.emit("connection", webSocket, request);
     });
   });
@@ -854,32 +786,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       ? address.port
       : (options.port ?? DEFAULT_PORT);
 
-  const canonicalOrigin = `https://${hostname}:${port}`;
+  const canonicalOrigin = `http://${hostname}:${port}`;
   void refreshCoverage();
-  const fingerprint = createHash("sha256")
-    .update(certificate.ca)
-    .digest("hex");
-  const stopAdvertisement = adapters.windows.advertisePidex({
-    service: "_pidex._tcp.local",
-    hostname,
-    port,
-    interfaces: adapters.windows.privateInterfaces(),
-    txt: {
-      location: canonicalOrigin,
-      label: options.label ?? DEFAULT_LABEL,
-      version: "1",
-      fingerprint,
-    },
-  });
-
-  function revokeDevice(deviceId: string): void {
-    pairing.revoke(deviceId);
-    for (const [client, connectedDeviceId] of clientDeviceIds) {
-      if (connectedDeviceId === deviceId) {
-        client.close(4003, "device-revoked");
-      }
-    }
-  }
 
   function handleSessionCreate(
     client: WebSocket,
@@ -2086,10 +1994,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   return {
     origin: canonicalOrigin,
-    createPairing: () => {
-      admitDiscretionaryWrite();
-      return pairing.create(canonicalOrigin);
-    },
     status,
     storageProtection: () => storageProtection.status(),
     doctor: async () => {
@@ -2102,12 +2006,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     },
     exportSupport: async () => ({ durability: await refreshCoverage() }),
     updateStorageRoots: roots => coverage.setRoots(roots),
-    revokeDevice,
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
       stopVolumeObservation();
-      stopAdvertisement();
       for (const timer of interactionDeadlineTimers.values()) {
         clearTimeout(timer);
       }
@@ -2314,21 +2216,8 @@ function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
   store: AuthorityStore,
-  expectedAuthorization: string | undefined,
-  pairing: PairingAuthority,
 ): void {
-  if (
-    !hasValidAuthorization(
-      request.headers.authorization,
-      expectedAuthorization,
-      pairing,
-    )
-  ) {
-    response.writeHead(401, { "cache-control": "no-store" }).end();
-    return;
-  }
-
-  const url = new URL(path, "https://pidex.invalid");
+  const url = new URL(path, "http://pidex.invalid");
   const timelineMatch = TIMELINE_API_PATH.exec(url.pathname);
   if (request.method === "GET" && timelineMatch) {
     const cursor = url.searchParams.get("cursor");
@@ -2400,7 +2289,7 @@ function handleApiRequest(
 function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
   const pathname = new URL(
     request.url ?? "/",
-    "https://pidex.invalid",
+    "http://pidex.invalid",
   ).pathname;
   const asset = PWA_ASSETS[pathname];
   if (asset) {
@@ -2410,35 +2299,6 @@ function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
     return PWA_ASSETS["/"];
   }
   return undefined;
-}
-
-function configureFirewall(
-  windows: WindowsPlatformAdapter,
-  port: number,
-): HostStatus["warnings"] {
-  executePidexFirewallOperation(windows, {
-    operation: "ensure-private-rule",
-    port,
-  });
-
-  const firewall = windows.inspectPidexFirewall(port);
-  if (firewall.state === "healthy") {
-    return [];
-  }
-
-  const warning: HostStatus["warnings"][number] = {
-    severity: "high",
-    code: "firewall-enforcement-degraded",
-    detail: firewall.detail,
-  };
-  windows.writeCoarseEvent({
-    severity: "error",
-    code: "PIDEX_FIREWALL_DEGRADED",
-    detail: warning.detail,
-  });
-  console.error(JSON.stringify(warning));
-
-  return [warning];
 }
 
 function createDurabilityWarnings(
@@ -2459,105 +2319,4 @@ function createDurabilityWarnings(
     });
   }
   return warnings;
-}
-
-function hasValidAuthorization(
-  header: string | undefined,
-  expected: string | undefined,
-  pairing: PairingAuthority,
-): boolean {
-  if (!header?.startsWith("Bearer ")) {
-    return false;
-  }
-
-  const token = header.slice(7);
-  if (pairing.acceptsSession(token)) {
-    return true;
-  }
-  if (!expected) {
-    return false;
-  }
-
-  const actual = Buffer.from(token);
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
-
-async function handlePairingRequest(
-  path: string,
-  request: IncomingMessage,
-  response: ServerResponse,
-  pairing: PairingAuthority,
-): Promise<void> {
-  try {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of request) {
-      const part = Buffer.from(chunk);
-      size += part.length;
-      if (size > 16_384) {
-        throw new PairingError(413, "request-too-large");
-      }
-      chunks.push(part);
-    }
-
-    let body: unknown;
-    try {
-      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    } catch {
-      throw new PairingError(400, "invalid-json");
-    }
-
-    const result = routePairingRequest(path, body, pairing);
-    response.writeHead(200, {
-      "content-type": "application/json",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify(result));
-  } catch (error) {
-    const failure =
-      error instanceof PairingError
-        ? error
-        : new PairingError(400, "invalid-request");
-    response.writeHead(failure.status, {
-      "content-type": "application/json",
-      "cache-control": "no-store",
-    });
-    response.end(JSON.stringify({ error: failure.message }));
-  }
-}
-
-function routePairingRequest(
-  path: string,
-  body: unknown,
-  pairing: PairingAuthority,
-): object {
-  switch (path) {
-    case "/pair/challenge":
-      return pairing.begin(
-        pairingRequestField(body, "secret"),
-        pairingRequestField(body, "publicKey"),
-      );
-    case "/pair/complete":
-      return pairing.complete(
-        pairingRequestField(body, "pairingId"),
-        pairingRequestField(body, "signature"),
-      );
-    case "/pair/auth-challenge":
-      return pairing.beginAuthentication(pairingRequestField(body, "deviceId"));
-    case "/pair/authenticate":
-      return pairing.authenticate(
-        pairingRequestField(body, "authenticationId"),
-        pairingRequestField(body, "signature"),
-      );
-    default:
-      throw new PairingError(404, "not-found");
-  }
-}
-
-function pairingRequestField(body: unknown, field: string): unknown {
-  if (body === null || body === undefined) {
-    throw new PairingError(400, "invalid-request");
-  }
-  return Reflect.get(Object(body), field);
 }

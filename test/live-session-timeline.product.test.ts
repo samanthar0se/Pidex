@@ -44,7 +44,7 @@ test("a current Session receives consolidated revisioned model and tool activity
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace("https:", "wss:")}/control`,
+      `${host.origin.replace(/^http/, "ws")}/control`,
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },

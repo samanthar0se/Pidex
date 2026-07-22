@@ -87,7 +87,7 @@ test("replaying a rejected mark-read preserves the authoritative rejection", asy
     adapters: adaptersFor("deterministic"),
   });
   const client = new WebSocket(
-    `${host.origin.replace("https:", "wss:")}/control`,
+    `${host.origin.replace(/^http/, "ws")}/control`,
     {
       rejectUnauthorized: false,
       headers: { authorization: "Bearer device-a" },

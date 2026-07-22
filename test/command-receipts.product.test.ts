@@ -6,28 +6,11 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
-import {
-  serverMessageSchema,
-  type ServerMessage,
-} from "../packages/protocol/src/status.js";
-import { negotiateControl } from "./control-client.js";
-
-function next(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    socket.once("message", data => {
-      try {
-        resolve(serverMessageSchema.parse(JSON.parse(data.toString())));
-      } catch (error) {
-        reject(error);
-      }
-    });
-    socket.once("error", reject);
-  });
-}
+import { negotiateControl, nextControlMessage as next } from "./control-client.js";
 
 async function connect(origin: string, token: string): Promise<WebSocket> {
   const socket = new WebSocket(
-    `${origin.replace("https:", "wss:")}/control`,
+    `${origin.replace(/^http/, "ws")}/control`,
     {
       rejectUnauthorized: false,
       headers: { authorization: `Bearer ${token}` },

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
-import { get } from "node:https";
+import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,7 +9,7 @@ import { startHost } from "../packages/host/src/host.js";
 
 function request(origin: string, path: string) {
   return new Promise<{ status?: number; headers: NodeJS.Dict<string | string[]>; body: string }>((resolve, reject) => {
-    const call = get(new URL(path, origin), { rejectUnauthorized: false }, response => {
+    const call = get(new URL(path, origin), response => {
       response.setEncoding("utf8"); let body = "";
       response.on("data", chunk => { body += chunk; });
       response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, body }));

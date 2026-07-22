@@ -8,7 +8,7 @@ import {
 /** Test-only Device-protocol helper for public-protocol parity evidence. */
 export async function readStatus(origin: string, authorization?: string): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
-    const controlSocket = new WebSocket(`${origin.replace(/^https:/, "wss:")}/control`, {
+    const controlSocket = new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
       rejectUnauthorized: false,
       headers: authorization ? { authorization: `Bearer ${authorization}` } : undefined,
     });

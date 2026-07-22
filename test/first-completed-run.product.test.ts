@@ -94,7 +94,7 @@ test("completion survives restart without republishing an unchanged unread state
 });
 
 function connect(origin: string): WebSocket {
-  return new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
+  return new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });

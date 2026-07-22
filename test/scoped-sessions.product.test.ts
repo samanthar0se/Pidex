@@ -7,38 +7,19 @@ import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import {
-  serverMessageSchema,
   type HostSnapshot,
-  type ServerMessage,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl } from "./control-client.js";
+import { negotiateControl, nextControlMessage as next } from "./control-client.js";
 
 async function connect(
   origin: string,
 ): Promise<{ socket: WebSocket; snapshot: HostSnapshot }> {
-  const socket = new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
+  const socket = new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer test-device" },
   });
   const snapshot = await negotiateControl(socket);
   return { socket, snapshot };
-}
-
-function next(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    socket.once("message", bytes => {
-      try {
-        resolve(parseMessage(bytes));
-      } catch (error) {
-        reject(error);
-      }
-    });
-    socket.once("error", reject);
-  });
-}
-
-function parseMessage(bytes: WebSocket.RawData): ServerMessage {
-  return serverMessageSchema.parse(JSON.parse(bytes.toString()));
 }
 
 test("scoped empty Sessions reject atomically, publish typed changes, and survive restart", async () => {
@@ -131,7 +112,6 @@ test("scoped empty Sessions reject atomically, publish typed changes, and surviv
         "authority.sqlite",
         "authority.sqlite-shm",
         "authority.sqlite-wal",
-        "tls",
       ],
     );
   } finally {

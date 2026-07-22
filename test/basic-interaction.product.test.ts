@@ -47,7 +47,7 @@ test("all basic Interaction kinds validate and settle only through their exact w
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace("https:", "wss:")}/control`,
+      `${host.origin.replace(/^http/, "ws")}/control`,
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },

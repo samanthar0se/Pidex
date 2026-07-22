@@ -46,7 +46,7 @@ test("Durability coverage is asynchronous, role-specific, conservative, and priv
     assert.equal(pending.durability.assessment, "assessment-pending");
 
     const socket = new WebSocket(
-      `${host.origin.replace("https:", "wss:")}/control`,
+      `${host.origin.replace(/^http/, "ws")}/control`,
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },

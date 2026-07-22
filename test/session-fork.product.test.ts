@@ -172,7 +172,7 @@ test("fork command publishes validated child genesis and closes its bootstrap on
     adapters: { ...baseAdapters, pi },
   });
   const socket = new WebSocket(
-    `${host.origin.replace("https:", "wss:")}/control`,
+    `${host.origin.replace(/^http/, "ws")}/control`,
     {
       rejectUnauthorized: false,
       headers: { authorization: "Bearer device" },

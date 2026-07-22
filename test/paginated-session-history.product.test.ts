@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingHttpHeaders } from "node:http";
-import { request } from "node:https";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,7 +29,6 @@ function getHostResource(
     const headers = token ? { authorization: `Bearer ${token}` } : {};
     const pendingRequest = request(
       `${origin}${path}`,
-      { rejectUnauthorized: false, headers },
       response => {
         const chunks: Buffer[] = [];
         response.on("data", chunk => chunks.push(chunk));
@@ -65,9 +64,8 @@ test("returns bounded Session windows, pages stable finalized history, and verif
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace("https:", "wss:")}/control`,
+      `${host.origin.replace(/^http/, "ws")}/control`,
       {
-        rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },
       },
     );

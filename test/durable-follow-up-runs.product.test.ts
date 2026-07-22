@@ -33,7 +33,7 @@ test("durable follow-ups execute once in order and are held after an abnormal pr
     adapters: { ...base, pi },
   });
   try {
-    const controlOrigin = host.origin.replace("https:", "wss:");
+    const controlOrigin = host.origin.replace(/^http/, "ws");
     const socket = new WebSocket(`${controlOrigin}/control`, {
       rejectUnauthorized: false,
       headers: { authorization: "Bearer device" },
@@ -84,8 +84,10 @@ test("durable follow-ups execute once in order and are held after an abnormal pr
     await nextControlMessage(socket);
 
     socket.send(JSON.stringify({ type: "scope.set", sessionIds: [sessionId], protocolVersion: "1.2" }));
-    await nextControlMessage(socket); // host reset
-    const scope = await nextControlMessage(socket);
+    let scope = await nextControlMessage(socket);
+    while (scope.type !== "scope.reset" || scope.barrier.scope.kind !== "session") {
+      scope = await nextControlMessage(socket);
+    }
     assert.equal(scope.type, "scope.reset");
     if (scope.type !== "scope.reset" || !("runs" in scope.snapshot)) {
       throw new Error("missing runs");

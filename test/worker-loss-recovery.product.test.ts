@@ -41,7 +41,7 @@ test(
     let socket: WebSocket | undefined;
     try {
       socket = new WebSocket(
-        `${host.origin.replace("https:", "wss:")}/control`,
+        `${host.origin.replace(/^http/, "ws")}/control`,
         {
           rejectUnauthorized: false,
           headers: { authorization: "Bearer test" },

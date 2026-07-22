@@ -3,40 +3,18 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import WebSocket, { type RawData } from "ws";
+import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import {
   protocolVersion,
-  serverMessageSchema,
-  type ServerMessage,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl } from "./control-client.js";
-
-function nextServerMessage(socket: WebSocket): Promise<ServerMessage> {
-  return new Promise((resolve, reject) => {
-    const onMessage = (bytes: RawData): void => {
-      socket.off("error", onError);
-      try {
-        resolve(serverMessageSchema.parse(JSON.parse(bytes.toString())));
-      } catch (error) {
-        reject(error);
-      }
-    };
-    const onError = (error: Error): void => {
-      socket.off("message", onMessage);
-      reject(error);
-    };
-
-    socket.once("message", onMessage);
-    socket.once("error", onError);
-  });
-}
+import { negotiateControl, nextControlMessage as nextServerMessage } from "./control-client.js";
 
 async function connect(
   origin: string,
 ): Promise<{ socket: WebSocket; cursor: string }> {
-  const socket = new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
+  const socket = new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });

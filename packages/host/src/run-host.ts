@@ -1,10 +1,9 @@
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import {
   adaptersFor,
   type AdapterMode,
 } from "../../adapters/src/index.js";
 import type { HostCertificateProvisioner } from "./certificate.js";
-import { developmentCaDirectory } from "./development-ca.js";
 import { startHost } from "./host.js";
 
 export async function runHost(
@@ -22,9 +21,10 @@ export async function runHost(
     certificateProvisioner,
   });
 
-  console.log(`Pidex ready at ${host.origin} (${host.status().hostId})`);
-  console.log(`Pair this device: ${host.createPairing().qrPayload}`);
-  printCertificateTrustGuidance();
+  console.log("UNAUTHENTICATED PROTOTYPE: anyone who can reach this Host on the network can view and control Pidex. Do not expose it beyond a trusted LAN.");
+  console.log(`Pidex listening on 0.0.0.0:${port}`);
+  console.log(`Loopback: ${host.origin} (${host.status().hostId})`);
+  console.log(`LAN: http://<LAN-IP>:${port}`);
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, async () => {
@@ -32,21 +32,4 @@ export async function runHost(
       process.exit(0);
     });
   }
-}
-
-function printCertificateTrustGuidance(): void {
-  const certificatePath = join(
-    developmentCaDirectory(process.env.PIDEX_DEVELOPMENT_PROFILE_ROOT),
-    "pidex-development-ca.pem",
-  );
-  if (process.platform === "win32") {
-    console.log(
-      `If HTTPS is not trusted, run: certutil -user -addstore Root "${certificatePath}"`,
-    );
-    return;
-  }
-
-  console.log(
-    `If HTTPS is not trusted, trust the development CA: ${certificatePath}`,
-  );
 }
