@@ -70,7 +70,6 @@ export const requiredChecks = {
     "exact-closure-and-addon-load-rejection",
     "capability-drift-transitions-and-late-faults",
     "job-containment-and-breakaway-attacks",
-    "local-pipe-authentication-and-attacks",
     "complete-handle-cleanup",
   ],
   "two-checkout-source-lifecycle": [
@@ -112,7 +111,6 @@ export const requiredChecks = {
     "shutdown-logoff-and-drain-deadlines",
     "network-port-firewall-mdns-and-certificate-transitions",
     "volume-and-durability-coverage-transitions",
-    "local-control-failure-states",
     "source-update-and-lazy-pi-migration",
     "backup-restore-reidentify-and-corrupt-newest-recovery",
   ],

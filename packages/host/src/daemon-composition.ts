@@ -4,7 +4,7 @@ import {
 } from "../../launch-manifest/src/index.js";
 
 export type HealthScope =
-  | "local-control" | "authority" | "lan" | "tls-origin" | "firewall"
+  | "authority" | "lan" | "tls-origin" | "firewall"
   | "private-interfaces" | "mdns" | "pi-execution" | "pi-configuration"
   | "durability-coverage" | "optional-capabilities"
   | `session:${string}:artifact` | `session:${string}:worker`;
@@ -125,7 +125,6 @@ export interface ManifestOwnerContext {
 /** Runtime construction ports. Each returned owner has one lexical owner in this composition root. */
 export interface ManifestHostFactories {
   proveLauncherContainment(manifest: ResolvedLaunchManifest): Promise<void>;
-  openAuthenticatedLocalControl(manifest: ResolvedLaunchManifest): Promise<CompositionOwner>;
   verifyReleaseAndNativeIdentity(manifest: ResolvedLaunchManifest): Promise<void>;
   openAuthority(manifest: ResolvedLaunchManifest): Promise<AuthorityOwner>;
   openDurabilityServices(context: ManifestOwnerContext): Promise<CompositionOwner>;
@@ -192,7 +191,7 @@ export interface PortableManifestHost extends ManifestHost {
 }
 
 const SCOPES: readonly HealthScope[] = [
-  "local-control", "authority", "lan", "tls-origin", "firewall",
+  "authority", "lan", "tls-origin", "firewall",
   "private-interfaces", "mdns", "pi-execution", "pi-configuration",
   "durability-coverage", "optional-capabilities",
 ];
@@ -262,10 +261,6 @@ async function composeValidatedManifestHost(
   const owners: CompositionOwner[] = [];
   try {
     await factories.proveLauncherContainment(manifest);
-    const control = await factories.openAuthenticatedLocalControl(manifest);
-    owners.push(control);
-    health.set("local-control", "available", "authenticated");
-
     await factories.verifyReleaseAndNativeIdentity(manifest);
     const authority = await factories.openAuthority(manifest);
     owners.push(authority);
@@ -335,7 +330,7 @@ function validatePortableInputs(input: PortableCompositionInputs | undefined): P
 
 function assertCompleteFactories(factories: ManifestHostFactories): void {
   for (const component of [
-    "proveLauncherContainment", "openAuthenticatedLocalControl",
+    "proveLauncherContainment",
     "verifyReleaseAndNativeIdentity", "openAuthority", "openDurabilityServices",
     "openWindowsAddonPorts", "openModuleRegistry", "openLifecycleCoordinator",
     "openBackupRecoveryCoordinator", "probePi", "openPiChildSupervisor",

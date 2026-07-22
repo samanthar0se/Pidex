@@ -20,7 +20,7 @@ Pidex is a Windows-first, PWA-first control plane for durable [Pi](https://githu
 - `packages/protocol/` — versioned Zod schemas and capability negotiation.
 - `packages/adapters/` — deterministic development/test adapters only; product startup cannot select them.
 - `packages/launcher/` — Windows installation, supervision, lifecycle, and signed-update logic.
-- `packages/cli/` — authenticated local-control CLI surface selected by the resolved manifest.
+- `packages/cli/` — anonymous status and doctor CLI over explicit HTTP/WebSocket Host URLs.
 - `test/` — end-to-end product contract tests using Node's test runner.
 - `docs/` — maintained security, architecture, operations, and release-evidence guidance.
 - `.scratch/pidex-product-and-architecture/` — product specification, domain glossary, decision map, and throwaway UI prototype.

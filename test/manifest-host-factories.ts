@@ -12,7 +12,6 @@ export function createCompleteManifestHostFactories(
 ): ManifestHostFactories {
   return {
     proveLauncherContainment: async () => {},
-    openAuthenticatedLocalControl: async () => inertOwner(),
     verifyReleaseAndNativeIdentity: async () => {},
     openAuthority: async () => ({ mode: "normal", ...inertOwner() }),
     openDurabilityServices: async () => inertOwner(),

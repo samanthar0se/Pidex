@@ -2,7 +2,6 @@ add_library(pidex_windows_common STATIC
   src/dns_sd.cpp
   src/error.cpp
   src/identity.cpp
-  src/local_pipe.cpp
   src/private_network.cpp
   src/process.cpp
 )

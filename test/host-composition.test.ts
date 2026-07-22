@@ -45,10 +45,6 @@ function recordingFactories(
   const owner = () => ({ close: async () => {} });
   return createCompleteManifestHostFactories({
     proveLauncherContainment: async () => { calls.push("containment"); },
-    openAuthenticatedLocalControl: async () => {
-      calls.push("control");
-      return owner();
-    },
     verifyReleaseAndNativeIdentity: async () => { calls.push("release"); },
     openAuthority: async () => {
       calls.push("authority");
@@ -72,7 +68,7 @@ function recordingFactories(
   });
 }
 
-test("manifest Host proves containment and local control before opening Authority or product edges", async () => {
+test("manifest Host proves launcher containment before opening Authority or product edges", async () => {
   const calls: string[] = [];
   const host = await composeManifestHost(
     manifest(),
@@ -80,7 +76,7 @@ test("manifest Host proves containment and local control before opening Authorit
   );
 
   assert.deepEqual(calls, [
-    "containment", "control", "release", "authority", "durability", "windows",
+    "containment", "release", "authority", "durability", "windows",
     "modules", "lifecycle", "backup-recovery", "pi", "pi-supervisor", "lan", "runs",
   ]);
   assert.equal(host.health.scope("authority").availability, "available");
@@ -95,11 +91,10 @@ test("recovery-only Authority keeps the anonymous LAN recovery edge open without
   );
 
   assert.deepEqual(calls, [
-    "containment", "control", "release", "authority", "durability", "windows",
+    "containment", "release", "authority", "durability", "windows",
     "modules", "lifecycle", "backup-recovery", "lan",
   ]);
   assert.equal(host.mode, "recovery-only");
-  assert.equal(host.health.scope("local-control").availability, "available");
   assert.equal(host.health.scope("lan").availability, "available");
   assert.equal(host.health.scope("pi-execution").availability, "unavailable");
   await host.close();
