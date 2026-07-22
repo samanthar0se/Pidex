@@ -3,3 +3,4 @@ node_modules/
 .pidex-data/
 .pidex-data-dev/
 .pidex-source-instance.json
+build/

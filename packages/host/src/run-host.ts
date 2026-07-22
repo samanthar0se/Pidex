@@ -5,9 +5,9 @@ import {
 } from "../../adapters/src/index.js";
 import { startHost } from "./host.js";
 
-export async function runHost(adapterMode: AdapterMode): Promise<void> {
+export async function runHost(adapterMode: AdapterMode, defaultPort = 7443): Promise<void> {
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
-  const port = Number(process.env.PIDEX_PORT ?? 7443);
+  const port = Number(process.env.PIDEX_PORT ?? defaultPort);
   const host = await startHost({
     dataDir,
     port,

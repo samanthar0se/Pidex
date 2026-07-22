@@ -159,7 +159,7 @@ interface ClientDelivery {
   queue: OutboundMessage[];
 }
 
-const CLIENT_DIST = "apps/client/dist";
+const CLIENT_DIST = process.env.PIDEX_CLIENT_DIST ?? "apps/client/dist";
 const clientManifest = JSON.parse(
   readFileSync(resolve(CLIENT_DIST, ".vite/manifest.json"), "utf8"),
 ) as Record<string, ViteManifestEntry>;

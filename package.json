@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts",
     "build:client": "vite build apps/client --config apps/client/vite.config.ts",
+    "build:unpacked": "npm run build:client && node scripts/build-unpacked.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "security": "npm run secret-scan && npm audit --omit=dev --audit-level=high && npm run typecheck && npm test"
   },
