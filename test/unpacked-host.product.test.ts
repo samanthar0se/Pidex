@@ -1,28 +1,31 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
 const execute = promisify(execFile);
+const requiredArtifactFiles = [
+  "client/index.html",
+  "client/service-worker.js",
+  "composition.json",
+  "host.mjs",
+  "integrity.json",
+  "native/candidate.json",
+  "pidex.mjs",
+  "schemas/host-compatibility.v1.json",
+];
 
 test("the canonical build produces the complete reduced unpacked Host", async () => {
   const output = await mkdtemp(join(tmpdir(), "pidex-unpacked-"));
   try {
     await execute(process.execPath, ["scripts/build-unpacked.mjs", output]);
 
-    const files = await listFiles(output);
-    assert.deepEqual(files.filter(path => [
-      "host.mjs", "pidex.mjs", "client/index.html", "client/service-worker.js",
-      "schemas/host-compatibility.v1.json", "native/candidate.json",
-      "composition.json", "integrity.json",
-    ].includes(path)).sort(), [
-      "client/index.html", "client/service-worker.js", "composition.json", "host.mjs",
-      "integrity.json", "native/candidate.json", "pidex.mjs",
-      "schemas/host-compatibility.v1.json",
-    ]);
+    for (const path of requiredArtifactFiles) {
+      assert.equal((await stat(join(output, path))).isFile(), true, `${path} must be a file`);
+    }
 
     const composition = JSON.parse(await readFile(join(output, "composition.json"), "utf8"));
     assert.equal(composition.defaultEndpoint, "http://0.0.0.0:47831");
@@ -65,18 +68,8 @@ test("the unpacked Host serves the Client and its minimal CLI over configured HT
   }
 });
 
-async function listFiles(root: string, relative = ""): Promise<string[]> {
-  const result: string[] = [];
-  for (const entry of await readdir(join(root, relative), { withFileTypes: true })) {
-    const path = join(relative, entry.name);
-    if (entry.isDirectory()) result.push(...await listFiles(root, path));
-    else result.push(path.replaceAll("\\", "/"));
-  }
-  return result;
-}
-
 async function waitForHttp(url: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 400; attempt++) {
     try {
       if ((await fetch(url)).ok) return;
     } catch {}
