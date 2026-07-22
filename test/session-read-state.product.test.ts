@@ -11,7 +11,7 @@ import { negotiateControl, nextControlMessage } from "./control-client.js";
 
 const basis = [{ id: "session.read-state", version: 1 }] as const;
 
-test("Session authority persists milestones and serializes Device-scoped max mark-read transitions", async () => {
+test("Session authority persists milestones and serializes Host-global max mark-read transitions", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pidex-read-authority-"));
   const path = join(dir, "authority.sqlite");
   let store = new AuthorityStore(path, adaptersFor("deterministic"));
@@ -42,8 +42,7 @@ test("Session authority persists milestones and serializes Device-scoped max mar
     const replay = store.markSessionRead("device-a", command, 5);
     assert.equal(replay.kind, "replayed");
     const independent = store.markSessionRead("device-b", command, 6);
-    assert.equal(independent.kind, "accepted");
-    assert.equal("effect" in independent && independent.effect, "no-op");
+    assert.equal(independent.kind, "replayed");
     const conflict = store.markSessionRead("device-a", {
       ...command, presentedTimelineRevision: 1,
     }, 7);

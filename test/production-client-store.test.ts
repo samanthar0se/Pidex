@@ -131,7 +131,7 @@ function interaction(id: string, kind: "input" | "editor", revision: number, dea
     interactionId: id, sessionId: "session-one", runId, workerGeneration: 3,
     correlationId: `correlation-${id}`, kind, payload: { message: id }, state: "open" as const,
     revision, createdAt: deadlineAt - 5, deadlineAt, terminalCause: null, respondedAt: null,
-    respondingDeviceLabel: null, applicationProven: null,
+    applicationProven: null,
   };
 }
 

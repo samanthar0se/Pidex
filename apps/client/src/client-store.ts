@@ -33,7 +33,7 @@ export interface InteractionFact {
   correlationId: string; kind: "select" | "confirm" | "input" | "editor";
   payload: { message: string; options?: string[]; defaultValue?: string | boolean };
   provenance?: string; state: InteractionState; revision: number; createdAt: number; deadlineAt: number | null;
-  terminalCause: string | null; respondedAt: number | null; respondingDeviceLabel: string | null; applicationProven: boolean | null;
+  terminalCause: string | null; respondedAt: number | null; applicationProven: boolean | null;
 }
 export type InteractionResolution =
   | { kind: "dismiss" }

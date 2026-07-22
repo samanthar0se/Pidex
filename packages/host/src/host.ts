@@ -2029,7 +2029,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     const resolving = store.reserveInteraction(
       interaction.interactionId,
       command.observedRevision,
-      clientDeviceIds.get(client) ?? "paired device",
     );
     if (!resolving) {
       reject("stale-interaction");
@@ -2049,8 +2048,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     // only then may authority expose a terminal state.
     const terminalState = command.dismiss ? "dismissed" : "responded";
     const terminalCause = command.dismiss
-      ? "device-dismissal"
-      : "device-response";
+      ? "command-dismissal"
+      : "command-response";
     const terminal = store.settleInteraction(
       interaction.interactionId,
       "resolving",

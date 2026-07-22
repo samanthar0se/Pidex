@@ -54,6 +54,16 @@ test("steering is durable, idempotent, and cannot cross an execution boundary", 
       store.acceptSteering("device", command, "worker-1", 4).kind,
       "replayed",
     );
+    const conflict = store.acceptSteering(
+      "another device",
+      { ...command, text: "different intent" },
+      "worker-1",
+      4,
+    );
+    assert.deepEqual(
+      [conflict.kind, "error" in conflict && conflict.error],
+      ["rejected", "command-id-conflict"],
+    );
 
     store.settleRun(submitted.run.runId, "interrupted", "lost", null, 5);
     const stale = store.acceptSteering(

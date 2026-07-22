@@ -88,7 +88,7 @@ export type StopResult =
 
 export type SteerResult =
   | { kind: "accepted" | "replayed"; entry: TimelineEntry; cursor: string }
-  | { kind: "rejected"; error: "stale-execution"; cursor: string };
+  | { kind: "rejected"; error: "stale-execution" | "command-id-conflict"; cursor: string };
 
 const submitOutcomeSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -190,7 +190,7 @@ const INTERACTION_PROJECTION = `
   correlation_id AS correlationId, kind, payload_json AS payloadJson,
   provenance, state, revision, created_at AS createdAt,
   deadline_at AS deadlineAt, terminal_cause AS terminalCause,
-  responded_at AS respondedAt, responding_device_label AS respondingDeviceLabel,
+  responded_at AS respondedAt,
   application_proven AS applicationProven
 `;
 
@@ -201,7 +201,6 @@ type NewInteraction = Omit<
   | "revision"
   | "terminalCause"
   | "respondedAt"
-  | "respondingDeviceLabel"
   | "applicationProven"
 >;
 
@@ -726,9 +725,9 @@ export class AuthorityStore {
       const receipt = this.#db
         .prepare(
           `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE device_id = ? AND command_id = ?`,
+           WHERE command_id = ?`,
         )
-        .get(deviceId, command.commandId);
+        .get(command.commandId);
       if (receipt) {
         this.#db.exec("COMMIT");
         if (receipt.envelope_digest !== digest) {
@@ -803,12 +802,11 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `INSERT INTO command_receipts
-           (device_id, command_id, envelope_digest, outcome_json,
+           (command_id, envelope_digest, outcome_json,
             commit_cursor, committed_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?)`,
         )
         .run(
-          deviceId,
           command.commandId,
           digest,
           JSON.stringify(result),
@@ -833,8 +831,8 @@ export class AuthorityStore {
     try {
       const receipt = this.#db.prepare(
         `SELECT envelope_digest, outcome_json FROM command_receipts
-         WHERE device_id = ? AND command_id = ?`,
-      ).get(deviceId, command.commandId);
+         WHERE command_id = ?`,
+      ).get(command.commandId);
       if (receipt) {
         this.#db.exec("COMMIT");
         if (receipt.envelope_digest !== digest) {
@@ -912,9 +910,9 @@ export class AuthorityStore {
         }
       }
       this.#db.prepare(
-        `INSERT INTO command_receipts (device_id, command_id, envelope_digest, outcome_json, commit_cursor, committed_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(deviceId, command.commandId, digest, JSON.stringify(result), result.cursor, now);
+        `INSERT INTO command_receipts (command_id, envelope_digest, outcome_json, commit_cursor, committed_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(command.commandId, digest, JSON.stringify(result), result.cursor, now);
       this.#storage.beforeCommit();
       this.#db.exec("COMMIT");
       return result;
@@ -993,9 +991,9 @@ export class AuthorityStore {
       const receipt = this.#db
         .prepare(
           `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE device_id = ? AND command_id = ?`,
+           WHERE command_id = ?`,
         )
-        .get(deviceId, command.commandId);
+        .get(command.commandId);
       if (receipt) {
         this.#db.exec("COMMIT");
         if (receipt.envelope_digest !== digest) {
@@ -1056,12 +1054,11 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `INSERT INTO command_receipts
-           (device_id, command_id, envelope_digest, outcome_json,
+           (command_id, envelope_digest, outcome_json,
             commit_cursor, committed_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?)`,
         )
         .run(
-          deviceId,
           command.commandId,
           digest,
           JSON.stringify(outcome),
@@ -1087,9 +1084,9 @@ export class AuthorityStore {
       const receipt = this.#db
         .prepare(
           `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE device_id = ? AND command_id = ?`,
+           WHERE command_id = ?`,
         )
-        .get(deviceId, command.commandId);
+        .get(command.commandId);
       if (receipt) {
         if (receipt.envelope_digest !== digest) {
           this.#db.exec("COMMIT");
@@ -1233,23 +1230,31 @@ export class AuthorityStore {
     activeWorkerGeneration: string | undefined,
     now: number,
   ): SteerResult {
+    const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const priorSteering = timelineEntryReferenceSchema.optional().parse(
-        this.#db
-          .prepare(
-            `SELECT entry_id AS entryId FROM steering
-             WHERE device_id = ? AND command_id = ?`,
-          )
-          .get(deviceId, command.commandId),
-      );
-      if (priorSteering) {
-        const entry = this.loadTimelineEntry(priorSteering.entryId);
+      const receipt = this.#db.prepare(
+        `SELECT envelope_digest, outcome_json FROM command_receipts
+         WHERE command_id = ?`,
+      ).get(command.commandId);
+      if (receipt) {
         this.#db.exec("COMMIT");
+        if (receipt.envelope_digest !== digest) {
+          return { kind: "rejected", error: "command-id-conflict", cursor: this.status("").synchronization.cursor };
+        }
+        const prior = JSON.parse(String(receipt.outcome_json)) as {
+          kind: "accepted" | "rejected";
+          entryId?: string;
+          error?: "stale-execution";
+          cursor: string;
+        };
+        if (prior.kind === "rejected") {
+          return { kind: "rejected", error: prior.error!, cursor: prior.cursor };
+        }
         return {
           kind: "replayed",
-          entry,
-          cursor: this.status("").synchronization.cursor,
+          entry: this.loadTimelineEntry(prior.entryId!),
+          cursor: prior.cursor,
         };
       }
 
@@ -1275,6 +1280,9 @@ export class AuthorityStore {
         activeWorkerGeneration === command.workerGeneration &&
         session?.timelineRevision === command.observedTimelineRevision;
       if (!targetsActiveExecution) {
+        this.insertCommandReceipt(command.commandId, digest, {
+          kind: "rejected", error: "stale-execution", cursor,
+        }, cursor, now);
         this.#db.exec("COMMIT");
         return { kind: "rejected", error: "stale-execution", cursor };
       }
@@ -1297,13 +1305,12 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `INSERT INTO steering
-           (command_id, device_id, run_id, worker_generation, text, entry_id,
+           (command_id, run_id, worker_generation, text, entry_id,
             state, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
+           VALUES (?, ?, ?, ?, ?, 'accepted', ?)`,
         )
         .run(
           command.commandId,
-          deviceId,
           command.runId,
           command.workerGeneration,
           command.text,
@@ -1323,11 +1330,15 @@ export class AuthorityStore {
         )
         .run(now);
       const entry = this.loadTimelineEntry(entryId);
+      const committedCursor = this.status("").synchronization.cursor;
+      this.insertCommandReceipt(command.commandId, digest, {
+        kind: "accepted", entryId, cursor: committedCursor,
+      }, committedCursor, now);
       this.#db.exec("COMMIT");
       return {
         kind: "accepted",
         entry,
-        cursor: this.status("").synchronization.cursor,
+        cursor: committedCursor,
       };
     } catch (error) {
       this.#db.exec("ROLLBACK");
@@ -1340,9 +1351,9 @@ export class AuthorityStore {
     this.#db
       .prepare(
         `UPDATE steering SET state = ?
-         WHERE command_id = ? AND device_id = ? AND state = 'accepted'`,
+         WHERE command_id = ? AND state = 'accepted'`,
       )
-      .run(state, commandId, deviceId);
+      .run(state, commandId);
   }
 
   markRunSteeringUnapplied(runId: string): void {
@@ -1369,9 +1380,9 @@ export class AuthorityStore {
       const receipt = this.#db
         .prepare(
           `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE device_id = ? AND command_id = ?`,
+           WHERE command_id = ?`,
         )
-        .get(deviceId, command.commandId);
+        .get(command.commandId);
       if (receipt) {
         this.#db.exec("COMMIT");
         if (receipt.envelope_digest !== digest) {
@@ -1487,12 +1498,11 @@ export class AuthorityStore {
       this.#db
         .prepare(
           `INSERT INTO command_receipts
-           (device_id, command_id, envelope_digest, outcome_json,
+           (command_id, envelope_digest, outcome_json,
             commit_cursor, committed_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?)`,
         )
         .run(
-          deviceId,
           command.commandId,
           digest,
           JSON.stringify(outcome),
@@ -1899,7 +1909,6 @@ export class AuthorityStore {
         revision: 1,
         terminalCause: null,
         respondedAt: null,
-        respondingDeviceLabel: null,
         applicationProven: null,
       };
       this.#db
@@ -1956,16 +1965,14 @@ export class AuthorityStore {
   reserveInteraction(
     interactionId: string,
     revision: number,
-    deviceLabel: string,
   ): Interaction | undefined {
     const changed = this.#db
       .prepare(
         `UPDATE interactions
-         SET state = 'resolving', revision = revision + 1,
-             responding_device_label = ?
+         SET state = 'resolving', revision = revision + 1
          WHERE interaction_id = ? AND state = 'open' AND revision = ?`,
       )
-      .run(deviceLabel, interactionId, revision);
+      .run(interactionId, revision);
     return changed.changes === 1
       ? this.loadInteraction(interactionId)
       : undefined;
@@ -2250,18 +2257,31 @@ export class AuthorityStore {
     this.#db
       .prepare(
         `INSERT INTO command_receipts
-         (device_id, command_id, envelope_digest, outcome_json,
+         (command_id, envelope_digest, outcome_json,
           commit_cursor, committed_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?)`,
       )
       .run(
-        deviceId,
         commandId,
         digest,
         JSON.stringify(outcome),
         outcome.cursor,
         now,
       );
+  }
+
+  private insertCommandReceipt(
+    commandId: string,
+    digest: string,
+    outcome: unknown,
+    cursor: string,
+    now: number,
+  ): void {
+    this.#db.prepare(
+      `INSERT INTO command_receipts
+       (command_id, envelope_digest, outcome_json, commit_cursor, committed_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(commandId, digest, JSON.stringify(outcome), cursor, now);
   }
 
   private appendAssistantDelta(

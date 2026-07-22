@@ -88,7 +88,6 @@ function interaction(
     deadlineAt: null,
     terminalCause: null,
     respondedAt: null,
-    respondingDeviceLabel: null,
     applicationProven: null,
   };
 }

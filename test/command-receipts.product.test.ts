@@ -37,7 +37,7 @@ async function connect(origin: string, token: string): Promise<WebSocket> {
   return socket;
 }
 
-test("concurrent rename rejects stale intent and replays a durable Device-scoped receipt", async () => {
+test("concurrent rename rejects stale intent and replays a durable Host-global receipt", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-receipts-"));
   const options = {
     dataDir,
@@ -92,8 +92,8 @@ test("concurrent rename rejects stale intent and replays a durable Device-scoped
     socket.close();
     await host.close();
 
-    host = await startHost(options);
-    const retry = await connect(host.origin, "device-a");
+    host = await startHost({ ...options, authorization: "device-b" });
+    const retry = await connect(host.origin, "device-b");
     retry.send(JSON.stringify(rename));
     assert.deepEqual(await next(retry), accepted);
     retry.send(JSON.stringify({ ...rename, name: "Changed reuse" }));

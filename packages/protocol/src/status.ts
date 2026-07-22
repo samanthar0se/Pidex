@@ -274,7 +274,6 @@ export const interactionSchema = z.object({
   deadlineAt: z.number().nullable(),
   terminalCause: z.string().nullable(),
   respondedAt: z.number().nullable(),
-  respondingDeviceLabel: z.string().nullable(),
   applicationProven: z.boolean().nullable(),
 });
 export type Interaction = z.infer<typeof interactionSchema>;

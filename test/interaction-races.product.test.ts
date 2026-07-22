@@ -63,16 +63,13 @@ test("Interaction ordering and revision reservation serialize competing terminal
     const reserved = store.reserveInteraction(
       timedFirst.interactionId,
       timedFirst.revision,
-      "first device",
     );
     assert.equal(reserved?.state, "resolving");
     assert.equal(reserved?.revision, 2);
-    assert.equal(reserved?.respondingDeviceLabel, "first device");
     assert.equal(
       store.reserveInteraction(
         timedFirst.interactionId,
         timedFirst.revision,
-        "second device",
       ),
       undefined,
     );
@@ -81,13 +78,13 @@ test("Interaction ordering and revision reservation serialize competing terminal
       timedFirst.interactionId,
       "resolving",
       "responded",
-      "device-response",
+      "command-response",
       42,
       true,
     );
     assert.equal(responded?.state, "responded");
     assert.equal(responded?.revision, 3);
-    assert.equal(responded?.terminalCause, "device-response");
+    assert.equal(responded?.terminalCause, "command-response");
     assert.equal(responded?.respondedAt, 42);
     assert.equal(responded?.applicationProven, true);
     assert.equal(
