@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pidex unauthenticated operator experience prototype</title>
+  <style>
+    :root { color: #292821; background: #eceae4; font: 14px Inter, ui-sans-serif, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    button, select { color: inherit; font: inherit; }
+    button { cursor: pointer; }
+    code, pre, .mono { font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+    .prototype { min-height: 100vh; padding: 28px 28px 96px; }
+    .prototype-head { max-width: 1240px; margin: 0 auto 18px; display: flex; align-items: end; justify-content: space-between; gap: 18px; }
+    .prototype-head h1 { margin: 0 0 4px; font-size: 19px; }
+    .prototype-head p { margin: 0; color: #6b685e; }
+    .mode-tabs { display: flex; padding: 3px; border: 1px solid #cbc7bb; border-radius: 9px; background: #f7f6f2; }
+    .mode-tabs button { border: 0; border-radius: 6px; padding: 7px 11px; background: transparent; }
+    .mode-tabs button.active { color: white; background: #292821; }
+    .stage { max-width: 1240px; margin: auto; display: grid; grid-template-columns: minmax(330px, .82fr) minmax(560px, 1.5fr); gap: 20px; align-items: start; }
+    .panel { overflow: hidden; border: 1px solid #cbc7bb; border-radius: 14px; background: #fbfaf7; box-shadow: 0 12px 40px #302b1d12; }
+    .panel-title { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; border-bottom: 1px solid #dfdcd3; color: #625e54; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .terminal { min-height: 335px; padding: 20px; color: #d9e0db; background: #1d211f; line-height: 1.7; }
+    .terminal p { margin: 0 0 12px; }
+    .terminal .command { color: #fff; }
+    .terminal .muted { color: #8f9c96; }
+    .terminal .good { color: #9fe3bd; }
+    .terminal .warn { color: #ffd173; }
+    .terminal .danger { color: #ffaf95; }
+    .guide { padding: 18px 20px 22px; }
+    .guide h2 { margin: 0 0 7px; font-size: 17px; }
+    .guide p { margin: 5px 0; color: #69655b; line-height: 1.5; }
+    .guide ol { margin: 15px 0; padding-left: 20px; }
+    .guide li { margin: 8px 0; padding-left: 4px; }
+    .guide code { padding: 2px 5px; border-radius: 4px; background: #eeece5; }
+    .browser { min-height: 680px; background: white; }
+    .browser-bar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 13px; background: #e8e6df; border-bottom: 1px solid #d3d0c7; }
+    .dots { display: flex; gap: 5px; }
+    .dots i { width: 8px; height: 8px; border-radius: 50%; background: #aaa69b; }
+    .address { flex: 1; max-width: 520px; margin: auto; padding: 6px 11px; border: 1px solid #cfcbc0; border-radius: 7px; background: #f8f7f3; color: #5c594f; font-size: 12px; }
+    .not-secure { color: #a33a27; font-weight: 750; }
+    .app { min-height: 635px; display: grid; grid-template-columns: 210px 1fr; background: #fbfaf7; }
+    .sidebar { padding: 18px 14px; border-right: 1px solid #e3e0d7; background: #f0eee8; }
+    .brand { margin: 0 7px 18px; font-weight: 850; letter-spacing: .08em; }
+    .new { width: 100%; padding: 9px; border: 1px solid #d0ccc1; border-radius: 7px; background: white; text-align: left; }
+    .sessions { margin-top: 24px; color: #6c685e; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .session { margin-top: 8px; padding: 9px; border-radius: 6px; background: #e2dfd6; font-size: 13px; font-weight: 500; text-transform: none; }
+    .workspace { min-width: 0; position: relative; }
+    .work-head { height: 66px; padding: 16px 25px; border-bottom: 1px solid #e5e2d9; }
+    .work-head h2 { margin: 0; font-size: 17px; }
+    .work-head span { color: #77736a; font-size: 12px; }
+    .timeline { max-width: 680px; margin: auto; padding: 28px 32px 150px; }
+    .timeline .prompt { padding-bottom: 18px; border-bottom: 1px solid #ece9e1; font-weight: 700; }
+    .timeline .reply { line-height: 1.6; }
+    .composer { position: absolute; left: 32px; right: 32px; bottom: 24px; max-width: 680px; margin: auto; padding: 15px; border: 1px solid #d7d2c6; border-radius: 12px; background: white; box-shadow: 0 7px 26px #312d2012; color: #918d83; }
+    .connection { padding: 11px 18px; border-bottom: 1px solid; line-height: 1.4; }
+    .connection strong { display: block; }
+    .connection small { color: inherit; opacity: .83; }
+    .connection.reconnecting { color: #604800; border-color: #d7b555; background: #fff2c8; }
+    .connection.stale { color: #624513; border-color: #d5a54b; background: #fff0ce; }
+    .connection.offline { color: #5e5142; border-color: #aaa093; background: #eeeae3; }
+    .connection.update { color: #7a211a; border-color: #dd8a7c; background: #fde2dd; }
+    .state-shade .timeline, .state-shade .composer { opacity: .52; }
+    .state-shade .composer::after { content: "Host actions unavailable"; float: right; color: #7a211a; font-weight: 700; }
+    .switcher { position: fixed; z-index: 20; left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; padding: 7px; border-radius: 14px; color: white; background: #20211f; box-shadow: 0 10px 30px #0005; }
+    .switcher button { width: 34px; height: 34px; border: 0; border-radius: 8px; color: white; background: #3a3b37; font-size: 18px; }
+    .switcher .variant-name { min-width: 178px; text-align: center; font-weight: 750; }
+    .switcher select { height: 34px; border: 1px solid #555650; border-radius: 7px; color: white; background: #30312e; }
+
+    .risk-strip { padding: 10px 16px; color: #fff5e5; background: #7d2d1f; font-size: 12px; line-height: 1.4; }
+    .risk-strip strong { margin-right: 7px; letter-spacing: .03em; }
+    .variant-a .terminal .warning-box { margin: 13px -8px; padding: 10px 12px; border-left: 3px solid #ffb25d; background: #ff9f4314; }
+    .variant-a .access-lines { display: grid; gap: 5px; margin-top: 18px; }
+    .variant-a .access-lines span { color: #8f9c96; }
+    .variant-a .access-lines b { color: #fff; font-weight: 500; }
+
+    .variant-b .stage { grid-template-columns: 1fr; }
+    .variant-b .operator-panel { display: grid; grid-template-columns: .85fr 1.35fr; }
+    .variant-b .launchpad { padding: 22px; background: #f6f3eb; }
+    .variant-b .launchpad h2 { margin: 0 0 6px; font-size: 20px; }
+    .variant-b .launchpad > p { margin-top: 0; color: #6c675c; }
+    .risk-card { margin: 18px 0; padding: 14px; border: 1px solid #d2755f; border-radius: 10px; color: #6e2318; background: #fff0eb; }
+    .risk-card strong { display: block; margin-bottom: 5px; }
+    .url-card { display: grid; grid-template-columns: 88px 1fr; gap: 5px 12px; margin: 10px 0; padding: 12px; border: 1px solid #d7d2c6; border-radius: 9px; background: white; }
+    .url-card strong { grid-row: span 2; }
+    .url-card code { color: #423d35; font-size: 12px; }
+    .url-card small { color: #777267; }
+    .variant-b .browser { min-height: 590px; border-left: 1px solid #d7d2c6; border-radius: 0; }
+    .variant-b .app { min-height: 545px; }
+    .risk-chip { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; padding: 5px 9px; border: 1px solid #c86d58; border-radius: 99px; color: #7b2d20; background: #fff2ee; font-size: 11px; font-weight: 750; }
+    .variant-b .work-head { display: flex; align-items: center; }
+
+    .variant-c .stage { grid-template-columns: 390px 1fr; }
+    .variant-c .terminal { min-height: 260px; border-bottom: 6px solid #9a3725; }
+    .variant-c .terminal .danger { display: block; margin: 16px 0 2px; font-weight: 800; }
+    .variant-c .boundary-list { display: grid; gap: 9px; margin: 17px 0; }
+    .boundary-row { display: grid; grid-template-columns: 104px 1fr; gap: 10px; padding: 10px 0; border-top: 1px solid #e5e1d8; }
+    .boundary-row strong { color: #3e3a31; }
+    .boundary-row span { color: #6c675d; }
+    .variant-c .browser-inner { display: grid; grid-template-columns: 155px 1fr; min-height: 635px; }
+    .safety-rail { padding: 18px 15px; color: #fff4e8; background: #6f281d; }
+    .safety-rail .mark { display: block; margin-bottom: 18px; font-size: 23px; }
+    .safety-rail h2 { margin: 0 0 9px; font-size: 16px; }
+    .safety-rail p { color: #f2c8bc; font-size: 12px; line-height: 1.5; }
+    .safety-rail hr { border: 0; border-top: 1px solid #ffffff2b; margin: 18px 0; }
+    .safety-rail b { display: block; margin-bottom: 4px; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+    .variant-c .app { grid-template-columns: 190px 1fr; min-height: 635px; }
+
+    @media (max-width: 1100px) {
+      .variant-c .stage { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 900px) {
+      .prototype { padding: 14px 14px 105px; }
+      .prototype-head { align-items: stretch; flex-direction: column; }
+      .stage, .variant-c .stage { grid-template-columns: 1fr; }
+      .variant-b .operator-panel { grid-template-columns: 1fr; }
+      .variant-b .browser { border-top: 1px solid #d7d2c6; border-left: 0; }
+      .browser-inner { overflow-x: auto; }
+      .browser { min-width: 620px; }
+      .switcher { width: calc(100% - 20px); justify-content: center; flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const warning = "UNAUTHENTICATED PROTOTYPE: anyone who can reach this Host on the network can view and control Pidex. Do not expose it beyond a trusted LAN.";
+    const variants = {
+      A: "Persistent boundary",
+      B: "Operator launchpad",
+      C: "Safety rail"
+    };
+    const states = {
+      current: null,
+      reconnecting: ["Reconnecting to Host", "Cached facts are read-only. Host actions resume after synchronization.", "reconnecting"],
+      stale: ["Offline — showing stale Host facts", "Last synchronized today at 14:32. Drafts remain editable; Host actions are disabled.", "stale"],
+      offline: ["Host unavailable", "No cached Host facts are available. Check the URL and whether the Host is running.", "offline"],
+      update: ["Client update required", "This Client and Host are incompatible. Reload after updating Pidex.", "update"]
+    };
+
+    function params() {
+      const query = new URLSearchParams(location.search);
+      return {
+        variant: variants[query.get("variant")] ? query.get("variant") : "A",
+        state: Object.hasOwn(states, query.get("state")) ? query.get("state") : "current",
+        mode: query.get("mode") === "packaged" ? "packaged" : "development"
+      };
+    }
+
+    function update(values) {
+      const query = new URLSearchParams(location.search);
+      Object.entries(values).forEach(([key, value]) => query.set(key, value));
+      history.replaceState(null, "", `?${query}`);
+      render();
+    }
+
+    function modeFacts(mode) {
+      return mode === "development"
+        ? { label: "Development", port: "7443", command: "npm run dev", setup: "Install dependencies, then start the development Host.", local: "http://127.0.0.1:7443" }
+        : { label: "Packaged Host", port: "47831", command: "Start Pidex Host", setup: "Install and start the packaged Host for the signed-in Windows user.", local: "http://127.0.0.1:47831" };
+    }
+
+    function connection(state) {
+      const fact = states[state];
+      if (!fact) return "";
+      return `<section class="connection ${fact[2]}" role="status"><strong>${fact[0]}</strong><small>${fact[1]}</small></section>`;
+    }
+
+    function browserApp(state, persistentRisk, safetyRail = "") {
+      const shaded = state === "current" ? "" : "state-shade";
+      return `${safetyRail}<div class="app ${shaded}">
+        <aside class="sidebar"><div class="brand">PIDEX</div><button class="new">＋ New Session</button><div class="sessions">Sessions<div class="session">Prototype runtime</div><div class="session">Release notes</div></div></aside>
+        <main class="workspace">${persistentRisk}${connection(state)}<header class="work-head"><div><h2>Prototype runtime</h2><span>${state === "current" ? "Current Host data" : "Host data is not current"}</span></div></header><section class="timeline"><p class="prompt">Make the anonymous Client lifecycle explicit.</p><p class="reply">The Host owns durable work. Closing this browser disconnects only this Client; accepted Runs continue.</p></section><div class="composer">Ask Pi…</div></main>
+      </div>`;
+    }
+
+    function browserShell(inner, facts) {
+      return `<section class="panel browser"><div class="browser-bar"><span class="dots"><i></i><i></i><i></i></span><div class="address"><span class="not-secure">Not secure</span> &nbsp; ${facts.local}</div></div>${inner}</section>`;
+    }
+
+    function terminalA(facts) {
+      return `<section class="panel"><div class="panel-title"><span>${facts.label} startup</span><span class="good">● running</span></div><div class="terminal"><p class="command">$ ${facts.command}</p><p class="good">Pidex Host is ready</p><div class="warning-box warn">${warning}</div><div class="access-lines"><span>Bound</span><b>http://0.0.0.0:${facts.port}</b><span>This computer</span><b>${facts.local}</b><span>Another LAN client</span><b>http://&lt;HOST-IP&gt;:${facts.port}</b></div><p class="muted">Pidex does not discover your LAN address or configure Windows Firewall.</p></div><div class="guide"><h2>Open Pidex immediately</h2><ol><li>${facts.setup}</li><li>Use the local URL here, or determine this computer's IPv4 address for another trusted-LAN Client.</li></ol><p>No CA setup. No certificate installation. No pairing code.</p></div></section>`;
+    }
+
+    function variantA(facts, state) {
+      const risk = `<div class="risk-strip"><strong>Unauthenticated LAN prototype</strong> Anyone who can reach this Host can view and control Pidex.</div>`;
+      return `<div class="stage">${terminalA(facts)}${browserShell(browserApp(state, risk), facts)}</div>`;
+    }
+
+    function variantB(facts, state) {
+      const launchpad = `<section class="launchpad"><h2>Pidex is ready</h2><p>Choose where you are opening it.</p><div class="risk-card"><strong>No sign-in protects this Host</strong>${warning}</div><div class="url-card"><strong>Here</strong><code>${facts.local}</code><small>Open on the Host computer</small></div><div class="url-card"><strong>Trusted LAN</strong><code>http://&lt;HOST-IP&gt;:${facts.port}</code><small>Find the Host IPv4 address yourself</small></div><p class="mono">Bound: 0.0.0.0:${facts.port}</p><p>Pidex neither checks nor changes the firewall. There is no certificate or pairing step.</p></section>`;
+      const chip = `<span class="risk-chip">◉ Unauthenticated · trusted LAN only</span>`;
+      const app = browserApp(state, chip);
+      return `<div class="stage"><section class="panel operator-panel">${launchpad}${browserShell(app, facts)}</section></div>`;
+    }
+
+    function variantC(facts, state) {
+      const terminal = `<section class="panel"><div class="panel-title"><span>${facts.label}</span><span>plain HTTP</span></div><div class="terminal"><p class="command">$ ${facts.command}</p><span class="danger">NO ACCESS CONTROL</span><p class="warn">${warning}</p><p><span class="muted">Listening on</span><br>http://0.0.0.0:${facts.port}</p></div><div class="guide"><h2>Network boundary</h2><div class="boundary-list"><div class="boundary-row"><strong>Loopback</strong><span>${facts.local}<br>Only this computer can reach that address.</span></div><div class="boundary-row"><strong>Trusted LAN</strong><span>http://&lt;HOST-IP&gt;:${facts.port}<br>Every reachable Client has full control.</span></div><div class="boundary-row"><strong>Internet / WAN</strong><span>Unsupported. Do not expose or forward this port.</span></div></div><p>There is nothing to enroll, trust, pair, approve, or revoke.</p></div></section>`;
+      const rail = `<aside class="safety-rail"><span class="mark">◉</span><h2>Open to this network</h2><p>This Pidex prototype does not identify or authenticate Clients.</p><hr><b>Authority</b><p>Network reachability grants view and control.</p><b>Boundary</b><p>Trusted LAN only. Never expose this port to WAN.</p></aside>`;
+      return `<div class="stage">${terminal}${browserShell(`<div class="browser-inner">${browserApp(state, "", rail)}</div>`, facts)}</div>`;
+    }
+
+    function switcher(current) {
+      const keys = Object.keys(variants);
+      const index = keys.indexOf(current.variant);
+      return `<div class="switcher" aria-label="Prototype controls"><button data-variant="${keys[(index + keys.length - 1) % keys.length]}" aria-label="Previous variant">←</button><div class="variant-name">${current.variant} — ${variants[current.variant]}</div><button data-variant="${keys[(index + 1) % keys.length]}" aria-label="Next variant">→</button><select id="state" aria-label="Browser state">${Object.keys(states).map(key => `<option value="${key}" ${key === current.state ? "selected" : ""}>${key === "stale" ? "offline with cache" : key}</option>`).join("")}</select></div>`;
+    }
+
+    function render() {
+      const current = params();
+      const facts = modeFacts(current.mode);
+      const body = current.variant === "A" ? variantA(facts, current.state) : current.variant === "B" ? variantB(facts, current.state) : variantC(facts, current.state);
+      document.getElementById("root").innerHTML = `<div class="prototype variant-${current.variant.toLowerCase()}"><header class="prototype-head"><div><h1>Unauthenticated operator experience</h1><p>Startup, access, setup, connection states, and risk messaging</p></div><div class="mode-tabs"><button data-mode="development" class="${current.mode === "development" ? "active" : ""}">Development</button><button data-mode="packaged" class="${current.mode === "packaged" ? "active" : ""}">Packaged Host</button></div></header>${body}</div>${switcher(current)}`;
+      document.querySelectorAll("[data-variant]").forEach(button => button.onclick = () => update({ variant: button.dataset.variant }));
+      document.querySelectorAll("[data-mode]").forEach(button => button.onclick = () => update({ mode: button.dataset.mode }));
+      document.getElementById("state").onchange = event => update({ state: event.target.value });
+    }
+
+    addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight"].includes(event.key) || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+      const current = params();
+      const keys = Object.keys(variants);
+      const movement = event.key === "ArrowRight" ? 1 : -1;
+      update({ variant: keys[(keys.indexOf(current.variant) + movement + keys.length) % keys.length] });
+    });
+    addEventListener("popstate", render);
+    render();
+  </script>
+</body>
+</html>
