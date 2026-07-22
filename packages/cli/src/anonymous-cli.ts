@@ -13,6 +13,8 @@ const DEFAULT_HOSTS = { development: "http://127.0.0.1:7443", packaged: "http://
 
 type Output = { stdout(value: string): void; stderr(value: string): void };
 
+class CompatibilityError extends Error {}
+
 export function resolveHostUrl(argv: readonly string[], env: NodeJS.ProcessEnv): URL {
   const hostIndex = argv.indexOf("--host");
   const profileIndex = argv.indexOf("--profile");
@@ -46,7 +48,7 @@ export async function runCli(argv: readonly string[], env: NodeJS.ProcessEnv, ou
     return 0;
   } catch (error) {
     output.stderr(error instanceof Error ? error.message : String(error));
-    return /compatib|protocol|capability/.test(String(error)) ? 3 : 2;
+    return error instanceof CompatibilityError ? 3 : 2;
   }
 }
 
@@ -57,11 +59,11 @@ async function admitAndSynchronize(host: URL): Promise<HostStatus> {
   const messages = messageReader(socket);
   try {
     const offer = await messages.next();
-    if (offer.type !== "host.hello") throw new Error("Host compatibility hello was not received");
+    if (offer.type !== "host.hello") throw new CompatibilityError("Host compatibility hello was not received");
     socket.send(JSON.stringify(clientHello(offer.hostId)));
     const admission = await messages.next();
-    if (admission.type === "protocol.update-required") throw new Error(`protocol incompatible: ${admission.reason}`);
-    if (admission.type !== "protocol.admitted") throw new Error("Host did not admit CLI compatibility");
+    if (admission.type === "protocol.update-required") throw new CompatibilityError(`protocol incompatible: ${admission.reason}`);
+    if (admission.type !== "protocol.admitted") throw new CompatibilityError("Host did not admit CLI compatibility");
     const snapshot = await messages.next();
     if (snapshot.type !== "host.snapshot") throw new Error("Host status snapshot was not received");
     socket.send(JSON.stringify({

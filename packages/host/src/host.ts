@@ -359,17 +359,19 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     return refreshed;
   }
 
+  async function doctor(): ReturnType<StartedHost["doctor"]> {
+    const refreshed = await refreshCoverage();
+    return {
+      check: "storage",
+      outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
+      coverage: refreshed,
+    };
+  }
+
   const server = createServer(
     (request, response) => {
       if (request.url?.startsWith("/api/")) {
-        handleApiRequest(request.url, request, response, store, async () => {
-          const refreshed = await refreshCoverage();
-          return {
-            check: "storage",
-            outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
-            coverage: refreshed,
-          };
-        });
+        handleApiRequest(request.url, request, response, store, doctor);
         return;
       }
 
@@ -2004,14 +2006,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     origin: canonicalOrigin,
     status,
     storageProtection: () => storageProtection.status(),
-    doctor: async () => {
-      const refreshed = await refreshCoverage();
-      return {
-        check: "storage",
-        outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
-        coverage: refreshed,
-      };
-    },
+    doctor,
     exportSupport: async () => ({ durability: await refreshCoverage() }),
     updateStorageRoots: roots => coverage.setRoots(roots),
     rotateSynchronizationEpoch: () =>
