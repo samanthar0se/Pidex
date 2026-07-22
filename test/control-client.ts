@@ -27,6 +27,22 @@ export function nextControlMessage(socket: WebSocket): Promise<ServerMessage> {
   });
 }
 
+export async function synchronizeEmptyControlScope(
+  socket: WebSocket,
+  cursor: string,
+): Promise<void> {
+  socket.send(JSON.stringify({
+    type: "scope.set",
+    protocolVersion,
+    sessionIds: [],
+    cursor,
+  }));
+  const synchronized = await nextControlMessage(socket);
+  if (synchronized.type !== "scope.current") {
+    throw new Error("expected current Host scope");
+  }
+}
+
 export async function negotiateControl(
   socket: WebSocket,
 ): Promise<HostSnapshot> {
@@ -46,16 +62,10 @@ export async function negotiateControl(
     throw new Error("expected Host snapshot");
   }
 
-  socket.send(JSON.stringify({
-    type: "scope.set",
-    protocolVersion,
-    sessionIds: [],
-    cursor: snapshot.status.synchronization.cursor,
-  }));
-  const synchronized = await nextControlMessage(socket);
-  if (synchronized.type !== "scope.current") {
-    throw new Error("expected current Host scope");
-  }
+  await synchronizeEmptyControlScope(
+    socket,
+    snapshot.status.synchronization.cursor,
+  );
 
   return snapshot;
 }

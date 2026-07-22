@@ -7,7 +7,10 @@ import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { unsupportedRequiredSemantics } from "../packages/protocol/src/status.js";
-import { nextControlMessage } from "./control-client.js";
+import {
+  nextControlMessage,
+  synchronizeEmptyControlScope,
+} from "./control-client.js";
 
 function socket(origin: string): WebSocket {
   return new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
@@ -263,13 +266,10 @@ test(
       );
       assert.equal((await nextControlMessage(client)).type, "host.snapshot");
 
-      client.send(JSON.stringify({
-        type: "scope.set",
-        protocolVersion: "1.2",
-        sessionIds: [],
-        cursor: host.status().synchronization.cursor,
-      }));
-      assert.equal((await nextControlMessage(client)).type, "scope.current");
+      await synchronizeEmptyControlScope(
+        client,
+        host.status().synchronization.cursor,
+      );
 
       client.send(JSON.stringify({
         type: "run.submit",

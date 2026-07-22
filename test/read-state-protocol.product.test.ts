@@ -12,7 +12,10 @@ import {
   protocolVersion,
   sessionReadStateSchema,
 } from "../packages/protocol/src/status.js";
-import { nextControlMessage } from "./control-client.js";
+import {
+  nextControlMessage,
+  synchronizeEmptyControlScope,
+} from "./control-client.js";
 
 function socket(origin: string): WebSocket {
   return new WebSocket(`${origin.replace("https:", "wss:")}/control`, {
@@ -119,13 +122,10 @@ test("mark-read rejects a non-exact capability basis before a receipt", async ()
     client.send(JSON.stringify(clientHello(offer.hostId)));
     assert.equal((await nextControlMessage(client)).type, "protocol.admitted");
     assert.equal((await nextControlMessage(client)).type, "host.snapshot");
-    client.send(JSON.stringify({
-      type: "scope.set",
-      protocolVersion,
-      sessionIds: [],
-      cursor: host.status().synchronization.cursor,
-    }));
-    assert.equal((await nextControlMessage(client)).type, "scope.current");
+    await synchronizeEmptyControlScope(
+      client,
+      host.status().synchronization.cursor,
+    );
 
     client.send(JSON.stringify({
       type: "session.mark-read",

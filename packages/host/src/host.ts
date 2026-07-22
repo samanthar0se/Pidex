@@ -152,7 +152,7 @@ type ProtocolUpdateReason = Extract<
   { type: "protocol.update-required" }
 >["reason"];
 
-function isMutationMessage(value: unknown): value is { commandId: string } {
+function hasCommandId(value: unknown): value is { commandId: string } {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -582,7 +582,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         if (!admittedClients.has(webSocket)) {
           const hello = clientHelloSchema.safeParse(message);
           if (hello.success) negotiate(webSocket, hello.data);
-        } else if (isMutationMessage(message) && !synchronizedClients.has(webSocket)) {
+        } else if (hasCommandId(message) && !synchronizedClients.has(webSocket)) {
           sendServerMessage(webSocket, {
             type: "command.outcome",
             commandId: message.commandId,
