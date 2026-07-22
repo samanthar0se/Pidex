@@ -21,7 +21,6 @@ export type { HostCompatibilityRecord } from "./compatibility.js";
 export { publishRunnableHostValidation } from "./runnable-host-validation.js";
 export type { RunnableHostValidationInput } from "./runnable-host-validation.js";
 
-const REAL_CANONICAL_PORT = 47831;
 const PINNED_PI_VERSION = "0.80.10";
 
 const sha256Schema = z
@@ -51,7 +50,6 @@ const rootRolesSchema = z.strictObject({
   managedBackups: absolutePathSchema,
   diagnostics: absolutePathSchema,
   launcherState: absolutePathSchema,
-  tlsState: absolutePathSchema,
   publicationTemp: absolutePathSchema,
 });
 
@@ -63,7 +61,6 @@ const artifactsSchema = z.strictObject({
   addon: artifactSchema,
   companion: artifactSchema,
   schemas: artifactSchema,
-  certificateTool: artifactSchema,
   maintenance: artifactSchema,
 });
 
@@ -94,22 +91,6 @@ const launchManifestSchema = z.strictObject({
     capability: generationSchema,
     addon: generationSchema,
     schema: generationSchema,
-  }),
-  endpoints: z.strictObject({
-    canonicalOrigin: z
-      .string()
-      .url()
-      .refine(
-        (value) => value.startsWith("https://"),
-        "canonical origin must use HTTPS",
-      ),
-    canonicalPort: z.number().int().min(1).max(65535),
-    localControl: z
-      .string()
-      .regex(
-        /^\\\\\.\\pipe\\[^\\]+$/,
-        "local control must be a local named pipe",
-      ),
   }),
   roots: z.strictObject({
     sourceInstance: absolutePathSchema,
@@ -280,13 +261,6 @@ function validateExecutionRelationships(
         context,
         ["piProfile"],
         "real execution requires the owning user's standard Pi profile",
-      );
-    }
-    if (manifest.endpoints.canonicalPort !== REAL_CANONICAL_PORT) {
-      addValidationIssue(
-        context,
-        ["endpoints", "canonicalPort"],
-        `real execution requires fixed canonical port ${REAL_CANONICAL_PORT}`,
       );
     }
     if (manifest.execution.evidenceClass === "deterministic-test") {

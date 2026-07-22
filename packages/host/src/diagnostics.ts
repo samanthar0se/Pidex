@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
@@ -16,10 +16,7 @@ export type DiagnosticArea =
   | "versions"
   | "circuitBreaker"
   | "database"
-  | "certificates"
   | "network"
-  | "firewall"
-  | "mdns"
   | "update"
   | "workers"
   | "storage";
@@ -68,27 +65,16 @@ interface DiagnosticLogEvent {
   [key: string]: unknown;
 }
 
-type LaunchPurpose = "setup" | "recovery";
-
-interface LaunchCapability {
-  purpose: LaunchPurpose;
-  expiresAt: number;
-}
-
 const DIAGNOSTIC_AREAS: DiagnosticArea[] = [
   "versions",
   "circuitBreaker",
   "database",
-  "certificates",
   "network",
-  "firewall",
-  "mdns",
   "update",
   "workers",
   "storage",
 ];
 const DEFAULT_MAXIMUM_BYTES = 1024 ** 3;
-const LOOPBACK_HOSTNAMES = ["localhost", "127.0.0.1", "::1"];
 const SENSITIVE_FIELD_PATTERN =
   /secret|token|password|prompt|conversation|tool|payload|output|path/i;
 const SENSITIVE_PATH_PATTERN = /(?:[A-Za-z]:\\|\/)[^\s"]+/g;
@@ -181,33 +167,6 @@ export class StructuredDiagnosticLog {
     });
     appendFileSync(this.path, `${entry}\n`);
     enforceAggregateBound(this.root, this.maximumBytes);
-  }
-}
-
-export class LocalLaunchCapabilities {
-  readonly #tokens = new Map<string, LaunchCapability>();
-
-  constructor(readonly now = Date.now) {}
-
-  issue(purpose: LaunchPurpose, lifetimeSeconds = 60): string {
-    const token = randomBytes(32).toString("base64url");
-    this.#tokens.set(token, {
-      purpose,
-      expiresAt: this.now() + lifetimeSeconds * 1000,
-    });
-    return token;
-  }
-
-  consume(token: string, purpose: LaunchPurpose, hostname: string): boolean {
-    const capability = this.#tokens.get(token);
-    this.#tokens.delete(token);
-
-    return (
-      capability !== undefined &&
-      capability.purpose === purpose &&
-      capability.expiresAt >= this.now() &&
-      LOOPBACK_HOSTNAMES.includes(hostname)
-    );
   }
 }
 

@@ -52,9 +52,6 @@ export const FAULT_SCENARIOS = {
     "corrupt-newest-recovery-point",
   ],
   securityOperations: [
-    "certificate-expiry",
-    "certificate-rotation",
-    "firewall-drift",
     "malformed-ipc",
     "malformed-protocol",
     "update-download-failure",

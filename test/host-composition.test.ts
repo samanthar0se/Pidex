@@ -18,17 +18,16 @@ function manifest() {
     "instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors",
     "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState",
     "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics",
-    "launcherState", "tlsState", "publicationTemp",
+    "launcherState", "publicationTemp",
   ].map(role => [role, `${root}\\${role}`]));
   const artifacts = Object.fromEntries([
     "launcher", "node", "daemon", "worker", "addon", "companion", "schemas",
-    "certificateTool", "maintenance",
+    "maintenance",
   ].map((role, index) => [role, { path: `${root}\\releases\\r1\\${index}.bin`, sha256: hash }]));
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "instance-1", owningSid: "S-1-5-21-1", trustClass: "source" },
     generations: { release: "r1", daemon: 1, worker: 1, publicProtocol: 1, localControl: 1, capability: 1, addon: 1, schema: 1 },
-    endpoints: { canonicalOrigin: "https://pidex-a.local:47831", canonicalPort: 47831, localControl: "\\\\.\\pipe\\pidex-instance-1" },
     roots: { sourceInstance: root, roles }, artifacts,
     piProfile: { policy: "owning-user-standard", version: "0.80.10" },
     runtimes: { node: { lane: "primary", version: "24.1.0", architecture: "x64", sha256: hash }, nodeApi: 10, pi: { version: "0.80.10", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10", cmake: "4", cpp: "20" } },
@@ -105,7 +104,7 @@ test("product composition cannot select deterministic manifests", async () => {
   deterministic.execution.implementation = "deterministic";
   deterministic.execution.evidenceClass = "deterministic-test";
   deterministic.piProfile.policy = "synthetic-isolated";
-  deterministic.endpoints.canonicalPort = 12345;
+  deterministic.identity.instanceId = "instance-deterministic";
   await assert.rejects(
     composeManifestHost(deterministic, {} as never),
     /real resolved launch manifest/,
@@ -114,45 +113,6 @@ test("product composition cannot select deterministic manifests", async () => {
 
 test("direct product startup cannot bypass the manifest-only composition root", async () => {
   await assert.rejects(runHost("product" as never), /restricted to deterministic/);
-});
-
-test("a stable finding degrades only its decided service scope and can recover", () => {
-  const health = new HostHealthGraph(["lan", "firewall"]);
-  health.set("lan", "available", "edge-open");
-  health.set("firewall", "available", "canonical-rule");
-
-  health.report({
-    code: "firewall-rule-drift",
-    scope: "firewall",
-    stage: "runtime",
-    severity: "warning",
-    availability: "degraded",
-    retryability: "manual",
-    remediation: "Repair the canonical Private-profile firewall rule",
-    observedAt: "2026-07-21T12:00:00.000Z",
-  });
-
-  assert.deepEqual(health.scope("firewall"), {
-    scope: "firewall",
-    availability: "degraded",
-    freshness: "current",
-    code: "firewall-rule-drift",
-    stage: "runtime",
-    severity: "warning",
-    retryability: "manual",
-    firstObservedAt: "2026-07-21T12:00:00.000Z",
-    latestObservedAt: "2026-07-21T12:00:00.000Z",
-    remediation: "Repair the canonical Private-profile firewall rule",
-  });
-  assert.equal(health.scope("lan").availability, "available");
-
-  health.resolve("firewall", "firewall-rule-drift");
-  assert.deepEqual(health.scope("firewall"), {
-    scope: "firewall",
-    availability: "available",
-    freshness: "current",
-    code: "canonical-rule",
-  });
 });
 
 test("Session generation findings are independent and preserve observation history", () => {

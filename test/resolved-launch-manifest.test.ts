@@ -28,7 +28,6 @@ function createManifestFixture(): unknown {
       "managedBackups",
       "diagnostics",
       "launcherState",
-      "tlsState",
       "publicationTemp",
     ].map((role) => [role, `${root}\\${role}`]),
   );
@@ -41,7 +40,6 @@ function createManifestFixture(): unknown {
       "addon",
       "companion",
       "schemas",
-      "certificateTool",
       "maintenance",
     ].map((role, index) => [
       role,
@@ -67,11 +65,6 @@ function createManifestFixture(): unknown {
       capability: 1,
       addon: 1,
       schema: 1,
-    },
-    endpoints: {
-      canonicalOrigin: "https://pidex-a.local:47831",
-      canonicalPort: 47831,
-      localControl: "\\\\.\\pipe\\pidex-instance-1",
     },
     roots: { sourceInstance: root, roles: roots },
     artifacts,
@@ -109,7 +102,6 @@ function createManifestFixture(): unknown {
     execution: { implementation: "real", evidenceClass: "local-source" },
     provenance: {
       source: { kind: "default", detail: "source config defaults" },
-      canonicalPort: { kind: "default", detail: "fixed product port" },
     },
   };
 }
@@ -179,8 +171,8 @@ test("relative artifact paths are rejected", () => {
 
 test("root roles cannot cross outside the selected source instance", () => {
   const manifest = parseResolvedLaunchManifest(createManifestFixture());
-  manifest.roots.roles.tlsState =
-    "C:\\Users\\owner\\AppData\\Local\\Pidex\\Installed\\tls";
+  manifest.roots.roles.authorityGenerations =
+    "C:\\Users\\owner\\AppData\\Local\\Pidex\\Installed\\authority";
   assert.throws(() => parseResolvedLaunchManifest(manifest), /crossover/i);
 });
 

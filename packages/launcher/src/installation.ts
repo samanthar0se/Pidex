@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WindowsPlatformAdapter } from "../../adapters/src/index.js";
@@ -13,7 +12,6 @@ export const CANONICAL_PORT = 47831;
 
 export interface InstallationIdentity {
   schemaVersion: 1;
-  hostname: string;
   port: number;
 }
 
@@ -65,7 +63,6 @@ function loadOrCreateIdentity(identityPath: string): InstallationIdentity {
 
   const identity: InstallationIdentity = {
     schemaVersion: 1,
-    hostname: `pidex-${randomBytes(10).toString("hex")}.local`,
     port: CANONICAL_PORT,
   };
   const serialized = JSON.stringify(identity, null, 2);
@@ -100,8 +97,6 @@ function isInstallationIdentity(
   return (
     "schemaVersion" in identity &&
     identity.schemaVersion === 1 &&
-    "hostname" in identity &&
-    typeof identity.hostname === "string" &&
     "port" in identity &&
     typeof identity.port === "number"
   );

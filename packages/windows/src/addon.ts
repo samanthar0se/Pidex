@@ -5,9 +5,7 @@ import { z } from "zod";
 import type { ResolvedLaunchManifest } from "../../launch-manifest/src/index.js";
 import { createDiagnosticsPort } from "./diagnostics.js";
 import { mapWindowsNativeError } from "./errors.js";
-import { createWindowsIntegrationPorts, type RawWindowsIntegrations } from "./integrations.js";
-import { createNetworkPort, type NativeNetworkBinding } from "./network.js";
-import type { DiagnosticsPort, FirewallPort, InstallationPort, NetworkPort, ProcessPort, StoragePort } from "./ports.js";
+import type { DiagnosticsPort, ProcessPort, StoragePort } from "./ports.js";
 import { createProcessPort, type NativeProcessBinding } from "./process.js";
 import { createStoragePort } from "./storage.js";
 
@@ -30,9 +28,6 @@ interface RawAddon {
 
 export interface WindowsAddonBinding {
   selfTest(): Promise<void>;
-  readonly installation: InstallationPort;
-  readonly network: NetworkPort;
-  readonly firewall: FirewallPort;
   readonly process: ProcessPort;
   readonly storage: StoragePort;
   readonly diagnostics: DiagnosticsPort;
@@ -52,11 +47,8 @@ export interface NativeModuleLoader {
 
 const require = createRequire(import.meta.url);
 export const windowsAddonExports = [
-  "selfTest", "inspectCertificate", "installCertificate", "removeCertificate",
-  "inspectTask", "registerTask", "removeTask", "inspectFirewallRule",
-  "ensureFirewallRule", "removeFirewallRule", "snapshotInterfaces",
-  "observeInterfaces", "openAdvertisement", "spawnContained",
-  "inspectStoragePath", "observeStorageTopology", "writeDiagnosticEvent",
+  "selfTest", "spawnContained", "inspectStoragePath", "observeStorageTopology",
+  "writeDiagnosticEvent",
 ] as const;
 
 export async function loadWindowsAddon(
@@ -80,7 +72,6 @@ export async function loadWindowsAddon(
   validateHash(await readFile(path), expectedHash, "Windows addon changed while loading");
   validateAddon(addon, manifest);
 
-  const integrations = createWindowsIntegrationPorts(addon as unknown as RawWindowsIntegrations);
   return {
     async selfTest(): Promise<void> {
       try {
@@ -89,9 +80,6 @@ export async function loadWindowsAddon(
         throw mapWindowsNativeError(error, "selfTest");
       }
     },
-    installation: integrations.installation,
-    network: createNetworkPort(addon as unknown as NativeNetworkBinding),
-    firewall: integrations.firewall,
     process: createProcessPort(addon as unknown as NativeProcessBinding),
     storage: createStoragePort(
       addon.inspectStoragePath as (path: string) => unknown,

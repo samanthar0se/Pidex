@@ -6,7 +6,6 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
@@ -17,7 +16,6 @@ import {
   publishValidatedTree,
   replaceRebuildableFile,
 } from "../../durability/src/index.js";
-import { validateRetainedCertificateIdentity } from "./certificate.js";
 import { AuthorityStore, type InitialCatalog } from "./store.js";
 
 const GENERATION_FORMAT_VERSION = 1;
@@ -27,12 +25,6 @@ const CLEANUP_ACTIVATION_INDEX = 2;
 const CLEANUP_LINEAGE_LENGTH = 2;
 const OBJECT_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MIGRATION_FREEZE_CONTENT = "release-m\n";
-const LEGACY_TLS_FILES = [
-  "pidex-ca.pem",
-  "pidex-ca-key.dpapi",
-  "host.pem",
-  "host-key.dpapi",
-];
 const generationIdSchema = z.string().regex(/^generation_[0-9a-f-]{36}$/);
 const envelopeSchema = z.object({
   generationId: generationIdSchema,
@@ -60,8 +52,7 @@ export type LegacyCleanupRefusal =
   | "cleanup-proof-missing"
   | "cleanup-proof-stale"
   | "generation-held"
-  | "failed-evidence-protected"
-  | "tls-continuity-lost";
+  | "failed-evidence-protected";
 
 export class LegacyCleanupRefusalError extends Error {
   constructor(readonly code: LegacyCleanupRefusal, detail?: string) {
@@ -73,7 +64,6 @@ export class LegacyCleanupRefusalError extends Error {
 export interface LegacyCleanupProof {
   readonly nonce: string;
   readonly generationIds: readonly string[];
-  readonly tlsDigests: Readonly<Record<string, string>>;
 }
 
 export class AuthorityGenerationError extends Error {
@@ -148,7 +138,6 @@ export class AuthorityGenerationStore {
       return;
     }
     this.#validateBridge(options.bridgeDirectory);
-    this.#validateLegacyIdentityAndTls();
 
     const legacyPath = join(this.#dataDir, "authority.sqlite");
     if (!existsSync(legacyPath)) {
@@ -267,7 +256,6 @@ export class AuthorityGenerationStore {
       generationIds: candidates
         .map(candidate => candidate.envelope.generationId)
         .sort(),
-      tlsDigests: this.#legacyTlsDigests(),
     };
     const serializedProof = JSON.stringify(proof);
     replaceRebuildableFile({
@@ -298,66 +286,11 @@ export class AuthorityGenerationStore {
     if (currentGenerationIds !== provenGenerationIds) {
       throw new LegacyCleanupRefusalError("cleanup-proof-stale");
     }
-    const currentTlsDigests = JSON.stringify(current.tlsDigests);
-    const provenTlsDigests = JSON.stringify(proof.tlsDigests);
-    if (currentTlsDigests !== provenTlsDigests) {
-      throw new LegacyCleanupRefusalError("tls-continuity-lost");
-    }
 
     rmSync(join(this.#dataDir, "authority.sqlite"), { force: true });
     rmSync(join(this.#dataDir, "authority.sqlite-wal"), { force: true });
     rmSync(join(this.#dataDir, "authority.sqlite-shm"), { force: true });
     rmSync(join(this.#dataDir, "blobs"), { recursive: true, force: true });
-  }
-
-  #legacyTlsDigests(): Record<string, string> {
-    const tlsDirectory = join(this.#dataDir, "tls");
-    const digests: Record<string, string> = {};
-    if (!existsSync(tlsDirectory)) {
-      return digests;
-    }
-
-    const generationsDirectory = join(tlsDirectory, "generations");
-    if (existsSync(generationsDirectory)) {
-      try {
-        validateRetainedCertificateIdentity(
-          this.#dataDir,
-          this.adapters.windows,
-        );
-      } catch (error) {
-        throw new LegacyCleanupRefusalError(
-          "tls-continuity-lost",
-          error instanceof Error ? error.message : undefined,
-        );
-      }
-
-      const generationIds = readdirSync(generationsDirectory, {
-        withFileTypes: true,
-      })
-        .filter(entry => entry.isDirectory())
-        .map(entry => entry.name)
-        .sort();
-      for (const generationId of generationIds) {
-        for (const name of LEGACY_TLS_FILES) {
-          const filePath = join(generationsDirectory, generationId, name);
-          digests[`${generationId}/${name}`] = createHash("sha256")
-            .update(readFileSync(filePath))
-            .digest("hex");
-        }
-      }
-      return digests;
-    }
-
-    for (const name of LEGACY_TLS_FILES) {
-      const filePath = join(tlsDirectory, name);
-      if (!existsSync(filePath)) {
-        throw new LegacyCleanupRefusalError("tls-continuity-lost", name);
-      }
-      digests[name] = createHash("sha256")
-        .update(readFileSync(filePath))
-        .digest("hex");
-    }
-    return digests;
   }
 
   #validateBridge(directory: string): void {
@@ -373,44 +306,6 @@ export class AuthorityGenerationStore {
       manifest.authorityFormat !== GENERATION_FORMAT_VERSION
     ) {
       throw new Error("retained bridge release is incompatible");
-    }
-  }
-
-  #validateLegacyIdentityAndTls(): void {
-    const identityPath = join(this.#dataDir, "identity.json");
-    if (existsSync(identityPath)) {
-      const identity: unknown = JSON.parse(readFileSync(identityPath, "utf8"));
-      if (
-        !isRecord(identity) ||
-        identity.schemaVersion !== 1 ||
-        typeof identity.hostname !== "string"
-      ) {
-        throw new Error("installation identity is invalid");
-      }
-    }
-
-    const tlsDirectory = join(this.#dataDir, "tls");
-    if (existsSync(tlsDirectory)) {
-      const tlsGenerationsDirectory = join(tlsDirectory, "generations");
-      if (existsSync(tlsGenerationsDirectory)) {
-        validateRetainedCertificateIdentity(
-          this.#dataDir,
-          this.adapters.windows,
-        );
-        return;
-      }
-
-      for (const name of LEGACY_TLS_FILES) {
-        const path = join(tlsDirectory, name);
-        if (!existsSync(path)) {
-          throw new Error("TLS identity is incomplete");
-        }
-
-        const statistics = statSync(path);
-        if (!statistics.isFile() || statistics.size === 0) {
-          throw new Error("TLS identity is incomplete");
-        }
-      }
     }
   }
 

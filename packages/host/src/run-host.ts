@@ -3,20 +3,15 @@ import {
   adaptersFor,
   type AdapterMode,
 } from "../../adapters/src/index.js";
-import type { HostCertificateProvisioner } from "./certificate.js";
 import { startHost } from "./host.js";
 
-export async function runHost(
-  adapterMode: AdapterMode,
-  certificateProvisioner?: HostCertificateProvisioner,
-): Promise<void> {
+export async function runHost(adapterMode: AdapterMode): Promise<void> {
   const dataDir = resolve(process.env.PIDEX_DATA_DIR ?? ".pidex-data");
   const port = Number(process.env.PIDEX_PORT ?? 7443);
   const host = await startHost({
     dataDir,
     port,
     adapters: adaptersFor(adapterMode),
-    certificateProvisioner,
   });
 
   console.log("UNAUTHENTICATED PROTOTYPE: anyone who can reach this Host on the network can view and control Pidex. Do not expose it beyond a trusted LAN.");

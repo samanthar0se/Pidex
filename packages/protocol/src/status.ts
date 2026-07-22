@@ -115,11 +115,6 @@ export const hostStatusSchema = z.object({
   warnings: z.array(
     z.union([
       z.object({
-        severity: z.literal("high"),
-        code: z.literal("firewall-enforcement-degraded"),
-        detail: z.string(),
-      }),
-      z.object({
         severity: z.literal("medium"),
         code: z.literal("durability-coverage-degraded"),
         role: z.enum(durabilityRoles),

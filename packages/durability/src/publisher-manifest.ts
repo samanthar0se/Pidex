@@ -33,8 +33,6 @@ export const authoritativePublisherIds = [
   "runnable-release",
   "release-selector",
   "installation-identity",
-  "tls-generation",
-  "tls-selector",
   "corruption-replacement",
 ] as const;
 

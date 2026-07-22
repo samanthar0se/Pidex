@@ -16,11 +16,11 @@ function portableManifest() {
     "instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors",
     "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState",
     "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics",
-    "launcherState", "tlsState", "publicationTemp",
+    "launcherState", "publicationTemp",
   ].map(role => [role, `${portableFixtureRoot}\\${role}`]));
   const artifacts = Object.fromEntries([
     "launcher", "node", "daemon", "worker", "addon", "companion", "schemas",
-    "certificateTool", "maintenance",
+    "maintenance",
   ].map((role, index) => [role, {
     path: `${portableFixtureRoot}\\releases\\r1\\${index}.bin`,
     sha256: fixtureSha256,
@@ -29,7 +29,6 @@ function portableManifest() {
     schemaVersion: 1,
     identity: { instanceId: "portable", owningSid: "S-1-5-21-1000", trustClass: "source" },
     generations: { release: "r1", daemon: 1, worker: 1, publicProtocol: 1, localControl: 1, capability: 1, addon: 1, schema: 1 },
-    endpoints: { canonicalOrigin: "https://portable.invalid:49152", canonicalPort: 49152, localControl: "\\\\.\\pipe\\pidex-portable" },
     roots: { sourceInstance: portableFixtureRoot, roles }, artifacts,
     piProfile: { policy: "synthetic-isolated", version: "0.80.10" },
     runtimes: { node: { lane: "primary", version: "24.1.0", architecture: "x64", sha256: fixtureSha256 }, nodeApi: 10, pi: { version: "0.80.10", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10", cmake: "4", cpp: "20" } },

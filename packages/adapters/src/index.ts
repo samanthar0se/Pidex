@@ -147,15 +147,7 @@ export interface WindowsPlatformAdapter {
   protectForCurrentUser(cleartext: Buffer): Buffer;
   unprotectForCurrentUser(envelope: Buffer): Buffer;
   restrictToCurrentUser(path: string): void;
-  trustCurrentUserCertificate(path: string): void;
-  /** Removes only the Current User Root certificate with this SHA-256 fingerprint. */
-  removeCurrentUserCertificate(fingerprint: string): void;
   registerLogonTask(command: string, args: readonly string[]): void;
-  privateInterfaces(): readonly PrivateInterface[];
-  advertisePidex(advertisement: PidexAdvertisement): () => void;
-  inspectPidexFirewall(port: number): FirewallHealth;
-  applyPidexFirewall(operation: FirewallOperation): void;
-  writeCoarseEvent(event: CoarseWindowsEvent): void;
   /**
    * Creates a Session worker suspended, assigns it to a fresh non-breakaway
    * kill-on-close Job, and resumes it only after assignment succeeds. The
@@ -201,80 +193,6 @@ export class SessionContainmentError extends Error {
     super(detail, options);
     this.name = "SessionContainmentError";
   }
-}
-
-export interface PrivateInterface {
-  name: string;
-  addresses: readonly string[];
-  profile: "private";
-}
-
-export interface PidexAdvertisement {
-  service: "_pidex._tcp.local";
-  hostname: string;
-  port: number;
-  interfaces: readonly PrivateInterface[];
-  txt: {
-    location: string;
-    label: string;
-    version: string;
-    fingerprint: string;
-  };
-}
-
-export type FirewallHealth =
-  | { state: "healthy" }
-  | {
-      state: "missing" | "disabled" | "broadened" | "unverifiable";
-      detail: string;
-    };
-
-export type FirewallOperation =
-  | { operation: "ensure-private-rule"; port: number }
-  | { operation: "remove-rule" };
-
-export interface CoarseWindowsEvent {
-  severity: "error";
-  code: "PIDEX_FIREWALL_DEGRADED";
-  detail: string;
-}
-
-/** Sole input boundary for the elevated helper; rejects arguments and extra fields. */
-export function executePidexFirewallOperation(
-  windows: WindowsPlatformAdapter,
-  input: unknown,
-): void {
-  if (!input || typeof input !== "object") {
-    throw new Error("Invalid Pidex Firewall operation");
-  }
-
-  const value = input as Record<string, unknown>;
-  const keys = Object.keys(value).sort().join(",");
-
-  if (value.operation === "remove-rule" && keys === "operation") {
-    windows.applyPidexFirewall({ operation: "remove-rule" });
-    return;
-  }
-
-  if (
-    value.operation === "ensure-private-rule" &&
-    keys === "operation,port" &&
-    isValidFirewallPort(value.port)
-  ) {
-    windows.applyPidexFirewall({
-      operation: "ensure-private-rule",
-      port: Number(value.port),
-    });
-    return;
-  }
-
-  throw new Error("Invalid Pidex Firewall operation");
-}
-
-function isValidFirewallPort(port: unknown): boolean {
-  return (
-    Number.isInteger(port) && Number(port) >= 1 && Number(port) <= 65_535
-  );
 }
 
 export interface HostAdapters {
@@ -359,20 +277,7 @@ function deterministicWindowsAdapter(): WindowsPlatformAdapter {
     unprotectForCurrentUser: envelope =>
       envelope.subarray(DETERMINISTIC_DPAPI_HEADER.length),
     restrictToCurrentUser() {},
-    trustCurrentUserCertificate() {},
-    removeCurrentUserCertificate() {},
     registerLogonTask() {},
-    privateInterfaces: () => [
-      {
-        name: "deterministic-private",
-        addresses: ["192.168.50.4"],
-        profile: "private",
-      },
-    ],
-    advertisePidex: () => () => {},
-    inspectPidexFirewall: () => ({ state: "healthy" }),
-    applyPidexFirewall() {},
-    writeCoarseEvent() {},
     createContainedSessionWorker: sessionId => ({
       sessionId,
       terminate() {},

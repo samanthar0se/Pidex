@@ -32,10 +32,6 @@ A monotonic ordering of Authority-generation activations. It records activation 
 A reconstructible hint naming the selected Authority generation. It accelerates normal startup but is not itself Host authority.
 _Avoid_: Source of truth, authoritative pointer
 
-**Development CA**:
-The long-lived private certificate authority shared by every Pidex development checkout and worktree for one Windows profile. Each client trusts its public certificate once; replaceable development leaves renew under the same CA.
-_Avoid_: Developer trust anchor, production CA
-
 **Durable acknowledgment**:
 Pidex's confirmation that accepted work and its dependencies crossed the applicable durable-publication boundary. It is conditional on the storage stack honoring successful flushes and does not claim that arbitrary hardware preserves the newest generation.
 

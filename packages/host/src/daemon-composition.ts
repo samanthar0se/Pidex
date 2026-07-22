@@ -4,7 +4,7 @@ import {
 } from "../../launch-manifest/src/index.js";
 
 export type HealthScope =
-  | "authority" | "lan" | "tls-origin" | "firewall"
+  | "authority" | "lan"
   | "private-interfaces" | "mdns" | "pi-execution" | "pi-configuration"
   | "durability-coverage" | "optional-capabilities"
   | `session:${string}:artifact` | `session:${string}:worker`;
@@ -191,7 +191,7 @@ export interface PortableManifestHost extends ManifestHost {
 }
 
 const SCOPES: readonly HealthScope[] = [
-  "authority", "lan", "tls-origin", "firewall",
+  "authority", "lan",
   "private-interfaces", "mdns", "pi-execution", "pi-configuration",
   "durability-coverage", "optional-capabilities",
 ];

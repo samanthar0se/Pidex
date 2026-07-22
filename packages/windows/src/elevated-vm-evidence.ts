@@ -109,7 +109,6 @@ export const requiredChecks = {
     "interaction-withdrawal-and-no-uncertain-replay",
     "drain-restart-force-and-maintenance-exclusivity",
     "shutdown-logoff-and-drain-deadlines",
-    "network-port-firewall-mdns-and-certificate-transitions",
     "volume-and-durability-coverage-transitions",
     "source-update-and-lazy-pi-migration",
     "backup-restore-reidentify-and-corrupt-newest-recovery",

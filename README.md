@@ -27,44 +27,21 @@ Pidex is a Windows-first control plane for durable [Pi](https://github.com/badlo
 
 ## Development
 
-Requires Node.js 22+ and the OpenSSL CLI available on `PATH`. Verify both
-before starting Pidex:
-
-```powershell
-node --version
-openssl version
-```
-
-Git for Windows includes OpenSSL but does not expose it to Command Prompt by
-default. Add `C:\Program Files\Git\mingw64\bin` to your user `PATH`, or expose
-it for the current Command Prompt session:
-
-```cmd
-set "PATH=C:\Program Files\Git\mingw64\bin;%PATH%"
-```
+Requires Node.js 22+:
 
 ```powershell
 npm ci
-npm run dev:ca:setup
 npm run dev
 ```
 
-`npm run dev` loads machine-specific development settings from an optional
-untracked `.env` file in the repository root. For LAN access, create it with
-the Host workstation's stable LAN address:
-
-```dotenv
-PIDEX_HOSTNAME=192.168.1.227
-```
-
-The repository ignores `.env`; do not commit machine-specific addresses or
-secrets. Shell environment variables take precedence over values in the file.
+The Host serves plain HTTP on IPv4 wildcard port 7443. `PIDEX_DATA_DIR` and
+`PIDEX_PORT` may be set directly or in an untracked `.env` file.
 
 ### Background development Host
 
 Pidex can run the development Host without an open terminal by registering a
-per-user Scheduled Task. This intentionally uses the signed-in user's profile,
-Development CA, and LocalAppData instead of a Windows service account. Stop any
+per-user Scheduled Task. This intentionally uses the signed-in user's profile
+and LocalAppData instead of a Windows service account. Stop any
 terminal-hosted `npm run dev` process before installing the task:
 
 ```powershell
@@ -86,24 +63,9 @@ The development Host serves plain HTTP on IPv4 wildcard port 7443. Startup
 prints the unauthenticated-prototype warning and loopback/LAN URL guidance.
 Opening the URL goes directly to the React Client without credentials or setup.
 
-### One-time clean break from older checkouts
-
-Do not migrate, reuse, or search for an old CA. Remove historical checkout-local
-TLS material (normally the old checkout's `.pidex-data-dev/tls/` directory),
-then run `npm run dev:ca:setup` once. Never copy its old CA or private key into
-the profile location.
-
-Use `npm run dev:ca:reset` only when the shared Development CA is unusable or an
-intentional trust break is required. Reset affects every checkout and all LAN
-clients, attempts best-effort removal from Current User Root, and does not make
-a replacement. Run `npm run dev:ca:setup` afterward; expect a new fingerprint
-and repeat LAN-client trust. A missing OpenSSL executable is a prerequisite
-failure, not unusable CA state: install OpenSSL, verify `openssl version`, and
-rerun setup rather than resetting valid CA state.
-
 The development entry point explicitly uses deterministic adapters and cannot
 select product composition through an environment switch. Optional fixture
-environment variables are `PIDEX_DATA_DIR`, `PIDEX_PORT`, and `PIDEX_HOSTNAME`;
+environment variables are `PIDEX_DATA_DIR` and `PIDEX_PORT`;
 explicit values override the development defaults.
 
 ```bash
@@ -112,8 +74,7 @@ npm test
 npm run security
 ```
 
-For access from another LAN device, read `docs/development-lan-access.md`; never
-commit `.pidex-data/` or `.pidex-data-dev/`.
+Never commit `.pidex-data/` or `.pidex-data-dev/`.
 
 ## Agent Guidance
 

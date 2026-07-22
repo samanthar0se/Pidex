@@ -5,7 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   DiagnosticCenter,
-  LocalLaunchCapabilities,
   StructuredDiagnosticLog,
   type DiagnosticProbes,
 } from "../packages/host/src/diagnostics.js";
@@ -17,10 +16,7 @@ const probesWithVersionMismatch: DiagnosticProbes = {
     action: "repair Pidex",
   }),
   database: () => ({ ok: true }),
-  certificates: () => ({ ok: true }),
   network: () => ({ ok: true }),
-  firewall: () => ({ ok: true }),
-  mdns: () => ({ ok: true }),
   update: () => ({ ok: true }),
   workers: () => ({ ok: true }),
   storage: () => ({ ok: true }),
@@ -79,23 +75,3 @@ test(
     }
   },
 );
-
-test("local launch capabilities are single-use and restricted to loopback", () => {
-  const capabilities = new LocalLaunchCapabilities(() => 100);
-  const recoveryCapability = capabilities.issue("recovery", 10);
-
-  assert.equal(
-    capabilities.consume(recoveryCapability, "recovery", "127.0.0.1"),
-    true,
-  );
-  assert.equal(
-    capabilities.consume(recoveryCapability, "recovery", "127.0.0.1"),
-    false,
-  );
-
-  const setupCapability = capabilities.issue("setup", 10);
-  assert.equal(
-    capabilities.consume(setupCapability, "setup", "example.com"),
-    false,
-  );
-});

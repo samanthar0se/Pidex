@@ -213,7 +213,6 @@ test("cleanup release C deletes legacy only with later complete unheld proof", a
         cleanup.deleteLegacy({
           nonce: "elapsed-time",
           generationIds: [],
-          tlsDigests: {},
         }),
       /cleanup-proof-missing/,
     );

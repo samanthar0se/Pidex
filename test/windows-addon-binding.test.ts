@@ -161,18 +161,6 @@ function addonModule(overrides: Record<string, unknown> = {}) {
     inspectStoragePath: async () => ({ fileSystem: "NTFS", driveType: "fixed" }),
     observeStorageTopology: async () => ({ close: async () => undefined }),
     writeDiagnosticEvent: async () => true,
-    inspectCertificate: async () => ({ state: "absent", reasons: [] }),
-    installCertificate: async () => undefined,
-    removeCertificate: async () => undefined,
-    inspectTask: async () => ({ state: "absent", reasons: [] }),
-    registerTask: async () => undefined,
-    removeTask: async () => undefined,
-    inspectFirewallRule: async () => ({ state: "absent", reasons: [] }),
-    ensureFirewallRule: async () => undefined,
-    removeFirewallRule: async () => undefined,
-    snapshotInterfaces: async () => [],
-    observeInterfaces: async () => ({ close: async () => undefined }),
-    openAdvertisement: async () => ({ close: async () => undefined }),
     spawnContained: async () => ({ processId: 1, close: async () => undefined }),
     ...overrides,
   };
@@ -180,16 +168,15 @@ function addonModule(overrides: Record<string, unknown> = {}) {
 
 function fixture() {
   const roles = Object.fromEntries(
-    ["instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors", "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState", "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics", "launcherState", "tlsState", "publicationTemp"].map(role => [role, `${root}\\${role}`]),
+    ["instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors", "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState", "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics", "launcherState", "publicationTemp"].map(role => [role, `${root}\\${role}`]),
   );
   const artifacts = Object.fromEntries(
-    ["launcher", "node", "daemon", "worker", "addon", "companion", "schemas", "certificateTool", "maintenance"].map((role, index) => [role, { path: `${root}\\releases\\r1\\${index}.bin`, sha256: role === "addon" ? digest : "a".repeat(64) }]),
+    ["launcher", "node", "daemon", "worker", "addon", "companion", "schemas", "maintenance"].map((role, index) => [role, { path: `${root}\\releases\\r1\\${index}.bin`, sha256: role === "addon" ? digest : "a".repeat(64) }]),
   );
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "instance-1", owningSid: "S-1-5-21-1", trustClass: "source" },
     generations: { release: "r1", daemon: 1, worker: 1, publicProtocol: 1, localControl: 1, capability: 1, addon: 1, schema: 1 },
-    endpoints: { canonicalOrigin: "https://pidex.local:47831", canonicalPort: 47831, localControl: "\\\\.\\pipe\\pidex-instance-1" },
     roots: { sourceInstance: root, roles }, artifacts,
     piProfile: { policy: "owning-user-standard", version: "0.80.10" },
     runtimes: { node: { lane: "primary", version: "24.18.0", architecture: "x64", sha256: "a".repeat(64) }, nodeApi: 10, pi: { version: "0.80.10", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10.0.26100.0", cmake: "4.3.3", cpp: "20" } },

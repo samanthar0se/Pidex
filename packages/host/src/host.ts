@@ -31,7 +31,6 @@ import {
   type TerminalRun,
   type TimelineChange,
 } from "../../protocol/src/status.js";
-import type { HostCertificateProvisioner } from "./certificate.js";
 import {
   type CoverageDiagnostic,
   DurabilityCoverageMonitor,
@@ -87,8 +86,6 @@ import {
 } from "./control-messages.js";
 
 const DEFAULT_PORT = 7443;
-const DEFAULT_HOSTNAME = "localhost";
-const DEFAULT_LABEL = "Pidex Host";
 const RELEASE_ID = "pidex@0.1.0";
 const MAX_INTERACTION_RESPONSE_BYTES = 100_000;
 const DEFAULT_MAX_OUTBOUND_BYTES = 256 * 1024;
@@ -223,12 +220,8 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
 
 export interface HostOptions {
   dataDir: string;
-  /** Overrides packaged certificate provisioning, for example during development. */
-  certificateProvisioner?: HostCertificateProvisioner;
   port?: number;
   adapters: HostAdapters;
-  hostname?: string;
-  label?: string;
   authorization?: string;
   bindAddress?: string;
   initialCatalog?: InitialCatalog;
@@ -314,8 +307,6 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   // Settle it conservatively and never dispatch it again to discover the result.
   store.reconcileAcceptedRuns(adapters.clock.now());
   store.resetResidencyOnStartup();
-  const hostname = options.hostname ?? DEFAULT_HOSTNAME;
-  const firewallWarnings: HostStatus["warnings"] = [];
   const coverage = new DurabilityCoverageMonitor(
     adapters.windows,
     {
@@ -336,11 +327,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   function status(): HostStatus {
     const durability = coverage.current();
     return {
-      ...store.status(RELEASE_ID, firewallWarnings),
-      warnings: [
-        ...firewallWarnings,
-        ...createDurabilityWarnings(durability),
-      ],
+      ...store.status(RELEASE_ID, []),
+      warnings: createDurabilityWarnings(durability),
       durability,
     };
   }
@@ -811,7 +799,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       ? address.port
       : (options.port ?? DEFAULT_PORT);
 
-  const canonicalOrigin = `http://${hostname}:${port}`;
+  const origin = `http://127.0.0.1:${port}`;
   void refreshCoverage();
 
   function handleSessionCreate(
@@ -1986,7 +1974,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   return {
-    origin: canonicalOrigin,
+    origin,
     status,
     storageProtection: () => storageProtection.status(),
     doctor,
