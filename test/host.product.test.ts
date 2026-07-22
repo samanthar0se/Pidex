@@ -116,3 +116,24 @@ test("HTTP Client and control protocol observe durable authoritative Host status
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("Host terminates a control socket that misses the pong after a liveness interval", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-liveness-"));
+  const host = await startHost({
+    dataDir,
+    port: 0,
+    adapters: adaptersFor("deterministic"),
+    controlLivenessIntervalMs: 15,
+  });
+  try {
+    const socket = new WebSocket(controlWebSocketUrl(host.origin), { autoPong: false });
+    await negotiateControl(socket);
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("socket remained open")), 150);
+      socket.once("close", () => { clearTimeout(timeout); resolve(); });
+    });
+  } finally {
+    await host.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

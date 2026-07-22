@@ -231,6 +231,8 @@ export interface HostOptions {
   initialCatalog?: InitialCatalog;
   /** Per-Client delivery bound; exceeding it disconnects only that Client. */
   maxOutboundBytes?: number;
+  /** WebSocket ping interval. Production uses 30 seconds. */
+  controlLivenessIntervalMs?: number;
   /** Time allowed for cooperative cancellation before force-stopping a run. */
   cooperativeStopTimeoutMs?: number;
   /** Time allowed for worker reconciliation after a run is force-stopped. */
@@ -391,6 +393,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
+  const liveClients = new WeakSet<WebSocket>();
+  const controlLivenessInterval = setInterval(() => {
+    for (const client of webSocketServer.clients) {
+      if (!liveClients.has(client)) {
+        client.terminate();
+        continue;
+      }
+      liveClients.delete(client);
+      client.ping();
+    }
+  }, options.controlLivenessIntervalMs ?? 30_000);
   const clientDeviceIds = new Map<WebSocket, string>();
   const admittedClients = new Set<WebSocket>();
   const initialProjection = store.projection();
@@ -508,6 +521,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   });
 
   webSocketServer.on("connection", webSocket => {
+    liveClients.add(webSocket);
+    webSocket.on("pong", () => liveClients.add(webSocket));
     webSocket.once("close", () => {
       clientDeviceIds.delete(webSocket);
       admittedClients.delete(webSocket);
@@ -518,6 +533,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       viewsByClient.delete(webSocket);
     });
     webSocket.on("message", bytes => {
+      liveClients.add(webSocket);
       try {
         const message: unknown = JSON.parse(bytes.toString());
         const markReadMessage = parseSessionMarkReadMessage(message);
@@ -2012,6 +2028,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
     close: async () => {
+      clearInterval(controlLivenessInterval);
       stopVolumeObservation();
       for (const timer of interactionDeadlineTimers.values()) {
         clearTimeout(timer);

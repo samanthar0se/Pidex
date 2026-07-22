@@ -169,6 +169,9 @@ function updateRun(sessionId: string, runId: string, change: Partial<RunFact>) {
 }
 
 export const hostSessionAdapter: ClientAdapters["host"] = {
+  watchConnection(listener) {
+    return controlConnection.subscribeStatus(listener);
+  },
   readCatalog,
   readSession,
   restoreSession,

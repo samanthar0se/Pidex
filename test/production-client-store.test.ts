@@ -438,3 +438,25 @@ test("FX-TRUST-01/02/03 FX-STATE-03/05 FX-RESP-06/07: recovery reconciles every 
   assert.equal(store.getState().drafts.session, "edited offline");
   assert.equal(store.getState().commandOutcomes[0]?.phase, "accepted-awaiting-projection");
 });
+
+test("connection loss exposes reconnecting until admission and reconciliation restore current controls", async () => {
+  let connectionChanged: ((status: "current" | "reconnecting" | "update-required") => void) | undefined;
+  let catalogReads = 0;
+  const store = createClientStore({
+    host: {
+      async readCatalog() { catalogReads++; return { projects: [], sessions: [], archivedSessions: [] }; },
+      async readSession() { throw new Error("not selected"); },
+      watchConnection(listener) { connectionChanged = listener; return () => {}; },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  connectionChanged?.("reconnecting");
+  assert.equal(store.getState().authority.status, "reconnecting");
+  connectionChanged?.("current");
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(catalogReads, 1);
+  assert.equal(store.getState().authority.status, "current");
+});

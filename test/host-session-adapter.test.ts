@@ -1,7 +1,62 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ControlConnection } from "../apps/client/src/control-connection.js";
+
+test("the shared control connection reconnects immediately and then with capped exponential delays", () => {
+  const sockets: FakeWebSocket[] = [];
+  const scheduled: Array<{ callback: () => void; delay: number }> = [];
+  const connection = new ControlConnection(
+    () => {
+      const socket = new FakeWebSocket("ws://pidex.test/control");
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    },
+    [],
+    {
+      online: () => true,
+      random: () => 0.5,
+      schedule(callback, delay) { scheduled.push({ callback, delay }); return scheduled.length; },
+      cancel() {},
+    },
+  );
+
+  connection.subscribe(() => {});
+  sockets[0]!.close();
+  assert.equal(sockets.length, 2, "the first reconnect is immediate");
+
+  for (const expectedDelay of [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]) {
+    sockets.at(-1)!.close();
+    const attempt = scheduled.shift();
+    assert.equal(attempt?.delay, expectedDelay);
+    attempt?.callback();
+  }
+});
+
+test("offline pauses reconnect and online return attempts immediately", () => {
+  let online = false;
+  const sockets: FakeWebSocket[] = [];
+  const connection = new ControlConnection(
+    () => {
+      const socket = new FakeWebSocket("ws://pidex.test/control");
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    }, [], {
+      online: () => online,
+      random: () => 0.5,
+      schedule() { throw new Error("offline reconnect must not be scheduled"); },
+      cancel() {},
+    },
+  );
+  connection.subscribe(() => {});
+  sockets[0]!.close();
+  assert.equal(sockets.length, 1);
+  online = true;
+  connection.reconnectNow();
+  assert.equal(sockets.length, 2);
+});
 
 test("an in-flight command becomes uncertain when the shared control connection fails", async () => {
+  FakeWebSocket.instances.length = 0;
   const originalLocation = globalThis.location;
   const originalWebSocket = globalThis.WebSocket;
   const originalWindow = globalThis.window;

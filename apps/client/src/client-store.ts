@@ -102,6 +102,7 @@ export interface ClientAdapters {
     readOlder?(sessionId: string, cursor: string): Promise<TimelinePage>;
     markRead?(sessionId: string, timelineRevision: number): Promise<void>;
     reconcileCommand?(commandId: string): Promise<ReconciledCommandResult>;
+    watchConnection?(listener: (status: "current" | "reconnecting" | "update-required") => void): () => void;
   };
   drafts: { read(sessionId: string): Promise<string>; write(sessionId: string, value: string): Promise<void>; };
   preferences?: {
@@ -163,7 +164,7 @@ export type ClientStore = StoreApi<ClientState>;
 
 export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
-  return createStore<ClientState>((set, get) => ({
+  const store = createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
     timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
@@ -487,6 +488,16 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       }
     },
   }));
+  adapters.host.watchConnection?.(status => {
+    if (status === "update-required") {
+      store.getState().authorityChanged({ status });
+    } else if (status === "reconnecting") {
+      store.getState().authorityChanged({ status });
+    } else if (store.getState().authority.status === "reconnecting") {
+      void store.getState().recoverAuthority();
+    }
+  });
+  return store;
 }
 
 function mergeTimeline(older: readonly TimelineFact[], current: readonly TimelineFact[]): TimelineFact[] {
