@@ -19,10 +19,11 @@ const browserReconnectRuntime: ReconnectRuntime = {
   cancel: handle => window.clearTimeout(handle),
 };
 const reconnectDelays = [0, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const;
+type ConnectionStatus = "current" | "reconnecting" | "update-required";
 
 export class ControlConnection {
   private readonly subscribers = new Set<ControlSubscriber>();
-  private readonly statusSubscribers = new Set<(status: "current" | "reconnecting" | "update-required") => void>();
+  private readonly statusSubscribers = new Set<(status: ConnectionStatus) => void>();
   private socket: WebSocket | undefined;
   private lastHostSnapshot: any;
   private reconnectAttempt = 0;
@@ -50,9 +51,8 @@ export class ControlConnection {
     };
   }
 
-  subscribeStatus(subscriber: (status: "current" | "reconnecting" | "update-required") => void) {
+  subscribeStatus(subscriber: (status: ConnectionStatus) => void) {
     this.statusSubscribers.add(subscriber);
-    this.open();
     return () => this.statusSubscribers.delete(subscriber);
   }
 
@@ -83,14 +83,14 @@ export class ControlConnection {
       if (message.type === "host.snapshot") this.lastHostSnapshot = message;
       this.subscribers.forEach(subscriber => subscriber.onMessage(message, socket));
       if (message.type === "protocol.update-required") {
-        this.statusSubscribers.forEach(subscriber => subscriber("update-required"));
+        this.publishStatus("update-required");
       }
       if (message.type === "protocol.admitted") {
-        this.statusSubscribers.forEach(subscriber => subscriber("current"));
+        this.publishStatus("current");
       }
       if (message.type === "scope.current" || message.type === "scope.reset") {
         this.reconnectAttempt = 0;
-        this.statusSubscribers.forEach(subscriber => subscriber("current"));
+        this.publishStatus("current");
       }
     };
 
@@ -105,7 +105,7 @@ export class ControlConnection {
         this.lastHostSnapshot = undefined;
       }
       reportUnavailable();
-      this.statusSubscribers.forEach(subscriber => subscriber("reconnecting"));
+      this.publishStatus("reconnecting");
       this.scheduleReconnect();
     };
     socket.onerror = () => {
@@ -116,12 +116,15 @@ export class ControlConnection {
     return socket;
   }
 
+  private publishStatus(status: ConnectionStatus): void {
+    this.statusSubscribers.forEach(subscriber => subscriber(status));
+  }
+
   private scheduleReconnect(): void {
     if ((!this.subscribers.size && !this.statusSubscribers.size) || !this.runtime.online() || this.reconnectTimer !== undefined) return;
     const basis = reconnectDelays[Math.min(this.reconnectAttempt, reconnectDelays.length - 1)]!;
     this.reconnectAttempt++;
     const delay = basis === 0 ? 0 : Math.round(basis * (0.75 + this.runtime.random() * 0.5));
-    if (delay === 0) return void this.open();
     this.reconnectTimer = this.runtime.schedule(() => {
       this.reconnectTimer = undefined;
       this.open();

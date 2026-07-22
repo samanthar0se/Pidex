@@ -489,9 +489,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     },
   }));
   adapters.host.watchConnection?.(status => {
-    if (status === "update-required") {
-      store.getState().authorityChanged({ status });
-    } else if (status === "reconnecting") {
+    if (status !== "current") {
       store.getState().authorityChanged({ status });
     } else if (store.getState().authority.status === "reconnecting") {
       void store.getState().recoverAuthority();
