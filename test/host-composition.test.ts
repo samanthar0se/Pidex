@@ -87,7 +87,7 @@ test("manifest Host proves containment and local control before opening Authorit
   await host.close();
 });
 
-test("recovery-only Authority keeps authenticated local recovery open without LAN or Run admission", async () => {
+test("recovery-only Authority keeps the anonymous LAN recovery edge open without Run admission", async () => {
   const calls: string[] = [];
   const host = await composeManifestHost(
     manifest(),
@@ -96,11 +96,11 @@ test("recovery-only Authority keeps authenticated local recovery open without LA
 
   assert.deepEqual(calls, [
     "containment", "control", "release", "authority", "durability", "windows",
-    "modules", "lifecycle", "backup-recovery",
+    "modules", "lifecycle", "backup-recovery", "lan",
   ]);
   assert.equal(host.mode, "recovery-only");
   assert.equal(host.health.scope("local-control").availability, "available");
-  assert.equal(host.health.scope("lan").availability, "unavailable");
+  assert.equal(host.health.scope("lan").availability, "available");
   assert.equal(host.health.scope("pi-execution").availability, "unavailable");
   await host.close();
 });

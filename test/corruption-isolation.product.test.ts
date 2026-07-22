@@ -89,7 +89,7 @@ test("scrubbing rejects an exact copy without independent provenance", async () 
   }
 });
 
-test("global authority corruption enters capability-gated local recovery", async () => {
+test("global authority corruption keeps anonymous diagnostics and restore reachable", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-scrub-"));
   try {
     await writeFile(join(root, "identity"), "corrupt");
@@ -105,23 +105,16 @@ test("global authority corruption enters capability-gated local recovery", async
           copies: [],
         },
       ],
-      { recoverySecret: "signed-cli-secret" },
     );
     scrubber.scrub({ now: 1, byteBudget: Infinity });
     assert.deepEqual(scrubber.availability(), {
       mode: "recovery",
-      lanService: false,
+      lanService: true,
       mdns: false,
-      pairedDevicesAccepted: false,
+      normalAuthority: false,
+      anonymousDiagnostics: true,
+      anonymousRestore: true,
     });
-    assert.equal(scrubber.authorizeRecoveryLaunch("localhost", "wrong"), false);
-    const capability = scrubber.createRecoveryLaunchCapability(10);
-    assert.equal(scrubber.authorizeRecoveryLaunch("localhost", capability, 10), true);
-    assert.equal(scrubber.authorizeRecoveryLaunch("localhost", capability, 11), false);
-    assert.equal(
-      scrubber.authorizeRecoveryLaunch("192.168.1.2", capability, 10),
-      false,
-    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

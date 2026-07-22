@@ -8,7 +8,7 @@ import test from "node:test";
 import { DataGenerationManager } from "../packages/host/src/migration.js";
 import { WholeHostRestore, type RestoreCandidate } from "../packages/host/src/whole-host-restore.js";
 
-test("whole-Host restore skips corrupt newest sources and atomically activates reset semantics", async () => {
+test("anonymous whole-Host restore is exact-version, replace-only, and rotates continuity", async () => {
   const root = await mkdtemp(join(tmpdir(), "pidex-restore-"));
   try {
     await mkdir(join(root, "generations", "current"), { recursive: true });
@@ -19,7 +19,7 @@ test("whole-Host restore skips corrupt newest sources and atomically activates r
     );
     old.close();
     new DataGenerationManager(root).activate({
-      release: "r2",
+      release: "r1",
       schema: 2,
       directory: "current",
     });
@@ -41,29 +41,21 @@ test("whole-Host restore skips corrupt newest sources and atomically activates r
       database: source,
       databaseDigest: hash,
       files: [],
-      identity: { hostId: "host", origin: "https://pidex.local" },
+      identity: { hostId: "backed-up-host" },
       schema: 1,
       release: "r1",
       barrier: "revision:4",
       runs: { executing: 2, cancelling: 1, queued: 3 },
-      devices: { paired: 2, revoked: 1 },
       encrypted: false,
       encryptionVerified: true,
     };
     const restore = new WholeHostRestore({
       root,
-      hostId: "host",
-      origin: "https://pidex.local",
-      schema: 2,
-      release: "r2",
+      hostId: "destination-host",
+      schema: 1,
+      release: "r1",
       revision: () => 7,
-      authorityValid: () => true,
-      isPaired: id => id === "phone",
       daemonStopped: () => true,
-      migrate: database =>
-        database.exec(
-          "ALTER TABLE facts ADD COLUMN migrated INTEGER DEFAULT 1",
-        ),
       reconcile: (database, epoch) =>
         database
           .prepare(
@@ -72,21 +64,11 @@ test("whole-Host restore skips corrupt newest sources and atomically activates r
           .run(epoch),
     });
 
-    assert.throws(
-      () =>
-        restore.preview({
-          candidates: [candidate],
-          deviceId: "stranger",
-          expectedRevision: 7,
-        }),
-      /paired-device-required/,
-    );
     const preview = restore.preview({
       candidates: [
         { ...candidate, id: "bad", createdAt: 11, databaseDigest: "bad" },
         candidate,
       ],
-      deviceId: "phone",
       expectedRevision: 7,
     });
 
@@ -94,11 +76,8 @@ test("whole-Host restore skips corrupt newest sources and atomically activates r
     assert.deepEqual(preview.skipped, [
       { id: "bad", reason: "database-digest-failed" },
     ]);
-    assert.equal(preview.migration.required, true);
-    assert.match(
-      preview.warnings.join(" "),
-      /revoked after this point may become Paired/,
-    );
+    assert.equal(preview.identityChanges, true);
+    assert.doesNotMatch(preview.warnings.join(" "), /Device|Paired|authorization/i);
     assert.throws(
       () => restore.restore({ candidateId: "good", confirmation: "yes" }),
       /confirmation-required/,
@@ -119,8 +98,8 @@ test("whole-Host restore skips corrupt newest sources and atomically activates r
     );
     try {
       assert.deepEqual(
-        { ...restored.prepare("SELECT value, migrated FROM facts").get() },
-        { value: "restored", migrated: 1 },
+        { ...restored.prepare("SELECT value FROM facts").get() },
+        { value: "restored" },
       );
       assert.deepEqual(
         {

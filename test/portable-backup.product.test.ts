@@ -28,12 +28,11 @@ test("portable backup drains, encrypts all portable state, and distinguishes ver
       drain: async () => true,
     });
     const record = await backups.create({
-      clientId: "phone",
       passphrase,
       barrier: "epoch:7",
       database,
       files: [{ bundlePath: "blobs/a", sourcePath: blob }],
-      identity: { hostId: "host-1", certificateAuthority: "portable-ca" },
+      identity: { hostId: "host-1" },
       versions: { release: "pidex@0.1.0", schema: 1 },
     });
 
@@ -42,7 +41,7 @@ test("portable backup drains, encrypts all portable state, and distinguishes ver
     assert.equal(record.delivery, "not-delivered");
     assert.doesNotMatch(
       await readFile(record.bundlePath, "utf8"),
-      /coherent database|artifact bytes|portable-ca|correct horse/,
+      /coherent database|artifact bytes|correct horse/,
     );
     assert.doesNotMatch(
       await readFile(
@@ -109,12 +108,11 @@ test("a blocked backup can be cancelled by any client and resumes mutation accep
       drainTimeoutMs: 20,
     });
     const creation = backups.create({
-      clientId: "one",
       passphrase: "secret",
       barrier: "b",
       database,
       files: [],
-      identity: { hostId: "h", certificateAuthority: "ca" },
+      identity: { hostId: "h" },
       versions: { release: "r", schema: 1 },
     });
 
@@ -149,12 +147,11 @@ test("a timed-out drain aborts the backup and resumes mutation acceptance", asyn
 
     await assert.rejects(
       backups.create({
-        clientId: "phone",
         passphrase: "secret",
         barrier: "b",
         database,
         files: [],
-        identity: { hostId: "h", certificateAuthority: "ca" },
+        identity: { hostId: "h" },
         versions: { release: "r", schema: 1 },
       }),
       /backup-drain-timeout/,
@@ -207,6 +204,35 @@ test("startup aborts abandoned backups and removes their staging directories", a
     assert.equal(
       (await readdir(backupDirectory)).includes("abandoned.stage"),
       false,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("anonymous backups reject removed authorization and certificate material", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pidex-backup-anonymous-"));
+  try {
+    const database = join(root, "authority.sqlite");
+    const removedState = join(root, "removed-state");
+    await writeFile(database, "authority");
+    await writeFile(removedState, "legacy secret");
+    const backups = new PortableBackups({
+      root,
+      setMutationAcceptance: () => {},
+      drain: async () => true,
+    });
+
+    await assert.rejects(
+      backups.create({
+        passphrase: "secret",
+        barrier: "b",
+        database,
+        files: [{ bundlePath: "certificates/host.pem", sourcePath: removedState }],
+        identity: { hostId: "host" },
+        versions: { release: "r", schema: 1 },
+      }),
+      /backup-removed-security-material-not-allowed/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
