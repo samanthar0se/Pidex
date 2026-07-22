@@ -38,7 +38,7 @@ function createManifestFixture(): unknown {
     },
     roots: { sourceInstance: root, roles: roots },
     artifacts,
-    piProfile: { policy: "owning-user-standard", version: "0.80.10" },
+    piProfile: { policy: "owning-user-standard", version: "0.81.1" },
     runtimes: {
       node: {
         lane: "primary",
@@ -47,7 +47,7 @@ function createManifestFixture(): unknown {
         sha256: hash,
       },
       nodeApi: 10,
-      pi: { version: "0.80.10", integrity: "sha512-test" },
+      pi: { version: "0.81.1", integrity: "sha512-test" },
       addonAbi: "napi-10",
       toolchain: {
         msvc: "19.44",
@@ -165,7 +165,7 @@ test("immutable closure verification emits reproducible evidence for both Node l
 
   assert.deepEqual(first, second);
   assert.equal(first.node.lane, "primary");
-  assert.equal(first.pi.version, "0.80.10");
+  assert.equal(first.pi.version, "0.81.1");
 
   const secondary = structuredClone(manifest);
   secondary.runtimes.node.lane = "secondary";
@@ -251,7 +251,7 @@ test("immutable closure verification rejects file hash mismatches", async () => 
   );
 });
 
-test("resolved manifests require Pi 0.80.10", () => {
+test("resolved manifests require Pi 0.81.1", () => {
   const manifest = parseResolvedLaunchManifest(createManifestFixture());
   manifest.runtimes.pi.version = "0.80.11";
 

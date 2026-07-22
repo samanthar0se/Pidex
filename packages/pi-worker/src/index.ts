@@ -24,7 +24,7 @@ import {
 } from "../../worker-protocol/src/index.js";
 import { publishImmutableFile } from "../../durability/src/index.js";
 
-export const EXACT_PI_VERSION = "0.80.10";
+export const EXACT_PI_VERSION = "0.81.1";
 
 const CHECKPOINT_CHUNK_BYTES = 1024 * 1024;
 

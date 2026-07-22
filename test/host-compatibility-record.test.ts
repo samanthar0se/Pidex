@@ -16,7 +16,7 @@ async function loadCheckedInRecord() {
 test("checked-in Host compatibility record pins both exact runtime lanes", async () => {
   const record = await loadCheckedInRecord();
 
-  assert.equal(record.pi.version, "0.80.10");
+  assert.equal(record.pi.version, "0.81.1");
   assert.deepEqual(record.nodeLanes.map((lane) => lane.role), [
     "primary",
     "secondary",

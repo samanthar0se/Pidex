@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "candidate": "runnable-host-prd-80-2026-07-21",
   "pi": {
-    "version": "0.80.10",
-    "integrity": "sha512-aL4apbupCHiVLSXASXvRzH4Q2vmtfrDa+0s909CJuVu/GgGylbDzr7oyF1mPmip5E+VxYYxKWmph4hV04wUcQg=="
+    "version": "0.81.1",
+    "integrity": "sha512-r6ovAsZOgAqbC/aU6s+/dPnv/sGZBuWyZNvi3pXjpbuX5wvp3XvGkQI7/VLvX2o9XpmpFaPUxKNym1WfkN/P8A=="
   },
   "nodeLanes": [
     {

@@ -30,7 +30,7 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
       authenticationToken: "a".repeat(64),
       releaseGeneration: "r1",
       configGeneration: "c1",
-      piGeneration: "0.80.10",
+      piGeneration: "0.81.1",
       cwd: "C:\\work",
     }),
     createFrame("ready", 1, {
@@ -109,7 +109,7 @@ test("Session IPC authenticates its generation before delivering fragmented and 
     authenticationToken: "a".repeat(64),
     releaseGeneration: "r1",
     configGeneration: "c1",
-    piGeneration: "0.80.10",
+    piGeneration: "0.81.1",
     cwd: "C:\\work",
   });
   const execute = createFrame("execute", 1, {

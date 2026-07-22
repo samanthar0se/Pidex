@@ -41,7 +41,7 @@ test("checkpoint chunks and manifest publish before atomic Run settlement", asyn
         sourceCheckpoint: "private-jsonl-leaf-17",
         workerGeneration: "worker-4",
         releaseGeneration: "release-2",
-        piGeneration: "pi-0.80.10",
+        piGeneration: "pi-0.81.1",
         chunks: [Buffer.from("private pi bytes"), Buffer.from("more bytes")],
       },
       3,
@@ -86,7 +86,7 @@ test("every checkpoint publication cut withholds identity while retaining any pu
         sourceCheckpoint: "private-leaf",
         workerGeneration: "worker-1",
         releaseGeneration: "release-1",
-        piGeneration: "pi-0.80.10",
+        piGeneration: "pi-0.81.1",
         chunks: [Buffer.from("uncertain bytes")],
       }), /Injected publication failure/);
       // Publication may have crossed rename, but no opaque identity was returned
@@ -123,7 +123,7 @@ test("an uncertain Host transaction preserves the prior checkpoint and never rep
       sourceCheckpoint: "private-leaf-2",
       workerGeneration: "worker-2",
       releaseGeneration: "release-2",
-      piGeneration: "pi-0.80.10",
+      piGeneration: "pi-0.81.1",
       chunks: [Buffer.from("retained uncertain bytes")],
     }, 5), /uncertain-commit/);
 

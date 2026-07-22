@@ -331,7 +331,7 @@ test("one exact Pi generation loads only its synthetic profile/cwd and translate
     const result = await child.execute("offline prompt", event => {
       timelineEvents.push(event);
     });
-    assert.equal(EXACT_PI_VERSION, "0.80.10");
+    assert.equal(EXACT_PI_VERSION, "0.81.1");
     assert.equal(result.text, "synthetic answer");
     assert.match(result.checkpoint, /^[a-f0-9]{64}$/);
     assert.equal(

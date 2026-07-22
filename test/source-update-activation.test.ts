@@ -19,7 +19,7 @@ test("launcher independently verifies and rolls back a source update that fails 
   const release = publishImmutableSourceClosure({ releasesDirectory: join(root, "releases"), plan: {
     schemaVersion: 1, trustClass: "local-source", inputMode: "source-build",
     node: { version: "24.13.0", architecture: "x64" }, nodeApi: 10,
-    pi: { version: "0.80.10", integrity: "sha512-pinned" },
+    pi: { version: "0.81.1", integrity: "sha512-pinned" },
     toolchain: { msvc: "19.44", windowsSdk: "10.0.26100.0", cmake: "4.0.0", cpp: "20" },
     sourceIdentity: "git:next", files,
   } });

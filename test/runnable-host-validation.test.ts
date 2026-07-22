@@ -13,7 +13,7 @@ function passingInput(): RunnableHostValidationInput {
     attemptedAt: "2026-07-21T12:00:00.000Z",
     identities: {
       closureSha256: repeatedHexDigest("1"), addonSha256: repeatedHexDigest("2"), sbomSha256: repeatedHexDigest("3"),
-      launcherSha256: repeatedHexDigest("4"), configSha256: repeatedHexDigest("5"), piVersion: "0.80.10",
+      launcherSha256: repeatedHexDigest("4"), configSha256: repeatedHexDigest("5"), piVersion: "0.81.1",
       schemaGeneration: 1, toolchain: "msvc-19.44.35207/windows-sdk-10.0.26100.0",
       runtimes: [
         { lane: "primary" as const, nodeVersion: "24.18.0", nodeApi: 10 },

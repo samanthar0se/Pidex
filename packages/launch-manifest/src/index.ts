@@ -21,7 +21,7 @@ export type { HostCompatibilityRecord } from "./compatibility.js";
 export { publishRunnableHostValidation } from "./runnable-host-validation.js";
 export type { RunnableHostValidationInput } from "./runnable-host-validation.js";
 
-const PINNED_PI_VERSION = "0.80.10";
+const PINNED_PI_VERSION = "0.81.1";
 
 const sha256Schema = z
   .string()
@@ -376,7 +376,7 @@ export interface ClosureCompatibilityEvidence {
     nodeApi: number;
     sha256: string;
   };
-  pi: { version: "0.80.10"; integrity: string };
+  pi: { version: "0.81.1"; integrity: string };
   addon: { abi: string; generation: number; sha256: string };
   generations: Omit<ResolvedLaunchManifest["generations"], "release">;
   toolchain: ResolvedLaunchManifest["runtimes"]["toolchain"];

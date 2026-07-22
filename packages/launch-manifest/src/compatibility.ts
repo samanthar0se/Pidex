@@ -24,7 +24,7 @@ export const hostCompatibilityRecordSchema = z
     schemaVersion: z.literal(1),
     candidate: z.string().min(1),
     pi: z.strictObject({
-      version: z.literal("0.80.10"),
+      version: z.literal("0.81.1"),
       integrity: z.string().startsWith("sha512-"),
     }),
     nodeLanes: z.tuple([nodeLaneSchema, nodeLaneSchema]),

@@ -39,7 +39,7 @@ export interface SourceClosureIdentity {
   inputMode: "source-build" | "hash-verified-prebuilt";
   node: { version: string; architecture: "x64" };
   nodeApi: number;
-  pi: { version: "0.80.10"; integrity: string };
+  pi: { version: "0.81.1"; integrity: string };
   toolchain: {
     msvc: string;
     windowsSdk: string;
@@ -145,7 +145,7 @@ function verifySourceClosure(directory: string, requireContentAddressedLocation:
 
 function resolvePlan(plan: SourceClosurePlan) {
   if (plan.schemaVersion !== 1 || plan.trustClass !== "local-source") throw new Error("invalid source closure plan");
-  if (plan.pi.version !== "0.80.10") throw new Error("Pi version must be exactly 0.80.10");
+  if (plan.pi.version !== "0.81.1") throw new Error("Pi version must be exactly 0.81.1");
   const paths = new Set<string>();
   const files = plan.files.map(file => {
     const path = safeRelativePath(file.path);

@@ -17,7 +17,7 @@ const candidate = {
   ],
   identities: {
     addonSha256: "1".repeat(64), closureSha256: "2".repeat(64), sbomSha256: "3".repeat(64),
-    piVersion: "0.80.10", launcherSha256: "4".repeat(64), schemaGeneration: 1,
+    piVersion: "0.81.1", launcherSha256: "4".repeat(64), schemaGeneration: 1,
     toolchain: "msvc-19.44.35207-sdk-10.0.26100.0-cmake-4.3.3-cpp20", configSha256: "5".repeat(64),
   },
 };
