@@ -7,24 +7,20 @@ import {
   type PortableCompositionInputs,
 } from "../packages/host/src/daemon-composition.js";
 import { createCompleteManifestHostFactories } from "./manifest-host-factories.js";
+import {
+  createLaunchManifestArtifacts,
+  createLaunchManifestRoleRoots,
+} from "./resolved-launch-manifest-fixture.js";
 
 const fixtureSha256 = "b".repeat(64);
 const portableFixtureRoot = "C:\\Users\\fixture\\AppData\\Local\\Pidex\\Source\\portable";
 
 function portableManifest() {
-  const roles = Object.fromEntries([
-    "instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors",
-    "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState",
-    "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics",
-    "launcherState", "publicationTemp",
-  ].map(role => [role, `${portableFixtureRoot}\\${role}`]));
-  const artifacts = Object.fromEntries([
-    "launcher", "node", "daemon", "worker", "addon", "companion", "schemas",
-    "maintenance",
-  ].map((role, index) => [role, {
-    path: `${portableFixtureRoot}\\releases\\r1\\${index}.bin`,
-    sha256: fixtureSha256,
-  }]));
+  const roles = createLaunchManifestRoleRoots(portableFixtureRoot);
+  const artifacts = createLaunchManifestArtifacts(
+    portableFixtureRoot,
+    () => fixtureSha256,
+  );
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "portable", owningSid: "S-1-5-21-1000", trustClass: "source" },

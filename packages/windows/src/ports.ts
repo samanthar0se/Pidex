@@ -8,10 +8,6 @@ export interface ManagedWindowsResource<TFault = WindowsPlatformError> {
   close(): Promise<void>;
 }
 
-/** Contracts are asynchronous even where a Windows API completes immediately. */
-export interface InstallationPort {
-}
-
 export interface ProcessPort {
   spawnContained(input: ContainedProcessRequest): Promise<ManagedProcess>;
 }

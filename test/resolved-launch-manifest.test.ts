@@ -6,6 +6,10 @@ import {
   verifyImmutableClosure,
   type ClosureReader,
 } from "../packages/launch-manifest/src/index.js";
+import {
+  createLaunchManifestArtifacts,
+  createLaunchManifestRoleRoots,
+} from "./resolved-launch-manifest-fixture.js";
 
 const hash = "a".repeat(64);
 const closureFileHash =
@@ -13,42 +17,8 @@ const closureFileHash =
 const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
 
 function createManifestFixture(): unknown {
-  const roots = Object.fromEntries(
-    [
-      "instanceIdentity",
-      "controlCredential",
-      "authorityGenerations",
-      "generationSelectors",
-      "immutableBlobs",
-      "checkpointChunks",
-      "checkpointManifests",
-      "workerState",
-      "migrationStaging",
-      "recoverySnapshots",
-      "managedBackups",
-      "diagnostics",
-      "launcherState",
-      "publicationTemp",
-    ].map((role) => [role, `${root}\\${role}`]),
-  );
-  const artifacts = Object.fromEntries(
-    [
-      "launcher",
-      "node",
-      "daemon",
-      "worker",
-      "addon",
-      "companion",
-      "schemas",
-      "maintenance",
-    ].map((role, index) => [
-      role,
-      {
-        path: `${root}\\releases\\r1\\${index}.bin`,
-        sha256: hash,
-      },
-    ]),
-  );
+  const roots = createLaunchManifestRoleRoots(root);
+  const artifacts = createLaunchManifestArtifacts(root, () => hash);
   return {
     schemaVersion: 1,
     identity: {

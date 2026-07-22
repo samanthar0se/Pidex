@@ -9,21 +9,17 @@ import {
 } from "../packages/host/src/daemon-composition.js";
 import { runHost } from "../packages/host/src/run-host.js";
 import { createCompleteManifestHostFactories } from "./manifest-host-factories.js";
+import {
+  createLaunchManifestArtifacts,
+  createLaunchManifestRoleRoots,
+} from "./resolved-launch-manifest-fixture.js";
 
 const hash = "a".repeat(64);
 const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
 
 function manifest() {
-  const roles = Object.fromEntries([
-    "instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors",
-    "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState",
-    "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics",
-    "launcherState", "publicationTemp",
-  ].map(role => [role, `${root}\\${role}`]));
-  const artifacts = Object.fromEntries([
-    "launcher", "node", "daemon", "worker", "addon", "companion", "schemas",
-    "maintenance",
-  ].map((role, index) => [role, { path: `${root}\\releases\\r1\\${index}.bin`, sha256: hash }]));
+  const roles = createLaunchManifestRoleRoots(root);
+  const artifacts = createLaunchManifestArtifacts(root, () => hash);
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "instance-1", owningSid: "S-1-5-21-1", trustClass: "source" },

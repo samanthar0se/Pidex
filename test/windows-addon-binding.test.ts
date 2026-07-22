@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { parseResolvedLaunchManifest } from "../packages/launch-manifest/src/index.js";
 import { loadWindowsAddon, windowsAddonExports, WindowsPlatformError } from "../packages/windows/src/index.js";
+import {
+  createLaunchManifestArtifacts,
+  createLaunchManifestRoleRoots,
+} from "./resolved-launch-manifest-fixture.js";
 
 const bytes = Buffer.from("candidate addon");
 const digest = createHash("sha256").update(bytes).digest("hex");
@@ -167,11 +171,10 @@ function addonModule(overrides: Record<string, unknown> = {}) {
 }
 
 function fixture() {
-  const roles = Object.fromEntries(
-    ["instanceIdentity", "controlCredential", "authorityGenerations", "generationSelectors", "immutableBlobs", "checkpointChunks", "checkpointManifests", "workerState", "migrationStaging", "recoverySnapshots", "managedBackups", "diagnostics", "launcherState", "publicationTemp"].map(role => [role, `${root}\\${role}`]),
-  );
-  const artifacts = Object.fromEntries(
-    ["launcher", "node", "daemon", "worker", "addon", "companion", "schemas", "maintenance"].map((role, index) => [role, { path: `${root}\\releases\\r1\\${index}.bin`, sha256: role === "addon" ? digest : "a".repeat(64) }]),
+  const roles = createLaunchManifestRoleRoots(root);
+  const artifacts = createLaunchManifestArtifacts(
+    root,
+    role => role === "addon" ? digest : "a".repeat(64),
   );
   return parseResolvedLaunchManifest({
     schemaVersion: 1,

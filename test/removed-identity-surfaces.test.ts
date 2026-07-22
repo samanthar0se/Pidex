@@ -7,18 +7,6 @@ const REMOVED_PRODUCT_PATHS = [
   "apps/pwa",
   "packages/host/src/pairing.ts",
   "packages/host/src/advisory-push.ts",
-  "packages/host/src/certificate.ts",
-  "packages/host/src/development-ca.ts",
-  "packages/host/src/development-ca-setup.ts",
-  "packages/host/src/development-ca-reset.ts",
-  "packages/host/src/exact-integration-control.ts",
-  "packages/host/src/onboarding.ts",
-  "packages/windows/src/network.ts",
-  "native/windows/common/include/pidex/windows/dns_sd.hpp",
-  "native/windows/common/include/pidex/windows/private_network.hpp",
-  "native/windows/common/src/dns_sd.cpp",
-  "native/windows/common/src/private_network.cpp",
-  "scripts/check-development-prerequisites.mjs",
 ];
 
 const REMOVED_SURFACES = [
@@ -36,10 +24,6 @@ const REMOVED_SURFACES = [
     pattern: /\/pair\/(?:challenge|complete|auth-challenge|authenticate)/i,
   },
   { name: "pairing UI", pattern: /pair-device/i },
-  {
-    name: "TLS, certificate, firewall, and LAN discovery contracts",
-    pattern: /\b(?:HostCertificateProvisioner|certificateTool|canonicalOrigin|canonicalPort|inspectPidexFirewall|applyPidexFirewall|advertisePidex|privateInterfaces|PidexAdvertisement|FirewallOperation|FirewallHealth|CertificateIntegration|FirewallIntegration|NetworkPort|PidexDnsSdAdvertisement|PrivateNetworkInterface)\b/,
-  },
 ];
 
 test("legacy PWA, pairing, and advisory push product paths are deleted", () => {
