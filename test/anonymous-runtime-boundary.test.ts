@@ -6,10 +6,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 test("the anonymous-runtime checker rejects a removed product module", () => {
-  const root = mkdtempSync(join(tmpdir(), "pidex-boundary-"));
-  mkdirSync(join(root, "config"));
+  const root = fixtureRoot();
   mkdirSync(join(root, "packages/host/src"), { recursive: true });
-  cpSync("config/anonymous-runtime-boundary.json", join(root, "config/anonymous-runtime-boundary.json"));
   writeFileSync(join(root, "packages/host/src/pairing.ts"), "export const pairing = true;\n");
 
   assert.throws(

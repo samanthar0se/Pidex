@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "description": "Canonical inventory for surfaces removed by PRD #163. Rules apply to source and generated output; exceptions are limited to explicitly retained protections.",
-  "allowedExceptionClasses": ["backup-protection", "manifest-release-integrity", "lifecycle-containment", "worker-ipc-authentication", "provider-credentials", "external-reference", "lowercase-hardware-device"],
+  "allowedExceptionClasses": ["backup-protection", "external-reference", "lowercase-hardware-device"],
   "scanRoots": ["apps", "packages", "native", "scripts", "test", "docs", "README.md", "package.json", ".github", "build"],
   "forbiddenPaths": [
     { "category": "module", "path": "apps/pwa" },

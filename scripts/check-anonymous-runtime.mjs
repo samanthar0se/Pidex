@@ -20,7 +20,7 @@ for (const item of inventory.forbiddenPaths) {
 const files = [];
 for (const scanRoot of inventory.scanRoots) {
   const absolute = join(root, scanRoot);
-  if (existsSync(absolute)) await collect(absolute, files);
+  if (existsSync(absolute)) await collectFiles(absolute, files);
 }
 
 for (const file of files) {
@@ -47,7 +47,7 @@ if (violations.length) {
   console.log(`Anonymous-runtime boundary passed (${files.length} files checked).`);
 }
 
-async function collect(path, output) {
+async function collectFiles(path, output) {
   const entries = await readdir(path, { withFileTypes: true }).catch(() => []);
   if (!entries.length) {
     output.push(path);
@@ -55,7 +55,7 @@ async function collect(path, output) {
   }
   for (const entry of entries) {
     const child = join(path, entry.name);
-    if (entry.isDirectory()) await collect(child, output);
+    if (entry.isDirectory()) await collectFiles(child, output);
     else if (entry.isFile()) output.push(child);
   }
 }
