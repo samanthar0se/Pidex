@@ -24,5 +24,13 @@ self.addEventListener("activate", event => event.waitUntil((async () => {
 })()));
 self.addEventListener("fetch", event => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
-  event.respondWith((async () => (await caches.match(event.request)) || (event.request.mode === "navigate" ? await caches.match("/") : fetch(event.request)))());
+  const path = new URL(event.request.url).pathname;
+  const isShellOrStatic = event.request.mode === "navigate" || path === "/" || path === "/index.html"
+    || path === "/manifest.webmanifest" || path.startsWith("/assets/");
+  if (!isShellOrStatic) { event.respondWith(fetch(event.request, { cache: "no-store" })); return; }
+  event.respondWith((async () => {
+    const shellCache = await caches.open(SHELL_CACHE);
+    return (await shellCache.match(event.request))
+      || (event.request.mode === "navigate" ? await shellCache.match("/") : fetch(event.request));
+  })());
 });

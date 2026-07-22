@@ -146,7 +146,7 @@ function AuthorityBanner({ authority }: { authority: import("./client-store.js")
   return <section className={`authority-banner ${authority.status}`} role="status" aria-live="polite">
     <strong>{labels[authority.status]}</strong>
     <span>{authority.lastSynchronizedAt
-      ? `Cached facts are not current. Last authoritative synchronization: ${authority.lastSynchronizedAt}`
+      ? `Cached Host facts are stale, incomplete, and read-only. Last synchronized: ${authority.lastSynchronizedAt}`
       : "Host authority is unavailable. No cached authoritative facts are available."}</span>
     {authority.reason && <span>{authority.reason}</span>}
   </section>;

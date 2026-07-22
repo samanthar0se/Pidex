@@ -203,18 +203,22 @@ const PWA_ASSETS: Record<string, PwaAsset> = {
   "/manifest.webmanifest": {
     file: `${CLIENT_DIST}/manifest.webmanifest`,
     contentType: "application/manifest+json",
+    cacheControl: "no-cache",
   },
   "/icons/pidex-app-icon-white.png": {
     file: "icon/pidex-app-icon-white.png",
     contentType: "image/png",
+    cacheControl: "public, max-age=86400",
   },
   "/icons/pidex-app-icon-white.svg": {
     file: "icon/pidex-app-icon-white.svg",
     contentType: "image/svg+xml",
+    cacheControl: "public, max-age=86400",
   },
   "/icons/pidex-gradient.svg": {
     file: "icon/pidex-gradient.svg",
     contentType: "image/svg+xml",
+    cacheControl: "public, max-age=86400",
   },
 };
 
