@@ -47,6 +47,13 @@ export interface ScrubResult {
   coverageComplete: boolean;
 }
 
+const ANONYMOUS_SERVICE_POLICY = {
+  lanService: true,
+  mdns: false,
+  anonymousDiagnostics: true,
+  anonymousRestore: true,
+} as const;
+
 /** Incrementally verifies retained bytes and fails closed rather than reconstructing data. */
 export class CorruptionScrubber {
   readonly #root: string;
@@ -103,21 +110,15 @@ export class CorruptionScrubber {
     if (this.#inRecoveryMode) {
       return {
         mode: "recovery" as const,
-        lanService: true,
-        mdns: false,
+        ...ANONYMOUS_SERVICE_POLICY,
         normalAuthority: false,
-        anonymousDiagnostics: true,
-        anonymousRestore: true,
       };
     }
 
     return {
       mode: "normal" as const,
-      lanService: true,
-      mdns: false,
+      ...ANONYMOUS_SERVICE_POLICY,
       normalAuthority: true,
-      anonymousDiagnostics: true,
-      anonymousRestore: true,
     };
   }
 

@@ -20,6 +20,19 @@ import { join } from "node:path";
 const BUNDLE_FORMAT = "pidex-portable-backup-v1";
 const DEFAULT_DELIVERY_CHUNK_BYTES = 64 * 1024;
 const MAX_DRAIN_TIMEOUT_MS = 15 * 60 * 1_000;
+const REMOVED_SECURITY_MATERIAL_PATH_SEGMENTS = new Set([
+  "certificate",
+  "certificates",
+  "certificate-authority",
+  "certificate-authorities",
+  "pairing",
+  "device",
+  "devices",
+  "authorization",
+  "authorizations",
+  "authenticated-session",
+  "authenticated-sessions",
+]);
 
 interface BackupVersions {
   release: string;
@@ -417,12 +430,18 @@ function safeFailure(error: unknown): string {
 function assertPortablePath(path: string): void {
   const hasParentTraversal = path.includes("..");
   const hasExecutableExtension = /\.(exe|dll|so|dylib|app|msi)$/i.test(path);
-  const containsRemovedSecurityMaterial =
-    /(^|[\\/])(certificates?|certificate-authorit(?:y|ies)|pairing|devices?|authorizations?|authenticated-sessions?)([\\/]|$)/i.test(path);
-  if (containsRemovedSecurityMaterial) {
+  if (containsRemovedSecurityMaterial(path)) {
     throw new Error("backup-removed-security-material-not-allowed");
   }
   if (path.startsWith("/") || hasParentTraversal || hasExecutableExtension) {
     throw new Error("backup-executables-not-allowed");
   }
+}
+
+function containsRemovedSecurityMaterial(path: string): boolean {
+  return path
+    .split(/[\\/]/)
+    .some(segment =>
+      REMOVED_SECURITY_MATERIAL_PATH_SEGMENTS.has(segment.toLowerCase()),
+    );
 }
