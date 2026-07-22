@@ -9,11 +9,6 @@ const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_RUN_PROMPT_LENGTH = 100_000;
 const MAX_VIEW_ID_LENGTH = 200;
 
-export interface DeviceRevokeMessage {
-  type: "device.revoke";
-  deviceId: string;
-}
-
 export interface SessionCreateMessage {
   type: "session.create";
   commandId: string;
@@ -352,14 +347,6 @@ export function isInteractionResolveMessage(
     Number.isSafeInteger(value.workerGeneration) &&
     Number.isSafeInteger(value.observedRevision) &&
     (value.dismiss === undefined || typeof value.dismiss === "boolean")
-  );
-}
-
-export function isRevokeMessage(value: unknown): value is DeviceRevokeMessage {
-  return (
-    isObject(value) &&
-    value.type === "device.revoke" &&
-    typeof value.deviceId === "string"
   );
 }
 

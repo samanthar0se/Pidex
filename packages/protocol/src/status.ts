@@ -59,17 +59,17 @@ const optionalEnvelopeSchema = z
 export const clientHelloSchema = z
   .object({
     type: z.literal("client.hello"),
-    expectedHostId: z.string(),
+    expectedHostId: z.string().optional(),
     protocols: z.array(protocolSchema),
     capabilities: z.array(clientCapabilitySchema),
   })
   .passthrough();
 export type ClientHello = z.infer<typeof clientHelloSchema>;
 
-export function clientHello(expectedHostId: string): ClientHello {
+export function clientHello(expectedHostId?: string): ClientHello {
   return {
     type: "client.hello",
-    expectedHostId,
+    ...(expectedHostId === undefined ? {} : { expectedHostId }),
     protocols: [{ major: protocolMajor, minor: protocolMinor }],
     capabilities: protocolCapabilities.map(capability => ({
       id: capability.id,
@@ -368,6 +368,7 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("host.hello"),
     hostId: z.string(),
+    synchronizationEpoch: z.string(),
     protocols: z.array(protocolSchema),
     capabilities: z.array(hostCapabilitySchema),
   }).passthrough(),

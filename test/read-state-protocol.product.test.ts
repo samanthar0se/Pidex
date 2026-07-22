@@ -119,6 +119,13 @@ test("mark-read rejects a non-exact capability basis before a receipt", async ()
     client.send(JSON.stringify(clientHello(offer.hostId)));
     assert.equal((await nextControlMessage(client)).type, "protocol.admitted");
     assert.equal((await nextControlMessage(client)).type, "host.snapshot");
+    client.send(JSON.stringify({
+      type: "scope.set",
+      protocolVersion,
+      sessionIds: [],
+      cursor: host.status().synchronization.cursor,
+    }));
+    assert.equal((await nextControlMessage(client)).type, "scope.current");
 
     client.send(JSON.stringify({
       type: "session.mark-read",

@@ -16,6 +16,45 @@ function socket(origin: string): WebSocket {
   });
 }
 
+test("Anonymous Client hello and admission expose continuity without peer identity", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-anonymous-protocol-"));
+  const host = await startHost({
+    dataDir,
+    port: 0,
+    authorization: "device",
+    adapters: adaptersFor("deterministic"),
+  });
+  try {
+    const client = socket(host.origin);
+    const offer = await nextControlMessage(client);
+    assert.equal(offer.type, "host.hello");
+    if (offer.type !== "host.hello") assert.fail("expected Host hello");
+    assert.equal(offer.synchronizationEpoch, host.status().synchronization.epoch);
+    assert.deepEqual(Object.keys(offer).sort(), [
+      "capabilities",
+      "hostId",
+      "protocols",
+      "synchronizationEpoch",
+      "type",
+    ]);
+
+    client.send(JSON.stringify({
+      type: "client.hello",
+      protocols: [{ major: 1, minor: 2 }],
+      capabilities: offer.capabilities.map(item => ({
+        id: item.id,
+        minVersion: item.version,
+        maxVersion: item.version,
+      })),
+    }));
+    assert.equal((await nextControlMessage(client)).type, "protocol.admitted");
+    client.close();
+  } finally {
+    await host.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test(
   "protocol negotiation binds Host identity, admits exact protocol 1.2, and fails closed for incompatible Clients",
   async () => {
@@ -73,6 +112,9 @@ test(
         required.type === "protocol.update-required" && required.reason,
         "host-mismatch",
       );
+      assert.equal(await new Promise<number>(resolve => {
+        incompatible.once("close", code => resolve(code));
+      }), 4008);
 
       assert.deepEqual(
         unsupportedRequiredSemantics(
@@ -95,6 +137,51 @@ test(
     }
   },
 );
+
+test("commands remain inadmissible until Anonymous Client synchronization completes", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-sync-barrier-"));
+  const host = await startHost({
+    dataDir,
+    port: 0,
+    authorization: "device",
+    adapters: adaptersFor("deterministic"),
+  });
+  try {
+    const client = socket(host.origin);
+    const offer = await nextControlMessage(client);
+    if (offer.type !== "host.hello") assert.fail("expected Host hello");
+    client.send(JSON.stringify({
+      type: "client.hello",
+      protocols: offer.protocols,
+      capabilities: offer.capabilities.map(item => ({
+        id: item.id,
+        version: item.version,
+      })),
+    }));
+    assert.equal((await nextControlMessage(client)).type, "protocol.admitted");
+    assert.equal((await nextControlMessage(client)).type, "host.snapshot");
+
+    client.send(JSON.stringify({ type: "session.create", commandId: "before-sync" }));
+    const blocked = await nextControlMessage(client);
+    assert.equal(blocked.type, "command.outcome");
+    assert.equal(blocked.type === "command.outcome" && blocked.error, "synchronization-required");
+
+    client.send(JSON.stringify({
+      type: "scope.set",
+      protocolVersion: "1.2",
+      sessionIds: [],
+    }));
+    assert.equal((await nextControlMessage(client)).type, "scope.reset");
+    client.send(JSON.stringify({ type: "session.create", commandId: "after-sync" }));
+    const accepted = await nextControlMessage(client);
+    assert.equal(accepted.type, "command.outcome");
+    assert.equal(accepted.type === "command.outcome" && accepted.outcome, "accepted");
+    client.close();
+  } finally {
+    await host.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
 
 test(
   "bounded delivery requests resynchronization before disconnecting the Client",
@@ -175,6 +262,14 @@ test(
         modelCapability,
       );
       assert.equal((await nextControlMessage(client)).type, "host.snapshot");
+
+      client.send(JSON.stringify({
+        type: "scope.set",
+        protocolVersion: "1.2",
+        sessionIds: [],
+        cursor: host.status().synchronization.cursor,
+      }));
+      assert.equal((await nextControlMessage(client)).type, "scope.current");
 
       client.send(JSON.stringify({
         type: "run.submit",

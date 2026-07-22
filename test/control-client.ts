@@ -1,6 +1,7 @@
 import WebSocket, { type RawData } from "ws";
 import {
   clientHello,
+  protocolVersion,
   serverMessageSchema,
   type HostSnapshot,
   type ServerMessage,
@@ -43,6 +44,17 @@ export async function negotiateControl(
   const snapshot = await nextControlMessage(socket);
   if (snapshot.type !== "host.snapshot") {
     throw new Error("expected Host snapshot");
+  }
+
+  socket.send(JSON.stringify({
+    type: "scope.set",
+    protocolVersion,
+    sessionIds: [],
+    cursor: snapshot.status.synchronization.cursor,
+  }));
+  const synchronized = await nextControlMessage(socket);
+  if (synchronized.type !== "scope.current") {
+    throw new Error("expected current Host scope");
   }
 
   return snapshot;

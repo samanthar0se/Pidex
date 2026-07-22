@@ -68,7 +68,6 @@ import {
 import {
   capabilityBasisKey,
   isInteractionResolveMessage,
-  isRevokeMessage,
   isRunQueueActionMessage,
   isRunSteerMessage,
   isRunStopMessage,
@@ -152,6 +151,15 @@ type ProtocolUpdateReason = Extract<
   ServerMessage,
   { type: "protocol.update-required" }
 >["reason"];
+
+function isMutationMessage(value: unknown): value is { commandId: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "commandId" in value &&
+    typeof value.commandId === "string"
+  );
+}
 
 interface OutboundMessage {
   payload: string;
@@ -433,6 +441,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       ] as const),
   );
   const admittedCapabilityBasisByClient = new Map<WebSocket, Set<string>>();
+  const synchronizedClients = new Set<WebSocket>();
   const scopedSessionIdsByClient = new Map<WebSocket, Set<string>>();
   const maxOutboundBytes =
     options.maxOutboundBytes ?? DEFAULT_MAX_OUTBOUND_BYTES;
@@ -561,6 +570,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       clientDeviceIds.delete(webSocket);
       admittedClients.delete(webSocket);
       admittedCapabilityBasisByClient.delete(webSocket);
+      synchronizedClients.delete(webSocket);
       scopedSessionIdsByClient.delete(webSocket);
       deliveries.delete(webSocket);
       viewsByClient.delete(webSocket);
@@ -572,8 +582,13 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         if (!admittedClients.has(webSocket)) {
           const hello = clientHelloSchema.safeParse(message);
           if (hello.success) negotiate(webSocket, hello.data);
-        } else if (isRevokeMessage(message)) {
-          revokeDevice(message.deviceId);
+        } else if (isMutationMessage(message) && !synchronizedClients.has(webSocket)) {
+          sendServerMessage(webSocket, {
+            type: "command.outcome",
+            commandId: message.commandId,
+            outcome: "rejected",
+            error: "synchronization-required",
+          });
         } else if (isSessionCreateMessage(message)) {
           handleSessionCreate(webSocket, message);
         } else if (isSessionForkMessage(message)) {
@@ -608,6 +623,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sendServerMessage(webSocket, {
       type: "host.hello",
       hostId: status().hostId,
+      synchronizationEpoch: status().synchronization.epoch,
       protocols: [{ major: protocolMajor, minor: protocolMinor }],
       capabilities: hostCapabilities,
     });
@@ -615,7 +631,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
 
   function negotiate(client: WebSocket, hello: ClientHello): void {
     const currentStatus = status();
-    if (hello.expectedHostId !== currentStatus.hostId) {
+    if (
+      hello.expectedHostId !== undefined &&
+      hello.expectedHostId !== currentStatus.hostId
+    ) {
       sendProtocolUpdateRequired(client, currentStatus.hostId, "host-mismatch");
       return;
     }
@@ -680,6 +699,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       reason,
       hostId,
     });
+    setImmediate(() => client.close(4008, "protocol:update-required"));
   }
 
   function synchronize(client: WebSocket, request: ScopeSetMessage): void {
@@ -816,6 +836,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         },
       });
     }
+    synchronizedClients.add(client);
   }
 
   await new Promise<void>((resolveStart, rejectStart) => {
