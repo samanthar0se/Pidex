@@ -127,7 +127,7 @@
   <script>
     const warning = "UNAUTHENTICATED PROTOTYPE: anyone who can reach this Host on the network can view and control Pidex. Do not expose it beyond a trusted LAN.";
     const variants = {
-      A: "Persistent boundary",
+      A: "Console only",
       B: "Operator launchpad",
       C: "Safety rail"
     };
@@ -184,8 +184,7 @@
     }
 
     function variantA(facts, state) {
-      const risk = `<div class="risk-strip"><strong>Unauthenticated LAN prototype</strong> Anyone who can reach this Host can view and control Pidex.</div>`;
-      return `<div class="stage">${terminalA(facts)}${browserShell(browserApp(state, risk), facts)}</div>`;
+      return `<div class="stage">${terminalA(facts)}${browserShell(browserApp(state, ""), facts)}</div>`;
     }
 
     function variantB(facts, state) {
