@@ -362,7 +362,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const server = createServer(
     (request, response) => {
       if (request.url?.startsWith("/api/")) {
-        handleApiRequest(request.url, request, response, store);
+        handleApiRequest(request.url, request, response, store, async () => {
+          const refreshed = await refreshCoverage();
+          return {
+            check: "storage",
+            outcome: refreshed.aggregate === "covered" ? "healthy" : "degraded",
+            coverage: refreshed,
+          };
+        });
         return;
       }
 
@@ -2217,8 +2224,23 @@ function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
   store: AuthorityStore,
+  doctor: () => Promise<unknown>,
 ): void {
   const url = new URL(path, "http://pidex.invalid");
+  if (request.method === "GET" && url.pathname === "/api/doctor") {
+    void doctor().then(report => {
+      response.writeHead(200, {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+      }).end(JSON.stringify(report));
+    }, () => {
+      response.writeHead(500, {
+        "cache-control": "no-store",
+        "content-type": "application/json",
+      }).end(JSON.stringify({ error: "doctor-failed" }));
+    });
+    return;
+  }
   const timelineMatch = TIMELINE_API_PATH.exec(url.pathname);
   if (request.method === "GET" && timelineMatch) {
     const cursor = url.searchParams.get("cursor");
