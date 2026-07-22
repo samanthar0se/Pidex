@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { win32 } from "node:path";
 import { z } from "zod";
+import { PINNED_PI_VERSION } from "../../pi-version/src/index.js";
+
+export { PINNED_PI_VERSION } from "../../pi-version/src/index.js";
 
 export {
   assertCompleteTraceability,
@@ -20,8 +23,6 @@ export {
 export type { HostCompatibilityRecord } from "./compatibility.js";
 export { publishRunnableHostValidation } from "./runnable-host-validation.js";
 export type { RunnableHostValidationInput } from "./runnable-host-validation.js";
-
-const PINNED_PI_VERSION = "0.81.1";
 
 const sha256Schema = z
   .string()
@@ -376,7 +377,7 @@ export interface ClosureCompatibilityEvidence {
     nodeApi: number;
     sha256: string;
   };
-  pi: { version: "0.81.1"; integrity: string };
+  pi: { version: typeof PINNED_PI_VERSION; integrity: string };
   addon: { abi: string; generation: number; sha256: string };
   generations: Omit<ResolvedLaunchManifest["generations"], "release">;
   toolchain: ResolvedLaunchManifest["runtimes"]["toolchain"];

@@ -6,6 +6,7 @@ import { loadWindowsAddon, windowsAddonExports, WindowsPlatformError } from "../
 import {
   createLaunchManifestArtifacts,
   createLaunchManifestRoleRoots,
+  createPiManifestFixture,
 } from "./resolved-launch-manifest-fixture.js";
 
 const bytes = Buffer.from("candidate addon");
@@ -176,13 +177,14 @@ function fixture() {
     root,
     role => role === "addon" ? digest : "a".repeat(64),
   );
+  const pi = createPiManifestFixture("owning-user-standard");
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "instance-1", owningSid: "S-1-5-21-1", trustClass: "source" },
     generations: { release: "r1", daemon: 1, worker: 1, publicProtocol: 1, localControl: 1, capability: 1, addon: 1, schema: 1 },
     roots: { sourceInstance: root, roles }, artifacts,
-    piProfile: { policy: "owning-user-standard", version: "0.81.1" },
-    runtimes: { node: { lane: "primary", version: "24.18.0", architecture: "x64", sha256: "a".repeat(64) }, nodeApi: 10, pi: { version: "0.81.1", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10.0.26100.0", cmake: "4.3.3", cpp: "20" } },
+    piProfile: pi.profile,
+    runtimes: { node: { lane: "primary", version: "24.18.0", architecture: "x64", sha256: "a".repeat(64) }, nodeApi: 10, pi: pi.runtime, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10.0.26100.0", cmake: "4.3.3", cpp: "20" } },
     compatibility: { daemonWorker: [1], publicProtocol: [1], localControl: [1], capability: [1], addon: [1], schema: [1], piArtifacts: [] },
     closure: { id: "closure-r1", sbom: { path: `${root}\\releases\\r1\\sbom.json`, sha256: "a".repeat(64) } },
     execution: { implementation: "real", evidenceClass: "local-source" }, provenance: {},

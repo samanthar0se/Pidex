@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { PINNED_PI_VERSION } from "../packages/pi-version/src/index.js";
 import {
   publishImmutableSourceClosure,
   verifyPublishedSourceClosure,
@@ -28,7 +29,7 @@ const plan = () => ({
   inputMode: "source-build" as const,
   node: { version: "24.1.0", architecture: "x64" as const },
   nodeApi: 10,
-  pi: { version: "0.81.1" as const, integrity: "sha512-pinned" },
+  pi: { version: PINNED_PI_VERSION, integrity: "sha512-pinned" },
   toolchain: {
     msvc: "19.44",
     windowsSdk: "10.0.26100.0",
@@ -58,7 +59,7 @@ test("publishes one complete content-addressed local-source closure", () => {
     readFileSync(join(published.directory, "closure.json"), "utf8"),
   );
   assert.equal(manifest.trustClass, "local-source");
-  assert.equal(manifest.pi.version, "0.81.1");
+  assert.equal(manifest.pi.version, PINNED_PI_VERSION);
   assert.equal(manifest.files.length, requiredFiles.length);
   assert.equal(
     JSON.parse(readFileSync(join(published.directory, "sbom.cdx.json"), "utf8"))

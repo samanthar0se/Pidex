@@ -1,3 +1,5 @@
+import { PINNED_PI_VERSION } from "../packages/pi-version/src/index.js";
+
 const ROOT_ROLES = [
   "instanceIdentity",
   "controlCredential",
@@ -27,6 +29,15 @@ const ARTIFACT_ROLES = [
 ] as const;
 
 type ArtifactRole = (typeof ARTIFACT_ROLES)[number];
+
+export function createPiManifestFixture(
+  policy: "owning-user-standard" | "synthetic-isolated",
+) {
+  return {
+    profile: { policy, version: PINNED_PI_VERSION },
+    runtime: { version: PINNED_PI_VERSION, integrity: "sha512-test" },
+  };
+}
 
 export function createLaunchManifestRoleRoots(root: string) {
   return Object.fromEntries(

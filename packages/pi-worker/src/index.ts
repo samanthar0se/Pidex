@@ -23,8 +23,9 @@ import {
   type WorkerGenerationIdentity,
 } from "../../worker-protocol/src/index.js";
 import { publishImmutableFile } from "../../durability/src/index.js";
+import { PINNED_PI_VERSION } from "../../pi-version/src/index.js";
 
-export const EXACT_PI_VERSION = "0.81.1";
+export const EXACT_PI_VERSION = PINNED_PI_VERSION;
 
 const CHECKPOINT_CHUNK_BYTES = 1024 * 1024;
 

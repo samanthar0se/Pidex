@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PINNED_PI_VERSION } from "../../pi-version/src/index.js";
 
 const semanticVersionSchema = z.string().regex(/^\d+\.\d+\.\d+$/);
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -24,7 +25,7 @@ export const hostCompatibilityRecordSchema = z
     schemaVersion: z.literal(1),
     candidate: z.string().min(1),
     pi: z.strictObject({
-      version: z.literal("0.81.1"),
+      version: z.literal(PINNED_PI_VERSION),
       integrity: z.string().startsWith("sha512-"),
     }),
     nodeLanes: z.tuple([nodeLaneSchema, nodeLaneSchema]),

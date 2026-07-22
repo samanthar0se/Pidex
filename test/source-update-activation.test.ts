@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { activateSourceUpdate } from "../packages/launcher/src/source-update.js";
+import { PINNED_PI_VERSION } from "../packages/pi-version/src/index.js";
 import { publishImmutableSourceClosure, type SourceClosureFile } from "../packages/source/src/source-closure.js";
 
 const files = ([
@@ -19,7 +20,7 @@ test("launcher independently verifies and rolls back a source update that fails 
   const release = publishImmutableSourceClosure({ releasesDirectory: join(root, "releases"), plan: {
     schemaVersion: 1, trustClass: "local-source", inputMode: "source-build",
     node: { version: "24.13.0", architecture: "x64" }, nodeApi: 10,
-    pi: { version: "0.81.1", integrity: "sha512-pinned" },
+    pi: { version: PINNED_PI_VERSION, integrity: "sha512-pinned" },
     toolchain: { msvc: "19.44", windowsSdk: "10.0.26100.0", cmake: "4.0.0", cpp: "20" },
     sourceIdentity: "git:next", files,
   } });

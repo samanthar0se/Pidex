@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { PINNED_PI_VERSION } from "../packages/pi-version/src/index.js";
 import {
   MAX_WORKER_FRAME_BYTES,
   SessionGenerationLifecycle,
@@ -30,7 +31,7 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
       authenticationToken: "a".repeat(64),
       releaseGeneration: "r1",
       configGeneration: "c1",
-      piGeneration: "0.81.1",
+      piGeneration: PINNED_PI_VERSION,
       cwd: "C:\\work",
     }),
     createFrame("ready", 1, {
@@ -109,7 +110,7 @@ test("Session IPC authenticates its generation before delivering fragmented and 
     authenticationToken: "a".repeat(64),
     releaseGeneration: "r1",
     configGeneration: "c1",
-    piGeneration: "0.81.1",
+    piGeneration: PINNED_PI_VERSION,
     cwd: "C:\\work",
   });
   const execute = createFrame("execute", 1, {

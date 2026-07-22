@@ -3,12 +3,14 @@ import test from "node:test";
 import {
   canonicalizeResolvedLaunchManifest,
   parseResolvedLaunchManifest,
+  PINNED_PI_VERSION,
   verifyImmutableClosure,
   type ClosureReader,
 } from "../packages/launch-manifest/src/index.js";
 import {
   createLaunchManifestArtifacts,
   createLaunchManifestRoleRoots,
+  createPiManifestFixture,
 } from "./resolved-launch-manifest-fixture.js";
 
 const hash = "a".repeat(64);
@@ -19,6 +21,7 @@ const root = "C:\\Users\\owner\\AppData\\Local\\Pidex\\Source\\instance-1";
 function createManifestFixture(): unknown {
   const roots = createLaunchManifestRoleRoots(root);
   const artifacts = createLaunchManifestArtifacts(root, () => hash);
+  const pi = createPiManifestFixture("owning-user-standard");
   return {
     schemaVersion: 1,
     identity: {
@@ -38,7 +41,7 @@ function createManifestFixture(): unknown {
     },
     roots: { sourceInstance: root, roles: roots },
     artifacts,
-    piProfile: { policy: "owning-user-standard", version: "0.81.1" },
+    piProfile: pi.profile,
     runtimes: {
       node: {
         lane: "primary",
@@ -47,7 +50,7 @@ function createManifestFixture(): unknown {
         sha256: hash,
       },
       nodeApi: 10,
-      pi: { version: "0.81.1", integrity: "sha512-test" },
+      pi: pi.runtime,
       addonAbi: "napi-10",
       toolchain: {
         msvc: "19.44",
@@ -165,7 +168,7 @@ test("immutable closure verification emits reproducible evidence for both Node l
 
   assert.deepEqual(first, second);
   assert.equal(first.node.lane, "primary");
-  assert.equal(first.pi.version, "0.81.1");
+  assert.equal(first.pi.version, PINNED_PI_VERSION);
 
   const secondary = structuredClone(manifest);
   secondary.runtimes.node.lane = "secondary";
@@ -251,7 +254,7 @@ test("immutable closure verification rejects file hash mismatches", async () => 
   );
 });
 
-test("resolved manifests require Pi 0.81.1", () => {
+test("resolved manifests require the pinned Pi version", () => {
   const manifest = parseResolvedLaunchManifest(createManifestFixture());
   manifest.runtimes.pi.version = "0.80.11";
 

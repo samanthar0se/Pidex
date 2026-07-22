@@ -5,6 +5,7 @@ import {
   requiredChecks,
   type ElevatedWindowsVmScenario,
 } from "../packages/windows/src/elevated-vm-evidence.js";
+import { PINNED_PI_VERSION } from "../packages/pi-version/src/index.js";
 
 const candidate = {
   schemaVersion: 1 as const,
@@ -16,7 +17,7 @@ const candidate = {
   ],
   identities: {
     addonSha256: "1".repeat(64), closureSha256: "2".repeat(64), sbomSha256: "3".repeat(64),
-    piVersion: "0.81.1", launcherSha256: "4".repeat(64), schemaGeneration: 1,
+    piVersion: PINNED_PI_VERSION, launcherSha256: "4".repeat(64), schemaGeneration: 1,
     toolchain: "pinned-msvc", configSha256: "5".repeat(64),
   },
 };

@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { PINNED_PI_VERSION } from "../packages/pi-version/src/index.js";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { AuthorityStore } from "../packages/host/src/store.js";
 import { PiCheckpointPublisher } from "../packages/durability/src/pi-checkpoints.js";
@@ -41,7 +42,7 @@ test("checkpoint chunks and manifest publish before atomic Run settlement", asyn
         sourceCheckpoint: "private-jsonl-leaf-17",
         workerGeneration: "worker-4",
         releaseGeneration: "release-2",
-        piGeneration: "pi-0.81.1",
+        piGeneration: `pi-${PINNED_PI_VERSION}`,
         chunks: [Buffer.from("private pi bytes"), Buffer.from("more bytes")],
       },
       3,
@@ -86,7 +87,7 @@ test("every checkpoint publication cut withholds identity while retaining any pu
         sourceCheckpoint: "private-leaf",
         workerGeneration: "worker-1",
         releaseGeneration: "release-1",
-        piGeneration: "pi-0.81.1",
+        piGeneration: `pi-${PINNED_PI_VERSION}`,
         chunks: [Buffer.from("uncertain bytes")],
       }), /Injected publication failure/);
       // Publication may have crossed rename, but no opaque identity was returned
@@ -123,7 +124,7 @@ test("an uncertain Host transaction preserves the prior checkpoint and never rep
       sourceCheckpoint: "private-leaf-2",
       workerGeneration: "worker-2",
       releaseGeneration: "release-2",
-      piGeneration: "pi-0.81.1",
+      piGeneration: `pi-${PINNED_PI_VERSION}`,
       chunks: [Buffer.from("retained uncertain bytes")],
     }, 5), /uncertain-commit/);
 

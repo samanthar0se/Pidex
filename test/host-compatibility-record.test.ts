@@ -1,22 +1,37 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { parseHostCompatibilityRecord } from "../packages/launch-manifest/src/index.js";
+import {
+  parseHostCompatibilityRecord,
+  PINNED_PI_VERSION,
+} from "../packages/launch-manifest/src/index.js";
 
 const recordUrl = new URL(
   "../packages/launch-manifest/host-compatibility.v1.json",
   import.meta.url,
 );
+const packageUrl = new URL("../package.json", import.meta.url);
 
 async function loadCheckedInRecord() {
   const contents = await readFile(recordUrl, "utf8");
   return parseHostCompatibilityRecord(JSON.parse(contents));
 }
 
-test("checked-in Host compatibility record pins both exact runtime lanes", async () => {
+test("checked-in compatibility and package dependencies share the exact Pi pin", async () => {
   const record = await loadCheckedInRecord();
+  const packageMetadata = JSON.parse(
+    await readFile(packageUrl, "utf8"),
+  ) as { dependencies: Record<string, string> };
 
-  assert.equal(record.pi.version, "0.81.1");
+  assert.equal(record.pi.version, PINNED_PI_VERSION);
+  assert.deepEqual(
+    [
+      "@earendil-works/pi-agent-core",
+      "@earendil-works/pi-ai",
+      "@earendil-works/pi-coding-agent",
+    ].map((dependency) => packageMetadata.dependencies[dependency]),
+    Array(3).fill(PINNED_PI_VERSION),
+  );
   assert.deepEqual(record.nodeLanes.map((lane) => lane.role), [
     "primary",
     "secondary",

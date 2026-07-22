@@ -10,6 +10,7 @@ import { createCompleteManifestHostFactories } from "./manifest-host-factories.j
 import {
   createLaunchManifestArtifacts,
   createLaunchManifestRoleRoots,
+  createPiManifestFixture,
 } from "./resolved-launch-manifest-fixture.js";
 
 const fixtureSha256 = "b".repeat(64);
@@ -21,13 +22,14 @@ function portableManifest() {
     portableFixtureRoot,
     () => fixtureSha256,
   );
+  const pi = createPiManifestFixture("synthetic-isolated");
   return parseResolvedLaunchManifest({
     schemaVersion: 1,
     identity: { instanceId: "portable", owningSid: "S-1-5-21-1000", trustClass: "source" },
     generations: { release: "r1", daemon: 1, worker: 1, publicProtocol: 1, localControl: 1, capability: 1, addon: 1, schema: 1 },
     roots: { sourceInstance: portableFixtureRoot, roles }, artifacts,
-    piProfile: { policy: "synthetic-isolated", version: "0.81.1" },
-    runtimes: { node: { lane: "primary", version: "24.1.0", architecture: "x64", sha256: fixtureSha256 }, nodeApi: 10, pi: { version: "0.81.1", integrity: "sha512-test" }, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10", cmake: "4", cpp: "20" } },
+    piProfile: pi.profile,
+    runtimes: { node: { lane: "primary", version: "24.1.0", architecture: "x64", sha256: fixtureSha256 }, nodeApi: 10, pi: pi.runtime, addonAbi: "napi-10", toolchain: { msvc: "19.44", windowsSdk: "10", cmake: "4", cpp: "20" } },
     compatibility: { daemonWorker: [1], publicProtocol: [1], localControl: [1], capability: [1], addon: [1], schema: [1], piArtifacts: [] },
     closure: { id: "sha256:r1", sbom: { path: `${portableFixtureRoot}\\releases\\r1\\sbom.json`, sha256: fixtureSha256 } },
     execution: { implementation: "deterministic", evidenceClass: "deterministic-test" },

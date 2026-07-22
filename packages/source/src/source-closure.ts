@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { dirname, join, posix, relative, resolve, sep } from "node:path";
 import { publishValidatedTree } from "../../durability/src/index.js";
+import { PINNED_PI_VERSION } from "../../pi-version/src/index.js";
 
 const requiredRoles = [
   "runtime",
@@ -39,7 +40,7 @@ export interface SourceClosureIdentity {
   inputMode: "source-build" | "hash-verified-prebuilt";
   node: { version: string; architecture: "x64" };
   nodeApi: number;
-  pi: { version: "0.81.1"; integrity: string };
+  pi: { version: typeof PINNED_PI_VERSION; integrity: string };
   toolchain: {
     msvc: string;
     windowsSdk: string;
@@ -145,7 +146,9 @@ function verifySourceClosure(directory: string, requireContentAddressedLocation:
 
 function resolvePlan(plan: SourceClosurePlan) {
   if (plan.schemaVersion !== 1 || plan.trustClass !== "local-source") throw new Error("invalid source closure plan");
-  if (plan.pi.version !== "0.81.1") throw new Error("Pi version must be exactly 0.81.1");
+  if (plan.pi.version !== PINNED_PI_VERSION) {
+    throw new Error(`Pi version must be exactly ${PINNED_PI_VERSION}`);
+  }
   const paths = new Set<string>();
   const files = plan.files.map(file => {
     const path = safeRelativePath(file.path);
