@@ -1,9 +1,4 @@
-import {
-  createHash,
-  createHmac,
-  randomUUID,
-  timingSafeEqual,
-} from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   copyFileSync,
@@ -25,10 +20,7 @@ export type CorruptionObjectKind =
   | "recovery-object"
   | "recovery-manifest"
   | "backup-catalog"
-  | "host-identity"
-  | "device-authorization";
-
-const LOOPBACK_ADDRESSES = new Set(["localhost", "127.0.0.1", "::1"]);
+  | "host-identity";
 
 export interface ScrubCopy {
   path: string;
@@ -55,26 +47,19 @@ export interface ScrubResult {
   coverageComplete: boolean;
 }
 
-interface ScrubberOptions {
-  recoverySecret?: string;
-}
-
 /** Incrementally verifies retained bytes and fails closed rather than reconstructing data. */
 export class CorruptionScrubber {
   readonly #root: string;
   readonly #objects: readonly ScrubObject[];
-  readonly #recoverySecret: string;
   #cursor = 0;
   #inRecoveryMode = false;
 
   constructor(
     root: string,
     objects: readonly ScrubObject[],
-    options: ScrubberOptions = {},
   ) {
     this.#root = root;
     this.#objects = [...objects];
-    this.#recoverySecret = options.recoverySecret ?? randomUUID();
   }
 
   scrub(input: { now: number; byteBudget: number }): ScrubResult {
@@ -118,44 +103,22 @@ export class CorruptionScrubber {
     if (this.#inRecoveryMode) {
       return {
         mode: "recovery" as const,
-        lanService: false,
+        lanService: true,
         mdns: false,
-        pairedDevicesAccepted: false,
+        normalAuthority: false,
+        anonymousDiagnostics: true,
+        anonymousRestore: true,
       };
     }
 
     return {
       mode: "normal" as const,
       lanService: true,
-      mdns: true,
-      pairedDevicesAccepted: true,
+      mdns: false,
+      normalAuthority: true,
+      anonymousDiagnostics: true,
+      anonymousRestore: true,
     };
-  }
-
-  createRecoveryLaunchCapability(expiresAt: number): string {
-    return `${expiresAt}.${this.recoverySignature(expiresAt).toString("hex")}`;
-  }
-
-  authorizeRecoveryLaunch(
-    address: string,
-    capability: string,
-    now = Date.now(),
-  ): boolean {
-    if (!this.#inRecoveryMode || !LOOPBACK_ADDRESSES.has(address)) {
-      return false;
-    }
-
-    const [expiryText, signature] = capability.split(".");
-    const expiry = Number(expiryText);
-    if (!signature || !Number.isFinite(expiry) || now > expiry) {
-      return false;
-    }
-
-    const expected = this.recoverySignature(expiry);
-    const supplied = Buffer.from(signature, "hex");
-    return (
-      supplied.length === expected.length && timingSafeEqual(supplied, expected)
-    );
   }
 
   private handleDamage(
@@ -268,12 +231,6 @@ export class CorruptionScrubber {
       }
     }
     return true;
-  }
-
-  private recoverySignature(expiresAt: number): Buffer {
-    return createHmac("sha256", this.#recoverySecret)
-      .update(`pidex-recovery:${expiresAt}`)
-      .digest();
   }
 
   private resolvePath(path: string): string {

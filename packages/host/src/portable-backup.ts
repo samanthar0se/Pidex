@@ -51,12 +51,11 @@ export interface PortableBackupRecord {
 }
 
 interface CreateInput {
-  clientId: string;
   passphrase: string;
   barrier: string;
   database: string;
   files: Array<{ bundlePath: string; sourcePath: string }>;
-  identity: { hostId: string; certificateAuthority: string };
+  identity: { hostId: string };
   versions: BackupVersions;
   now?: number;
 }
@@ -418,6 +417,11 @@ function safeFailure(error: unknown): string {
 function assertPortablePath(path: string): void {
   const hasParentTraversal = path.includes("..");
   const hasExecutableExtension = /\.(exe|dll|so|dylib|app|msi)$/i.test(path);
+  const containsRemovedSecurityMaterial =
+    /(^|[\\/])(certificates?|certificate-authorit(?:y|ies)|pairing|devices?|authorizations?|authenticated-sessions?)([\\/]|$)/i.test(path);
+  if (containsRemovedSecurityMaterial) {
+    throw new Error("backup-removed-security-material-not-allowed");
+  }
   if (path.startsWith("/") || hasParentTraversal || hasExecutableExtension) {
     throw new Error("backup-executables-not-allowed");
   }

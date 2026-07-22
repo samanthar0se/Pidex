@@ -14,7 +14,6 @@ import { DataGenerationManager } from "./migration.js";
 const RESTORE_WARNINGS = [
   "Restore replaces the whole Host; it never merges, imports, clones, or replays work.",
   "Captured executing/cancelling Runs become Interrupted; queued Runs remain held for review.",
-  "Device authorization is restored exactly; Devices revoked after this point may become Paired again.",
   "All Clients and cursors will reset to a new synchronization epoch.",
 ];
 
@@ -31,12 +30,11 @@ export interface RestoreCandidate {
   database: string;
   databaseDigest: string;
   files: RestoreFile[];
-  identity: { hostId: string; origin: string };
+  identity: { hostId: string };
   schema: number;
   release: string;
   barrier: string;
   runs: { executing: number; cancelling: number; queued: number };
-  devices: { paired: number; revoked: number };
   encrypted: boolean;
   encryptionVerified: boolean;
 }
@@ -47,7 +45,6 @@ export interface RestorePreview {
   rollback: { from: string; to: string };
   identityChanges: boolean;
   collisionRisk: boolean;
-  migration: { required: boolean; from: number; to: number };
   warnings: string[];
   confirmation: string;
 }
@@ -55,14 +52,10 @@ export interface RestorePreview {
 interface RestoreOptions {
   root: string;
   hostId: string;
-  origin: string;
   schema: number;
   release: string;
   revision: () => number;
-  authorityValid: () => boolean;
-  isPaired: (deviceId: string) => boolean;
   daemonStopped: () => boolean;
-  migrate?: (database: DatabaseSync, fromSchema: number) => void;
   /** Runs before activation, in the copied authority transaction. */
   reconcile: (database: DatabaseSync, epoch: string) => void;
 }
@@ -78,11 +71,11 @@ export class WholeHostRestore {
 
   preview(input: {
     candidates: RestoreCandidate[];
-    deviceId?: string;
-    localhost?: boolean;
     expectedRevision: number;
   }): RestorePreview {
-    this.authorize(input);
+    if (input.expectedRevision !== this.options.revision()) {
+      throw new Error("revision-conflict");
+    }
     const skipped: RestorePreview["skipped"] = [];
     let selected: RestoreCandidate | undefined;
     const candidatesByNewest = [...input.candidates].sort(
@@ -101,8 +94,7 @@ export class WholeHostRestore {
     }
 
     const identityChanges = selected.identity.hostId !== this.options.hostId;
-    const collisionRisk =
-      identityChanges || selected.identity.origin !== this.options.origin;
+    const collisionRisk = identityChanges;
     const confirmation = restoreConfirmation(
       selected,
       input.candidates,
@@ -117,11 +109,6 @@ export class WholeHostRestore {
       },
       identityChanges,
       collisionRisk,
-      migration: {
-        required: selected.schema !== this.options.schema,
-        from: selected.schema,
-        to: this.options.schema,
-      },
       warnings: [...RESTORE_WARNINGS],
       confirmation,
     };
@@ -166,7 +153,6 @@ export class WholeHostRestore {
       const epoch = randomUUID();
       try {
         db.exec("PRAGMA journal_mode=DELETE; BEGIN IMMEDIATE");
-        this.options.migrate?.(db, candidate.schema);
         this.options.reconcile(db, epoch);
         db.exec(`PRAGMA user_version=${this.options.schema}; COMMIT`);
         assertDatabase(db);
@@ -191,23 +177,6 @@ export class WholeHostRestore {
     }
   }
 
-  private authorize(input: {
-    deviceId?: string;
-    localhost?: boolean;
-    expectedRevision: number;
-  }): void {
-    if (input.expectedRevision !== this.options.revision()) {
-      throw new Error("revision-conflict");
-    }
-    if (this.options.authorityValid()) {
-      if (!input.deviceId || !this.options.isPaired(input.deviceId)) {
-        throw new Error("paired-device-required");
-      }
-    } else if (!input.localhost) {
-      throw new Error("localhost-recovery-required");
-    }
-  }
-
   private verify(candidate: RestoreCandidate): string | undefined {
     if (
       !existsSync(candidate.database) ||
@@ -219,8 +188,8 @@ export class WholeHostRestore {
       return "encryption-not-verified";
     }
     if (
-      candidate.schema > this.options.schema ||
-      (candidate.schema !== this.options.schema && !this.options.migrate)
+      candidate.schema !== this.options.schema ||
+      candidate.release !== this.options.release
     ) {
       return "incompatible-schema";
     }

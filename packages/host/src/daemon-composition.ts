@@ -286,7 +286,8 @@ async function composeValidatedManifestHost(
       health.set("lan", "available", "edge-open");
       owners.push(await factories.openRunAdmission(manifest));
     } else {
-      health.set("lan", "unavailable", "authority-recovery-only", "Complete local Authority recovery");
+      owners.push(await factories.openLanEdge(ownerContext));
+      health.set("lan", "available", "anonymous-recovery-edge-open");
       health.set("pi-execution", "unavailable", "authority-recovery-only");
       health.set("pi-configuration", "unavailable", "authority-recovery-only");
     }
