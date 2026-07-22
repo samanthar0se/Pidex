@@ -15,7 +15,7 @@
   "classifications": [
     { "id": "sqlite-authority", "classification": "sqlite-authority", "reason": "WAL and synchronous=FULL transactions are owned by AuthorityStore" },
     { "id": "scratch-diagnostics-downloads", "classification": "non-authoritative", "reason": "scratch, logs, diagnostics, support exports, downloads, and abandoned stages carry no acknowledgment" },
-    { "id": "client-local", "classification": "non-authoritative", "reason": "browser caches, IndexedDB, drafts, and Device-local identity are Client-owned" },
+    { "id": "client-local", "classification": "non-authoritative", "reason": "browser caches, IndexedDB, drafts, and Client-environment state are Client-owned" },
     { "id": "user-destination-copies", "classification": "external-copy", "reason": "the authenticated source bundle is authoritative; destination copies are user-owned" }
   ]
 }

@@ -14,19 +14,19 @@ The experience closely follows directly evidenced Codex desktop structure and vi
 
 ## Experience invariants
 
-- **FX-FOUND-01:** Use canonical Pidex language: Host, Device, Client, View, Project, Workspace, Session, Session Timeline, Composer Draft, Run, and Interaction. “Chats” is only the discovery label for unscoped Sessions.
+- **FX-FOUND-01:** Use canonical Pidex language: Host, Anonymous Client, Client environment, View, Project, Workspace, Session, Session Timeline, Composer Draft, Run, and Interaction. “Chats” is only the discovery label for unscoped Sessions.
 - **FX-FOUND-02:** Render exact retention, residency, Run, Interaction, View, connection, and command facts. Never invent an aggregate Session lifecycle state or use “active” or “idle” as Session states.
 - **FX-STATE-01:** Derive one discovery-only Session attention summary with precedence `needs response` over `working` over `quiet`. Quiet is normally implicit; exact facts remain in the selected Session View.
 - **FX-STATE-02:** Keep Session read status independent of attention. A current View marks read only after visibly presenting the authoritative Timeline tail; cached or offline viewing cannot clear unseen Host activity.
 - **FX-STATE-03:** Keep ordinary current/read/quiet state visually calm. Persistently expose `needs response`, held work, non-current authority, stale content, uncertain commands, and exact executing-Run/Stop state at their point of effect without hover.
 - **FX-STATE-04:** Every action targets the exact observed Session, Run, Interaction, worker generation, and revision required by its command. A stale or competing result never retargets a successor.
-- **FX-STATE-05:** Composer Drafts and Device preferences are Device-owned. Host facts, command outcomes, ordering, deadlines, and projections remain Host-authoritative.
+- **FX-STATE-05:** Composer Drafts and Client preferences belong to the Client environment. Host facts, command outcomes, ordering, deadlines, and projections remain Host-authoritative.
 
 ## Shell, discovery, and New Session
 
 - **FX-DISC-01:** Desktop uses one persistent, quiet discovery rail beside one focused, routable workbench. The main pane keeps generous readable whitespace and a bottom-anchored control surface.
 - **FX-DISC-02:** Discovery shows stable Project accordions first, with Project-scoped Sessions directly beneath each Project, followed by flat unscoped Sessions under **Chats**. Never show a Workspace accordion or Workspace metadata in a discovery row.
-- **FX-DISC-03:** Preserve authoritative Project order and order Sessions by recent authoritative activity. Remember Project expansion on the Device and automatically reveal the selected Session or a search match without mutating Session state.
+- **FX-DISC-03:** Preserve authoritative Project order and order Sessions by recent authoritative activity. Remember Project expansion in the Client environment and automatically reveal the selected Session or a search match without mutating Session state.
 - **FX-DISC-04:** Session rows combine quiet selection, restrained unread emphasis, and compact persistent `working` or `needs response` cues. They do not priority-sort or collapse attention and read status into one state.
 - **FX-DISC-05:** Search filters the existing Projects + Chats hierarchy in place, may match hidden Workspace scope, hides nonmatches, and leaves the focused View intact on no results. Archived is a dedicated catalog mode with the same hierarchy; archived selection exposes reviewable content and Restore.
 - **FX-DISC-06:** Session selection installs a stable resource URL and behaves with browser history, reload, and parallel tabs/windows. View lifecycle never wakes, sleeps, archives, restores, or stops a Session.
@@ -58,10 +58,10 @@ The experience closely follows directly evidenced Codex desktop structure and vi
 
 - **FX-INT-01:** An open Interaction adds a compact discovery cue and a durable Timeline fact. If the draft is empty and unfocused, the first newly open Interaction reversibly takes over the Composer footprint; otherwise it updates a cue without stealing focus.
 - **FX-INT-02:** The takeover is a compact stack ordered by earliest authoritative Host deadline, then untimed creation order. Keep all requests scannable and one expanded with its exact `select`, `confirm`, `input`, or `editor` response shape, provenance, Run association, and illustrative countdown.
-- **FX-INT-03:** **Write message** and **Return to requests** swap the stack and Composer in the same footprint while preserving the Device-owned draft. Never display both surfaces simultaneously.
+- **FX-INT-03:** **Write message** and **Return to requests** swap the stack and Composer in the same footprint while preserving the Client-environment draft. Never display both surfaces simultaneously.
 - **FX-INT-04:** Submission or dismissal targets the exact Interaction identity, worker generation, and revision. Pending intent affects only that row; other requests remain navigable.
-- **FX-INT-05:** A terminal Host change removes the row, expands the next Host-ordered request, or restores the Composer when none remain. A competing Device, deadline, withdrawal, or Stop clears local intent and states the authoritative result without replay or retargeting.
-- **FX-INT-06:** Confirm and select values may appear in durable terminal facts. Input and editor plaintext must not enter Timeline content, receipts, diagnostics, logs, or Device caches.
+- **FX-INT-05:** A terminal Host change removes the row, expands the next Host-ordered request, or restores the Composer when none remain. A competing command, deadline, withdrawal, or Stop clears local intent and states the authoritative result without replay or retargeting.
+- **FX-INT-06:** Confirm and select values may appear in durable terminal facts. Input and editor plaintext must not enter Timeline content, receipts, diagnostics, logs, or Client-environment caches.
 - **FX-INT-07:** Exact-target Stop remains directly reachable in the Session header during takeover and withdraws only unresolved Interactions associated with its Run.
 
 ## Responsive behavior
@@ -78,9 +78,9 @@ The experience closely follows directly evidenced Codex desktop structure and vi
 
 - **FX-TRUST-01:** Represent connection as `current`, `offline`, `reconnecting`, `update required`, or `revoked`. Non-current scopes show last authoritative synchronization time and unmistakable stale treatment.
 - **FX-TRUST-02:** Cached discovery, Run, Interaction, output, warning, countdown, capability, and read-state facts never appear current. A no-cache offline shell explains that authoritative content is unavailable.
-- **FX-TRUST-03:** Disable every Host mutation until required scopes reconcile under a compatible basis. Preserve valid Device-local draft editing and never queue offline commands.
+- **FX-TRUST-03:** Disable every Host mutation until required scopes reconcile under a compatible basis. Preserve valid Client-environment draft editing and never queue offline commands.
 - **FX-TRUST-04:** Transport-uncertain commands reconcile the original Command ID and validity context to accepted, rejected, expired, or indeterminate; they never change content, target, preconditions, or identity.
-- **FX-TRUST-05:** Update-required and revoked are terminal treatments. Reconnection verifies origin, Host identity, Device authorization, and protocol basis before current controls return.
+- **FX-TRUST-05:** Update-required is terminal. Reconnection verifies Host continuity and protocol basis before current controls return.
 
 ## Keyboard and focus contract
 

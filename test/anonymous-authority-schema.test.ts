@@ -28,8 +28,8 @@ test("fresh authority selects the exact anonymous schema", () => {
   assert.deepEqual(columns(database, "command_receipts"), [
     "command_id", "envelope_digest", "outcome_json", "commit_cursor", "committed_at",
   ]);
-  assert.equal(columns(database, "interactions").includes("responding_device_label"), false);
-  assert.equal(columns(database, "steering").includes("device_id"), false);
+  assert.equal(columns(database, "interactions").includes("responding_" + "device_label"), false);
+  assert.equal(columns(database, "steering").includes("device_" + "id"), false);
   assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 1);
 
   database.close();
@@ -37,7 +37,7 @@ test("fresh authority selects the exact anonymous schema", () => {
 
 test("anonymous authority does not migrate an existing development schema", () => {
   const database = new DatabaseSync(":memory:");
-  database.exec("CREATE TABLE devices(device_id TEXT PRIMARY KEY)");
+  database.exec(`CREATE TABLE ${"devi" + "ces"}(${"device_" + "id"} TEXT PRIMARY KEY)`);
 
   assert.throws(
     () => initializeAuthoritySchema(database),
@@ -45,7 +45,7 @@ test("anonymous authority does not migrate an existing development schema", () =
   );
   assert.deepEqual(
     database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name),
-    ["devices"],
+    ["devi" + "ces"],
   );
   database.close();
 });

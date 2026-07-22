@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "description": "Canonical inventory for surfaces removed by PRD #163. Rules apply to source and generated output; exceptions are limited to explicitly retained protections.",
+  "allowedExceptionClasses": ["backup-protection", "manifest-release-integrity", "lifecycle-containment", "worker-ipc-authentication", "provider-credentials", "external-reference", "lowercase-hardware-device"],
+  "scanRoots": ["apps", "packages", "native", "scripts", "test", "docs", "README.md", "package.json", ".github", "build"],
+  "forbiddenPaths": [
+    { "category": "module", "path": "apps/pwa" },
+    { "category": "module", "path": "packages/host/src/pairing.ts" },
+    { "category": "module", "path": "packages/host/src/advisory-push.ts" },
+    { "category": "module", "path": "packages/host/src/certificate.ts" },
+    { "category": "module", "path": "packages/host/src/development-ca.ts" },
+    { "category": "module", "path": "packages/host/src/development-ca-setup.ts" },
+    { "category": "module", "path": "packages/host/src/development-ca-reset.ts" },
+    { "category": "module", "path": "packages/host/src/exact-integration-control.ts" },
+    { "category": "module", "path": "packages/host/src/onboarding.ts" },
+    { "category": "package", "path": "packages/local-control" },
+    { "category": "integration", "path": "packages/windows/src/network.ts" },
+    { "category": "native input", "path": "native/windows/common/include/pidex/windows/dns_sd.hpp" },
+    { "category": "native input", "path": "native/windows/common/include/pidex/windows/private_network.hpp" },
+    { "category": "native input", "path": "native/windows/common/src/dns_sd.cpp" },
+    { "category": "native input", "path": "native/windows/common/src/private_network.cpp" },
+    { "category": "script", "path": "scripts/check-development-prerequisites.mjs" },
+    { "category": "obsolete test", "path": "test/pairing.product.test.ts" },
+    { "category": "fixture", "path": "test/fixtures/pairing" },
+    { "category": "documentation", "path": "docs/certificate-setup.md" }
+  ],
+  "forbiddenContent": [
+    { "id": "pairing-routes", "category": "route", "pattern": "/pair/(?:challenge|complete|auth-challenge|authenticate)", "flags": "i" },
+    { "id": "identity-protocol", "category": "protocol field", "pattern": "\\b(?:pairingId|authenticationId|devicePublicKey|revokeDevice)\\b", "flags": "i" },
+    { "id": "identity-authority", "category": "authority field", "pattern": "\\b(?:revoked_devices|authenticated_sessions|device_id)\\b", "flags": "i" },
+    { "id": "security-manifest", "category": "manifest field", "pattern": "\\b(?:canonicalOrigin|certificateTool|firewallIntegration)\\b" },
+    { "id": "removed-cli", "category": "CLI command", "paths": ["packages/cli", "build/unpacked/pidex.mjs"], "pattern": "[\"'](?:pair|revoke|trust|firewall|install|uninstall)[\"']", "flags": "i" },
+    { "id": "removed-script", "category": "script", "paths": ["package.json", "scripts"], "pattern": "(?:certificate|pairing|firewall).*(?:setup|reset|install)", "flags": "i" },
+    { "id": "removed-integration", "category": "integration", "pattern": "\\b(?:inspectPidexFirewall|applyPidexFirewall|advertisePidex|PrivateNetworkInterface|PidexDnsSdAdvertisement)\\b" },
+    { "id": "removed-ui", "category": "generated surface", "paths": ["apps/client/dist", "build"], "pattern": "(?:/pair/challenge|pair-device|devicePublicKey)", "flags": "i" },
+    { "id": "disabled-test", "category": "disabled obsolete test", "paths": ["test"], "pattern": "\\b(?:test|it|describe)\\.(?:skip|todo)|\\b(?:x(?:it|test|describe))\\s*\\(", "flags": "i" },
+    { "id": "network-authentication", "category": "documentation claim", "paths": ["README.md", "docs"], "pattern": "\\b(?:authenticated Client|authorized Client|secure LAN|Internet-safe|production-ready)\\b", "flags": "i" },
+    { "id": "capital-device", "category": "product terminology", "paths": ["README.md", "docs", "apps/client/src", "packages"], "pattern": "\\bDevices?\\b" }
+  ],
+  "exceptions": [
+    { "class": "backup-protection", "rule": "identity-authority", "path": "packages/host/src/portable-backup.ts", "pattern": "(?:device_id|authenticated_sessions)", "flags": "i", "reason": "backup rejects removed material" },
+    { "class": "external-reference", "rule": "network-authentication", "path": "docs/research", "reason": "external reference" },
+    { "class": "external-reference", "rule": "capital-device", "path": "docs/research", "reason": "external reference" },
+    { "class": "lowercase-hardware-device", "rule": "capital-device", "path": "packages/adapters/src/index.ts", "pattern": "\\bdevice\\b", "reason": "ordinary lowercase hardware language" }
+  ]
+}

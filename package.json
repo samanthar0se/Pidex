@@ -16,8 +16,9 @@
     "test": "node --import tsx --test test/**/*.test.ts",
     "build:client": "vite build apps/client --config apps/client/vite.config.ts",
     "build:unpacked": "npm run build:client && node scripts/build-unpacked.mjs",
+    "check:anonymous-runtime": "node scripts/check-anonymous-runtime.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
-    "security": "npm run secret-scan && npm audit --omit=dev --audit-level=high && npm run typecheck && npm test"
+    "security": "npm run secret-scan && npm audit --omit=dev --audit-level=high && npm run typecheck && npm test && npm run build:unpacked && npm run check:anonymous-runtime"
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.12.0",

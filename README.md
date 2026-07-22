@@ -62,6 +62,7 @@ inspect the task with `npm run dev:task:status`, `npm run dev:task:stop`, and
 The development Host serves plain HTTP on IPv4 wildcard port 7443. Startup
 prints the unauthenticated-prototype warning and loopback/LAN URL guidance.
 Opening the URL goes directly to the React Client without credentials or setup.
+See [Prototype LAN operation](docs/prototype-lan.md) for the complete operator boundary.
 
 The development entry point explicitly uses deterministic adapters and cannot
 select product composition through an environment switch. Optional fixture

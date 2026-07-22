@@ -9,7 +9,7 @@ Issue 46 is a blocking, non-retryable release gate. Run the complete product wor
 
 Unsupported browsers must show the compatibility stop screen and establish no control connection.
 
-Capacity runs use 10,000 retained Sessions, discovery over the full catalog, one 100,000-entry Timeline, and six Clients on three Devices. The 8 GiB Windows tier exercises four resident Sessions/two executing Runs; the 16 GiB tier exercises eight/four. Admission beyond these floors is based on measured memory and storage headroom, never a retained-Session cap.
+Capacity runs use 10,000 retained Sessions, discovery over the full catalog, one 100,000-entry Timeline, and six Clients on three hardware devices. The 8 GiB Windows tier exercises four resident Sessions/two executing Runs; the 16 GiB tier exercises eight/four. Admission beyond these floors is based on measured memory and storage headroom, never a retained-Session cap.
 
 For every run retain:
 
