@@ -25,6 +25,7 @@ import {
   type HostChange,
   type HostStatus,
   type Interaction,
+  type InteractionTerminalCause,
   type ProjectSummary,
   type RunRecord,
   type SessionReadState,
@@ -168,6 +169,26 @@ const stopReceiptOutcomeSchema = z.object({
   entryId: z.string(),
   cursor: z.string(),
 });
+const steerReceiptOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("accepted"),
+    entryId: z.string(),
+    cursor: z.string(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    error: z.literal("stale-execution"),
+    cursor: z.string(),
+  }),
+]);
+const commandReceiptRowSchema = z.object({
+  envelopeDigest: z.string(),
+  outcomeJson: z.string(),
+});
+type CommandReceiptMatch =
+  | { kind: "missing" }
+  | { kind: "conflict" }
+  | { kind: "replay"; outcomeJson: string };
 const TIMELINE_WINDOW_SIZE = 100;
 const MAX_TIMELINE_PAGE_SIZE = 200;
 const timelineCursorSchema = z.object({
@@ -722,23 +743,19 @@ export class AuthorityStore {
       .digest("hex");
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db
-        .prepare(
-          `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE command_id = ?`,
-        )
-        .get(command.commandId);
-      if (receipt) {
+      const receipt = this.loadCommandReceipt(command.commandId, digest);
+      if (receipt.kind !== "missing") {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) {
+        if (receipt.kind === "conflict") {
           return {
             kind: "rejected",
             error: "command-id-conflict",
             cursor: this.status("").synchronization.cursor,
           };
         }
-        const outcome = sessionAvailabilityOutcomeSchema.parse(
-          JSON.parse(String(receipt.outcome_json)),
+        const outcome = this.parseCommandReceipt(
+          receipt,
+          sessionAvailabilityOutcomeSchema,
         );
         return { ...outcome, kind: "replayed" };
       }
@@ -799,20 +816,13 @@ export class AuthorityStore {
         });
         result = { kind: "accepted", session, cursor: nextCursor };
       }
-      this.#db
-        .prepare(
-          `INSERT INTO command_receipts
-           (command_id, envelope_digest, outcome_json,
-            commit_cursor, committed_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(
-          command.commandId,
-          digest,
-          JSON.stringify(result),
-          result.cursor,
-          now,
-        );
+      this.insertCommandReceipt(
+        command.commandId,
+        digest,
+        result,
+        result.cursor,
+        now,
+      );
       this.#db.exec("COMMIT");
       return result;
     } catch (error) {
@@ -829,21 +839,19 @@ export class AuthorityStore {
     const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db.prepare(
-        `SELECT envelope_digest, outcome_json FROM command_receipts
-         WHERE command_id = ?`,
-      ).get(command.commandId);
-      if (receipt) {
+      const receipt = this.loadCommandReceipt(command.commandId, digest);
+      if (receipt.kind !== "missing") {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) {
+        if (receipt.kind === "conflict") {
           return {
             kind: "rejected",
             error: "command-id-conflict",
             cursor: this.status("").synchronization.cursor,
           };
         }
-        const outcome = markReadOutcomeSchema.parse(
-          JSON.parse(String(receipt.outcome_json)),
+        const outcome = this.parseCommandReceipt(
+          receipt,
+          markReadOutcomeSchema,
         );
         return { kind: "replayed", outcome, digest };
       }
@@ -909,10 +917,13 @@ export class AuthorityStore {
           };
         }
       }
-      this.#db.prepare(
-        `INSERT INTO command_receipts (command_id, envelope_digest, outcome_json, commit_cursor, committed_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      ).run(command.commandId, digest, JSON.stringify(result), result.cursor, now);
+      this.insertCommandReceipt(
+        command.commandId,
+        digest,
+        result,
+        result.cursor,
+        now,
+      );
       this.#storage.beforeCommit();
       this.#db.exec("COMMIT");
       return result;
@@ -988,19 +999,15 @@ export class AuthorityStore {
     const digest = renameCommandDigest(command);
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db
-        .prepare(
-          `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE command_id = ?`,
-        )
-        .get(command.commandId);
-      if (receipt) {
+      const receipt = this.loadCommandReceipt(command.commandId, digest);
+      if (receipt.kind !== "missing") {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) {
+        if (receipt.kind === "conflict") {
           return { kind: "command-id-conflict" };
         }
-        const outcome = renameOutcomeSchema.parse(
-          JSON.parse(String(receipt.outcome_json)),
+        const outcome = this.parseCommandReceipt(
+          receipt,
+          renameOutcomeSchema,
         );
         return { kind: "replayed", outcome, digest };
       }
@@ -1051,20 +1058,13 @@ export class AuthorityStore {
           digest,
         };
       }
-      this.#db
-        .prepare(
-          `INSERT INTO command_receipts
-           (command_id, envelope_digest, outcome_json,
-            commit_cursor, committed_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(
-          command.commandId,
-          digest,
-          JSON.stringify(outcome),
-          outcome.cursor,
-          now,
-        );
+      this.insertCommandReceipt(
+        command.commandId,
+        digest,
+        outcome,
+        outcome.cursor,
+        now,
+      );
       this.#db.exec("COMMIT");
       return outcome;
     } catch (error) {
@@ -1081,20 +1081,16 @@ export class AuthorityStore {
     const digest = submitCommandDigest(command);
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db
-        .prepare(
-          `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE command_id = ?`,
-        )
-        .get(command.commandId);
-      if (receipt) {
-        if (receipt.envelope_digest !== digest) {
+      const receipt = this.loadCommandReceipt(command.commandId, digest);
+      if (receipt.kind !== "missing") {
+        if (receipt.kind === "conflict") {
           this.#db.exec("COMMIT");
           return { kind: "command-id-conflict" };
         }
 
-        const outcome = submitOutcomeSchema.parse(
-          JSON.parse(String(receipt.outcome_json)),
+        const outcome = this.parseCommandReceipt(
+          receipt,
+          submitOutcomeSchema,
         );
         this.#db.exec("COMMIT");
         return { kind: "replayed", outcome, digest };
@@ -1143,11 +1139,11 @@ export class AuthorityStore {
             cursor,
             digest,
           };
-          this.insertRunReceipt(
-            deviceId,
+          this.insertCommandReceipt(
             command.commandId,
             digest,
             outcome,
+            outcome.cursor,
             now,
           );
           this.#db.exec("COMMIT");
@@ -1208,11 +1204,11 @@ export class AuthorityStore {
         outcome = { kind: "accepted", run, cursor, digest };
       }
 
-      this.insertRunReceipt(
-        deviceId,
+      this.insertCommandReceipt(
         command.commandId,
         digest,
         outcome,
+        outcome.cursor,
         now,
       );
       this.#db.exec("COMMIT");
@@ -1233,27 +1229,22 @@ export class AuthorityStore {
     const digest = createHash("sha256").update(JSON.stringify(command)).digest("hex");
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db.prepare(
-        `SELECT envelope_digest, outcome_json FROM command_receipts
-         WHERE command_id = ?`,
-      ).get(command.commandId);
-      if (receipt) {
+      const receipt = this.loadCommandReceipt(command.commandId, digest);
+      if (receipt.kind !== "missing") {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) {
+        if (receipt.kind === "conflict") {
           return { kind: "rejected", error: "command-id-conflict", cursor: this.status("").synchronization.cursor };
         }
-        const prior = JSON.parse(String(receipt.outcome_json)) as {
-          kind: "accepted" | "rejected";
-          entryId?: string;
-          error?: "stale-execution";
-          cursor: string;
-        };
+        const prior = this.parseCommandReceipt(
+          receipt,
+          steerReceiptOutcomeSchema,
+        );
         if (prior.kind === "rejected") {
-          return { kind: "rejected", error: prior.error!, cursor: prior.cursor };
+          return { kind: "rejected", error: prior.error, cursor: prior.cursor };
         }
         return {
           kind: "replayed",
-          entry: this.loadTimelineEntry(prior.entryId!),
+          entry: this.loadTimelineEntry(prior.entryId),
           cursor: prior.cursor,
         };
       }
@@ -1377,23 +1368,19 @@ export class AuthorityStore {
       .digest("hex");
     this.#db.exec("BEGIN IMMEDIATE");
     try {
-      const receipt = this.#db
-        .prepare(
-          `SELECT envelope_digest, outcome_json FROM command_receipts
-           WHERE command_id = ?`,
-        )
-        .get(command.commandId);
-      if (receipt) {
+      const receipt = this.loadCommandReceipt(command.commandId, digest);
+      if (receipt.kind !== "missing") {
         this.#db.exec("COMMIT");
-        if (receipt.envelope_digest !== digest) {
+        if (receipt.kind === "conflict") {
           return {
             kind: "rejected",
             error: "command-id-conflict",
             cursor: this.status("").synchronization.cursor,
           };
         }
-        const prior = stopReceiptOutcomeSchema.parse(
-          JSON.parse(String(receipt.outcome_json)),
+        const prior = this.parseCommandReceipt(
+          receipt,
+          stopReceiptOutcomeSchema,
         );
         return {
           kind: "replayed",
@@ -1495,20 +1482,13 @@ export class AuthorityStore {
         entryId,
         cursor: committedCursor,
       };
-      this.#db
-        .prepare(
-          `INSERT INTO command_receipts
-           (command_id, envelope_digest, outcome_json,
-            commit_cursor, committed_at)
-           VALUES (?, ?, ?, ?, ?)`,
-        )
-        .run(
-          command.commandId,
-          digest,
-          JSON.stringify(outcome),
-          committedCursor,
-          now,
-        );
+      this.insertCommandReceipt(
+        command.commandId,
+        digest,
+        outcome,
+        committedCursor,
+        now,
+      );
       const result: StopResult = {
         kind: "accepted",
         run: this.loadRun(command.runId),
@@ -1982,7 +1962,7 @@ export class AuthorityStore {
     interactionId: string,
     from: ActiveInteractionState,
     state: TerminalInteractionState,
-    cause: string,
+    cause: InteractionTerminalCause,
     at: number,
     applicationProven: boolean,
   ): Interaction | undefined {
@@ -2247,27 +2227,29 @@ export class AuthorityStore {
     return runRecordSchema.parse(row);
   }
 
-  private insertRunReceipt(
-    deviceId: string,
+  private loadCommandReceipt(
     commandId: string,
     digest: string,
-    outcome: SubmitOutcome,
-    now: number,
-  ): void {
-    this.#db
-      .prepare(
-        `INSERT INTO command_receipts
-         (command_id, envelope_digest, outcome_json,
-          commit_cursor, committed_at)
-         VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        commandId,
-        digest,
-        JSON.stringify(outcome),
-        outcome.cursor,
-        now,
-      );
+  ): CommandReceiptMatch {
+    const row = this.#db.prepare(
+      `SELECT envelope_digest AS envelopeDigest, outcome_json AS outcomeJson
+       FROM command_receipts WHERE command_id = ?`,
+    ).get(commandId);
+    const receipt = commandReceiptRowSchema.optional().parse(row);
+    if (!receipt) {
+      return { kind: "missing" };
+    }
+    if (receipt.envelopeDigest !== digest) {
+      return { kind: "conflict" };
+    }
+    return { kind: "replay", outcomeJson: receipt.outcomeJson };
+  }
+
+  private parseCommandReceipt<T>(
+    receipt: Extract<CommandReceiptMatch, { kind: "replay" }>,
+    outcomeSchema: z.ZodType<T>,
+  ): T {
+    return outcomeSchema.parse(JSON.parse(receipt.outcomeJson));
   }
 
   private insertCommandReceipt(

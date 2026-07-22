@@ -246,6 +246,17 @@ export const timelineChangeSchema = z.object({
   entry: timelineEntrySchema,
 });
 
+export const interactionTerminalCauseSchema = z.enum([
+  "command-dismissal",
+  "command-response",
+  "deadline",
+  "run-stop",
+  "worker-lost",
+]);
+export type InteractionTerminalCause = z.infer<
+  typeof interactionTerminalCauseSchema
+>;
+
 export const interactionSchema = z.object({
   interactionId: z.string(),
   sessionId: z.string(),
@@ -272,7 +283,7 @@ export const interactionSchema = z.object({
   revision: z.number().int().positive(),
   createdAt: z.number(),
   deadlineAt: z.number().nullable(),
-  terminalCause: z.string().nullable(),
+  terminalCause: interactionTerminalCauseSchema.nullable(),
   respondedAt: z.number().nullable(),
   applicationProven: z.boolean().nullable(),
 });
