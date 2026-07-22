@@ -21,16 +21,6 @@ const CREATE_AUTHORITY_SCHEMA = `
     release_min TEXT NOT NULL,
     release_max TEXT NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS devices (
-    device_id TEXT PRIMARY KEY,
-    public_key_jwk TEXT NOT NULL,
-    paired_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS revoked_devices (
-    device_id TEXT PRIMARY KEY,
-    paired_at INTEGER NOT NULL,
-    revoked_at INTEGER NOT NULL
-  );
   CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
     name TEXT NOT NULL
@@ -59,13 +49,11 @@ const CREATE_AUTHORITY_SCHEMA = `
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS command_receipts (
-    device_id TEXT NOT NULL,
-    command_id TEXT NOT NULL,
+    command_id TEXT PRIMARY KEY,
     envelope_digest TEXT NOT NULL,
     outcome_json TEXT NOT NULL,
     commit_cursor TEXT NOT NULL,
-    committed_at INTEGER NOT NULL,
-    PRIMARY KEY(device_id, command_id)
+    committed_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS synchronization_changes (
     sequence INTEGER PRIMARY KEY,
@@ -132,142 +120,48 @@ const CREATE_AUTHORITY_SCHEMA = `
     deadline_at INTEGER,
     terminal_cause TEXT,
     responded_at INTEGER,
-    responding_device_label TEXT,
     application_proven INTEGER,
     UNIQUE(session_id, worker_generation, correlation_id)
   );
   CREATE TABLE IF NOT EXISTS steering (
-    command_id TEXT NOT NULL,
-    device_id TEXT NOT NULL,
+    command_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id),
     worker_generation TEXT NOT NULL,
     text TEXT NOT NULL,
     entry_id TEXT NOT NULL,
     state TEXT NOT NULL CHECK(state IN ('accepted','applied','unapplied')),
-    created_at INTEGER NOT NULL,
-    PRIMARY KEY(device_id, command_id)
+    created_at INTEGER NOT NULL
   );
 `;
+const AUTHORITY_SCHEMA_VERSION = 1;
+const AUTHORITY_TABLES = [
+  "authority_generation", "command_receipts", "host", "interactions",
+  "projects", "retained_object_references", "runs", "sessions", "steering",
+  "storage_orphans", "synchronization_changes", "timeline_entries", "workspaces",
+];
 
-const CREATE_CURRENT_RUNS_TABLE = `
-  CREATE TABLE runs (
-    run_id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    session_order INTEGER NOT NULL,
-    prompt TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(
-      state IN (
-        'queued', 'executing', 'cancelling', 'held', 'completed',
-        'failed', 'cancelled', 'interrupted'
-      )
-    ),
-    created_at INTEGER NOT NULL,
-    completed_at INTEGER,
-    UNIQUE(session_id, session_order)
-  );
-`;
-
-const SESSION_COLUMN_MIGRATIONS = new Map([
-  [
-    "read_through_timeline_revision",
-    "ALTER TABLE sessions ADD COLUMN read_through_timeline_revision INTEGER",
-  ],
-  [
-    "read_state_revision",
-    "ALTER TABLE sessions ADD COLUMN read_state_revision INTEGER",
-  ],
-  [
-    "latest_unread_milestone_timeline_revision",
-    "ALTER TABLE sessions ADD COLUMN latest_unread_milestone_timeline_revision INTEGER",
-  ],
-  [
-    "name",
-    "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT 'Untitled Session'",
-  ],
-  [
-    "availability",
-    "ALTER TABLE sessions ADD COLUMN availability TEXT NOT NULL DEFAULT 'available'",
-  ],
-  [
-    "parent_session_id",
-    "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(session_id)",
-  ],
-  [
-    "fork_point_entry_id",
-    "ALTER TABLE sessions ADD COLUMN fork_point_entry_id TEXT",
-  ],
-]);
-
-const TIMELINE_COLUMN_MIGRATIONS = new Map([
-  ["blob_id", "ALTER TABLE timeline_entries ADD COLUMN blob_id TEXT"],
-  [
-    "revision",
-    "ALTER TABLE timeline_entries ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
-  ],
-  [
-    "finalized",
-    "ALTER TABLE timeline_entries ADD COLUMN finalized INTEGER NOT NULL DEFAULT 1",
-  ],
-  [
-    "tool_call_id",
-    "ALTER TABLE timeline_entries ADD COLUMN tool_call_id TEXT",
-  ],
-]);
-
-/** Creates the current schema and upgrades databases from the legacy layout. */
+/** Opens only this exact schema, creating it when the database is fresh. */
 export function initializeAuthoritySchema(database: DatabaseSync): void {
+  const version = Number(database.prepare("PRAGMA user_version").get()?.user_version);
+  const hasTables = Boolean(database.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1",
+  ).get());
+  if (version !== AUTHORITY_SCHEMA_VERSION && hasTables) {
+    throw new Error("fresh exact-version authority required");
+  }
+  if (version !== 0 && version !== AUTHORITY_SCHEMA_VERSION) {
+    throw new Error("fresh exact-version authority required");
+  }
+  if (hasTables && !hasExactTables(database)) {
+    throw new Error("fresh exact-version authority required");
+  }
   database.exec(CREATE_AUTHORITY_SCHEMA);
-  addMissingColumns(database, "sessions", SESSION_COLUMN_MIGRATIONS);
-  addMissingColumns(
-    database,
-    "timeline_entries",
-    TIMELINE_COLUMN_MIGRATIONS,
-  );
-  addMissingColumns(
-    database,
-    "synchronization_changes",
-    new Map([
-      [
-        "committed_at",
-        "ALTER TABLE synchronization_changes ADD COLUMN committed_at INTEGER",
-      ],
-    ]),
-  );
-  migrateLegacyRunsTable(database);
+  database.exec(`PRAGMA user_version=${AUTHORITY_SCHEMA_VERSION}`);
 }
 
-function addMissingColumns(
-  database: DatabaseSync,
-  table: string,
-  migrations: ReadonlyMap<string, string>,
-): void {
-  const columns = database.prepare(`PRAGMA table_info(${table})`).all();
-  const existingNames = new Set(columns.map(column => column.name));
-  for (const [column, statement] of migrations) {
-    if (!existingNames.has(column)) {
-      database.exec(statement);
-    }
-  }
-}
-
-function migrateLegacyRunsTable(database: DatabaseSync): void {
-  const runsTable = database
-    .prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runs'",
-    )
-    .get();
-  if (!String(runsTable?.sql ?? "").includes("'accepted'")) {
-    return;
-  }
-
-  database.exec(`
-    ALTER TABLE runs RENAME TO runs_legacy;
-    ${CREATE_CURRENT_RUNS_TABLE}
-    INSERT INTO runs
-      SELECT run_id, session_id, session_order, prompt,
-             CASE state WHEN 'accepted' THEN 'executing' ELSE state END,
-             created_at, completed_at
-      FROM runs_legacy;
-    DROP TABLE runs_legacy;
-  `);
+function hasExactTables(database: DatabaseSync): boolean {
+  const tables = database.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+  ).all().map(row => row.name);
+  return JSON.stringify(tables) === JSON.stringify(AUTHORITY_TABLES);
 }
