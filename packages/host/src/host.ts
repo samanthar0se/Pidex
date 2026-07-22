@@ -96,6 +96,7 @@ const DEFAULT_TIMELINE_PAGE_SIZE = 100;
 const DEFAULT_COOPERATIVE_STOP_TIMEOUT_MS = 10_000;
 const DEFAULT_FORCED_RECONCILIATION_TIMEOUT_MS = 5_000;
 const DEFAULT_DURABILITY_ASSESSMENT_TIMEOUT_MS = 2_000;
+const ANONYMOUS_CLIENT_ID = "anonymous";
 const COOPERATIVE_CANCELLATION_DETAIL =
   "Cancelled cooperatively. Partial output and committed side effects were not rolled back.";
 const FORCED_CANCELLATION_DETAIL =
@@ -492,7 +493,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     webSocketServer.handleUpgrade(request, socket, head, webSocket => {
-      clientDeviceIds.set(webSocket, "anonymous");
+      clientDeviceIds.set(webSocket, ANONYMOUS_CLIENT_ID);
       webSocketServer.emit("connection", webSocket, request);
     });
   });

@@ -10,7 +10,11 @@ import {
 } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { AuthorityStore } from "../packages/host/src/store.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 test("forks stable history into an inert, independently scoped child with durable ancestry", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pidex-fork-"));
@@ -172,7 +176,7 @@ test("fork command publishes validated child genesis and closes its bootstrap on
     adapters: { ...baseAdapters, pi },
   });
   const socket = new WebSocket(
-    `${host.origin.replace(/^http/, "ws")}/control`,
+    controlWebSocketUrl(host.origin),
     {
       rejectUnauthorized: false,
       headers: { authorization: "Bearer device" },

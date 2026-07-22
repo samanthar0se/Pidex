@@ -8,7 +8,11 @@ import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { WorkerLossError } from "../packages/host/src/pi-worker.js";
 import type { ServerMessage } from "../packages/protocol/src/status.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 type RunCompletedMessage = Extract<
   ServerMessage,
@@ -41,7 +45,7 @@ test(
     let socket: WebSocket | undefined;
     try {
       socket = new WebSocket(
-        `${host.origin.replace(/^http/, "ws")}/control`,
+        controlWebSocketUrl(host.origin),
         {
           rejectUnauthorized: false,
           headers: { authorization: "Bearer test" },

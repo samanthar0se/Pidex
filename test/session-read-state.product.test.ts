@@ -7,7 +7,11 @@ import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { AuthorityStore, type MarkReadCommand } from "../packages/host/src/store.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 const basis = [{ id: "session.read-state", version: 1 }] as const;
 
@@ -87,7 +91,7 @@ test("replaying a rejected mark-read preserves the authoritative rejection", asy
     adapters: adaptersFor("deterministic"),
   });
   const client = new WebSocket(
-    `${host.origin.replace(/^http/, "ws")}/control`,
+    controlWebSocketUrl(host.origin),
     {
       rejectUnauthorized: false,
       headers: { authorization: "Bearer device-a" },

@@ -13,7 +13,10 @@ import {
   serverMessageSchema,
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+} from "./control-client.js";
 
 type RunExecutionMessage = Extract<
   ServerMessage,
@@ -194,7 +197,7 @@ test("containment failure settles the run as failed without invoking Pi", async 
 });
 
 function connectToHost(origin: string): WebSocket {
-  return new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
+  return new WebSocket(controlWebSocketUrl(origin), {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });

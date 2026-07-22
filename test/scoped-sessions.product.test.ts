@@ -9,12 +9,16 @@ import { startHost } from "../packages/host/src/host.js";
 import {
   type HostSnapshot,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl, nextControlMessage as next } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage as next,
+} from "./control-client.js";
 
 async function connect(
   origin: string,
 ): Promise<{ socket: WebSocket; snapshot: HostSnapshot }> {
-  const socket = new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
+  const socket = new WebSocket(controlWebSocketUrl(origin), {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer test-device" },
   });

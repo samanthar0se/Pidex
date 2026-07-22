@@ -9,14 +9,16 @@ import { adaptersFor } from "../packages/adapters/src/index.js";
 import { readStatus } from "./device-status-client.js";
 import { startHost } from "../packages/host/src/host.js";
 import { type HostStatus } from "../packages/protocol/src/status.js";
-import { negotiateControl } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+} from "./control-client.js";
 
 async function readPwaStatus(
   origin: string,
   authorization: string,
 ): Promise<HostStatus> {
-  const controlOrigin = origin.replace(/^http/, "ws");
-  const controlSocket = new WebSocket(`${controlOrigin}/control`, {
+  const controlSocket = new WebSocket(controlWebSocketUrl(origin), {
     headers: { authorization: `Bearer ${authorization}` },
   });
   const message = await negotiateControl(controlSocket);

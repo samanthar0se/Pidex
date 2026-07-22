@@ -6,7 +6,11 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 test("Session Views are lifecycle-neutral and Sleep requires flushed quiescence", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-residency-"));
@@ -34,7 +38,7 @@ test("Session Views are lifecycle-neutral and Sleep requires flushed quiescence"
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace(/^http/, "ws")}/control`,
+      controlWebSocketUrl(host.origin),
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer test" },

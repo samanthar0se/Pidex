@@ -8,6 +8,7 @@ import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { clientHello, protocolVersion, serverMessageSchema } from "../packages/protocol/src/status.js";
+import { controlWebSocketUrl } from "./control-client.js";
 
 function read(origin: string, host: string): Promise<{ status: number; headers: NodeJS.Dict<string | string[]> }> {
   return new Promise((resolve, reject) => {
@@ -32,7 +33,7 @@ test("reachable Anonymous Clients control the plain HTTP Host without authorizat
     assert.equal(response.headers["cache-control"], "no-store");
     assert.equal(response.headers.location, undefined);
 
-    const socket = new WebSocket(`${host.origin.replace(/^http:/, "ws:")}/control`, {
+    const socket = new WebSocket(controlWebSocketUrl(host.origin), {
       headers: { origin: "https://arbitrary-browser.invalid" },
     });
     await new Promise<void>((resolve, reject) => {

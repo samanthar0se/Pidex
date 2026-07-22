@@ -10,7 +10,11 @@ import {
   protocolVersion,
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 type TimelineChangeMessage = Extract<
   ServerMessage,
@@ -44,7 +48,7 @@ test("a current Session receives consolidated revisioned model and tool activity
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace(/^http/, "ws")}/control`,
+      controlWebSocketUrl(host.origin),
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },

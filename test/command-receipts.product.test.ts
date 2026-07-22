@@ -6,11 +6,15 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
-import { negotiateControl, nextControlMessage as next } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage as next,
+} from "./control-client.js";
 
 async function connect(origin: string, token: string): Promise<WebSocket> {
   const socket = new WebSocket(
-    `${origin.replace(/^http/, "ws")}/control`,
+    controlWebSocketUrl(origin),
     {
       rejectUnauthorized: false,
       headers: { authorization: `Bearer ${token}` },

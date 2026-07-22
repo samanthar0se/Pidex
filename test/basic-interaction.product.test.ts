@@ -14,7 +14,11 @@ import {
   protocolVersion,
   type Interaction,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 test("all basic Interaction kinds validate and settle only through their exact worker", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-interaction-"));
@@ -47,7 +51,7 @@ test("all basic Interaction kinds validate and settle only through their exact w
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace(/^http/, "ws")}/control`,
+      controlWebSocketUrl(host.origin),
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },

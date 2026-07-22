@@ -4,11 +4,12 @@ import {
   serverMessageSchema,
   type HostStatus,
 } from "../packages/protocol/src/status.js";
+import { controlWebSocketUrl } from "./control-client.js";
 
 /** Test-only Device-protocol helper for public-protocol parity evidence. */
 export async function readStatus(origin: string, authorization?: string): Promise<HostStatus> {
   return new Promise((resolve, reject) => {
-    const controlSocket = new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
+    const controlSocket = new WebSocket(controlWebSocketUrl(origin), {
       rejectUnauthorized: false,
       headers: authorization ? { authorization: `Bearer ${authorization}` } : undefined,
     });

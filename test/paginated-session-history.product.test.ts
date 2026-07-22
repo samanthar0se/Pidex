@@ -12,7 +12,11 @@ import {
   protocolVersion,
   timelineWindowSchema,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 interface HttpResponse {
   status: number;
@@ -64,7 +68,7 @@ test("returns bounded Session windows, pages stable finalized history, and verif
   });
   try {
     const socket = new WebSocket(
-      `${host.origin.replace(/^http/, "ws")}/control`,
+      controlWebSocketUrl(host.origin),
       {
         headers: { authorization: "Bearer device" },
       },

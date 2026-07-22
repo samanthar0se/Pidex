@@ -7,7 +7,11 @@ import WebSocket from "ws";
 import { adaptersFor, type PiAdapter, type PiExecuteResult } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { AuthorityStore } from "../packages/host/src/store.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 interface PendingExecution {
   prompt: string;
@@ -33,8 +37,7 @@ test("durable follow-ups execute once in order and are held after an abnormal pr
     adapters: { ...base, pi },
   });
   try {
-    const controlOrigin = host.origin.replace(/^http/, "ws");
-    const socket = new WebSocket(`${controlOrigin}/control`, {
+    const socket = new WebSocket(controlWebSocketUrl(host.origin), {
       rejectUnauthorized: false,
       headers: { authorization: "Bearer device" },
     });

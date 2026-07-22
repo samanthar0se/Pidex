@@ -10,7 +10,10 @@ import {
 } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { clientHello } from "../packages/protocol/src/status.js";
-import { nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  nextControlMessage,
+} from "./control-client.js";
 
 test("Durability coverage is asynchronous, role-specific, conservative, and privacy-safe", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-coverage-secret-"));
@@ -46,7 +49,7 @@ test("Durability coverage is asynchronous, role-specific, conservative, and priv
     assert.equal(pending.durability.assessment, "assessment-pending");
 
     const socket = new WebSocket(
-      `${host.origin.replace(/^http/, "ws")}/control`,
+      controlWebSocketUrl(host.origin),
       {
         rejectUnauthorized: false,
         headers: { authorization: "Bearer device" },

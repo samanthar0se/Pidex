@@ -7,6 +7,10 @@ import {
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
 
+export function controlWebSocketUrl(origin: string): string {
+  return `${origin.replace(/^http/, "ws")}/control`;
+}
+
 export function nextControlMessage(socket: WebSocket): Promise<ServerMessage> {
   let state = states.get(socket);
   if (!state) {

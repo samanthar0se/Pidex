@@ -6,7 +6,11 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 test("completion survives restart without republishing an unchanged unread state", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-run-"));
@@ -94,7 +98,7 @@ test("completion survives restart without republishing an unchanged unread state
 });
 
 function connect(origin: string): WebSocket {
-  return new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
+  return new WebSocket(controlWebSocketUrl(origin), {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });

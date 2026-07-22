@@ -8,12 +8,13 @@ import { adaptersFor } from "../packages/adapters/src/index.js";
 import { startHost } from "../packages/host/src/host.js";
 import { unsupportedRequiredSemantics } from "../packages/protocol/src/status.js";
 import {
+  controlWebSocketUrl,
   nextControlMessage,
   synchronizeEmptyControlScope,
 } from "./control-client.js";
 
 function socket(origin: string): WebSocket {
-  return new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
+  return new WebSocket(controlWebSocketUrl(origin), {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });

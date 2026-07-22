@@ -12,7 +12,11 @@ import {
   serverMessageSchema,
   type ServerMessage,
 } from "../packages/protocol/src/status.js";
-import { negotiateControl, nextControlMessage } from "./control-client.js";
+import {
+  controlWebSocketUrl,
+  negotiateControl,
+  nextControlMessage,
+} from "./control-client.js";
 
 test(
   "presentation effects stay generation-scoped, capability-gated, and local to the invoking View",
@@ -199,7 +203,7 @@ test(
 );
 
 function connect(origin: string): WebSocket {
-  return new WebSocket(`${origin.replace(/^http/, "ws")}/control`, {
+  return new WebSocket(controlWebSocketUrl(origin), {
     rejectUnauthorized: false,
     headers: { authorization: "Bearer device" },
   });
