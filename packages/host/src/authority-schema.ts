@@ -134,11 +134,11 @@ const CREATE_AUTHORITY_SCHEMA = `
   );
 `;
 const AUTHORITY_SCHEMA_VERSION = 1;
-const AUTHORITY_TABLES = [
-  "authority_generation", "command_receipts", "host", "interactions",
-  "projects", "retained_object_references", "runs", "sessions", "steering",
-  "storage_orphans", "synchronization_changes", "timeline_entries", "workspaces",
-];
+const AUTHORITY_TABLES = Array.from(
+  CREATE_AUTHORITY_SCHEMA.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g),
+  match => match[1],
+).sort();
+const FRESH_EXACT_AUTHORITY_REQUIRED = "fresh exact-version authority required";
 
 /** Opens only this exact schema, creating it when the database is fresh. */
 export function initializeAuthoritySchema(database: DatabaseSync): void {
@@ -147,13 +147,13 @@ export function initializeAuthoritySchema(database: DatabaseSync): void {
     "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1",
   ).get());
   if (version !== AUTHORITY_SCHEMA_VERSION && hasTables) {
-    throw new Error("fresh exact-version authority required");
+    throw new Error(FRESH_EXACT_AUTHORITY_REQUIRED);
   }
   if (version !== 0 && version !== AUTHORITY_SCHEMA_VERSION) {
-    throw new Error("fresh exact-version authority required");
+    throw new Error(FRESH_EXACT_AUTHORITY_REQUIRED);
   }
   if (hasTables && !hasExactTables(database)) {
-    throw new Error("fresh exact-version authority required");
+    throw new Error(FRESH_EXACT_AUTHORITY_REQUIRED);
   }
   database.exec(CREATE_AUTHORITY_SCHEMA);
   database.exec(`PRAGMA user_version=${AUTHORITY_SCHEMA_VERSION}`);
