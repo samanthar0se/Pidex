@@ -1,32 +1,17 @@
 import type { ClientAdapters } from "./client-store.js";
+import { clientEnvironment } from "./environment-instance.js";
 
-function openDraftDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open("pidex-client", 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("drafts");
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function performDraftOperation<T>(
-  mode: IDBTransactionMode,
-  operation: (store: IDBObjectStore) => IDBRequest<T>,
-): Promise<T> {
-  const database = await openDraftDatabase();
-  return new Promise((resolve, reject) => {
-    const objectStore = database.transaction("drafts", mode).objectStore("drafts");
-    const request = operation(objectStore);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
+const observed = new Map<string, { revision: number; generation: number }>();
 
 export const draftAdapter: ClientAdapters["drafts"] = {
   async read(sessionId) {
-    return (await performDraftOperation("readonly", store => store.get(sessionId)) as string | undefined) ?? "";
+    const draft = await clientEnvironment.readDraft(sessionId);
+    observed.set(sessionId, draft);
+    return draft.text;
   },
   async write(sessionId, value) {
-    await performDraftOperation("readwrite", store => store.put(value, sessionId));
+    const basis = observed.get(sessionId) ?? await clientEnvironment.readDraft(sessionId);
+    const result = await clientEnvironment.saveDraft(sessionId, value, basis.revision, basis.generation);
+    if (result.kind === "saved") observed.set(sessionId, { revision: result.revision, generation: basis.generation });
   },
 };

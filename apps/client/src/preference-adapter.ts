@@ -1,10 +1,12 @@
 import type { ClientAdapters } from "./client-store.js";
+import { clientEnvironment } from "./environment-instance.js";
 
-const key = "pidex:expanded-projects";
+const key = "expanded-projects";
 export const preferenceAdapter: NonNullable<ClientAdapters["preferences"]> = {
   async readExpandedProjects() {
-    try { return JSON.parse(localStorage.getItem(key) ?? "[]") as string[]; }
-    catch { return []; }
+    return await clientEnvironment.readPreference<string[]>(key) ?? [];
   },
-  async writeExpandedProjects(projectIds) { localStorage.setItem(key, JSON.stringify(projectIds)); },
+  async writeExpandedProjects(projectIds) {
+    await clientEnvironment.writePreference(key, projectIds, await clientEnvironment.continuityGeneration());
+  },
 };

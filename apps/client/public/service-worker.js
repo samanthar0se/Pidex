@@ -10,12 +10,7 @@ self.addEventListener("install", event => event.waitUntil((async () => {
   const cache = await caches.open(SHELL_CACHE);
   try { await Promise.all(responses.map((response, index) => cache.put(urls[index], response))); }
   catch (error) { await caches.delete(SHELL_CACHE); throw error; }
-  // Deliberately no skipWaiting: activation requires an explicit saved-draft reload.
-})()));
-self.addEventListener("message", event => event.waitUntil((async () => {
-  if (event.data?.type !== "activate-shell" || !event.data?.draftsSaved) return;
-  const clients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  if (clients.length > 1) { event.source?.postMessage({ type: "update-refused-multiple-clients" }); return; }
+  // The complete generation can activate; each Client settles its own environment writes on controllerchange.
   await self.skipWaiting();
 })()));
 self.addEventListener("activate", event => event.waitUntil((async () => {
