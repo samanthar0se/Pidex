@@ -158,11 +158,12 @@ test("returns bounded Session windows, pages stable finalized history, and verif
       Array.from({ length: 110 }, (_, index) => index + 1),
     );
 
-    const unauthorizedPage = await getHostResource(
+    const anonymousInvalidPage = await getHostResource(
       host.origin,
       `/api/sessions/${sessionId}/timeline?cursor=x`,
     );
-    assert.equal(unauthorizedPage.status, 401);
+    assert.equal(anonymousInvalidPage.status, 409);
+    assert.equal(anonymousInvalidPage.headers["cache-control"], "no-store");
     const blobId = reconstructed.find(entry => entry.blobId)?.blobId;
     assert.ok(blobId);
     const blob = await getHostResource(
