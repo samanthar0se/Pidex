@@ -8,5 +8,6 @@
 ## Windows Host installation (issue 02, transport superseded by PRD #163)
 
 - A signed per-user release contains its runtime under an immutable release ID; a stable launcher is the only Task Scheduler logon target and acquires the per-user singleton lock before starting it without a console.
+- The launcher and its Pi workers retain the signed-in user's interactive logon session. They do not run as Windows services or in Session 0, because computer-use accessibility, capture, and input are scoped to the desktop session containing the target applications.
 - Packaged execution defaults to port 47831. Addresses are locations only and are not durable identity.
 - Launcher readiness is bounded at 15 seconds. Five delayed retries use 1/2/4/8/16 seconds, then publish a circuit-open cause to the local recovery surface. The same supervisor function is the explicit retry path; the daemon and LAN workers are never started while the circuit remains open.

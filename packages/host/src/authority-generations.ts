@@ -427,7 +427,7 @@ function newestGeneration(
 }
 
 function safeFileName(value: string): string {
-  return basename(value).replace(/[^a-zA-Z0-9._:-]/g, "_");
+  return basename(value).replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function isEnvelope(value: unknown): value is AuthorityGenerationEnvelope {

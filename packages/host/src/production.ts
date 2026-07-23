@@ -7,4 +7,4 @@ process.env.PIDEX_DATA_DIR ??= resolve("data");
 process.env.PIDEX_CLIENT_DIST = resolve("client");
 
 const { runHost } = await import("./run-host.js");
-await runHost("deterministic", 47831);
+await runHost("pi", 47831);

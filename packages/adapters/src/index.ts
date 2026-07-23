@@ -110,6 +110,10 @@ export interface PiAdapter {
   migrateArtifact?(
     request: PiArtifactMigrationRequest,
   ): Promise<PiArtifactMigrationResult>;
+  /** Releases one Session's Pi runtime after sleep or archival. */
+  closeSession?(sessionId: string): Promise<void>;
+  /** Releases all Pi runtimes during Host shutdown. */
+  close?(): Promise<void>;
 }
 
 /** A fresh contained bootstrap generation owning a verified child genesis. */

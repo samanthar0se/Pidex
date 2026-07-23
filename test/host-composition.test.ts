@@ -110,7 +110,7 @@ test("product composition cannot select deterministic manifests", async () => {
 });
 
 test("direct product startup cannot bypass the manifest-only composition root", async () => {
-  await assert.rejects(runHost("product" as never), /restricted to deterministic/);
+  await assert.rejects(runHost("product" as never), /unknown Host runtime/);
 });
 
 test("Session generation findings are independent and preserve observation history", () => {

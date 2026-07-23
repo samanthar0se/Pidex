@@ -238,13 +238,12 @@ export class PiSessionWorker {
       const capabilities = await PiSessionWorker.probe(this.#pi);
       const capabilityIds = new Set(capabilities.map(item => item.id));
       this.#activeCapabilityIds = capabilityIds;
-      const execute = this.#pi.execute;
-      if (!execute) {
+      if (!this.#pi.execute) {
         throw new WorkerReadinessError("pi-sdk-unavailable");
       }
 
       const executionResult = executionResultSchema.parse(
-        await execute({
+        await this.#pi.execute({
           sessionId: this.#sessionId,
           prompt,
           projectTrust: true,

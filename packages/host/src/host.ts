@@ -1057,6 +1057,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sessionJobs.delete(sessionId);
     workers.delete(sessionId);
     workerGenerations.delete(sessionId);
+    void adapters.pi.closeSession?.(sessionId);
   }
 
   function handleSessionMarkRead(
@@ -1994,6 +1995,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       }
       for (const job of sessionJobs.values()) job.close();
       sessionJobs.clear();
+      await adapters.pi.close?.();
       for (const webSocket of webSocketServer.clients) {
         webSocket.close();
       }
