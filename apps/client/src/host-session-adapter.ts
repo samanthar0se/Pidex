@@ -2,7 +2,7 @@ import type { ClientAdapters, CommandResult, DiscoveryProjection, InteractionFac
 import { randomUuid } from "./client-identifier.js";
 import { ControlConnection } from "./control-connection.js";
 
-const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.interaction.basic"];
+const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.input.image", "pi.interaction.basic"];
 const sockets = new Map<string, WebSocket>();
 const listeners = new Map<string, Set<(change: TimelineChange) => void>>();
 const runListeners = new Map<string, Set<(runs: RunFact[]) => void>>();
@@ -137,7 +137,14 @@ function createSession(command: Parameters<NonNullable<ClientAdapters["host"]["c
 
 function submitRun(command: Parameters<NonNullable<ClientAdapters["host"]["submitRun"]>>[0]): Promise<CommandResult> {
   return sendRunCommand(
-    { type: "run.submit", requiredCapability: "run.submit", ...command },
+    {
+      type: "run.submit",
+      requiredCapability: "run.submit",
+      ...command,
+      ...(command.images?.length
+        ? { requiredCapabilityBasis: [{ id: "pi.input.image", version: 1 }] }
+        : {}),
+    },
     "run-rejected",
   );
 }
@@ -178,7 +185,14 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   restoreSession,
   createSession,
   submitRun,
-  steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
+  steerRun: command => sendRunCommand({
+    type: "run.steer",
+    requiredCapability: "run.steer",
+    ...command,
+    ...(command.images?.length
+      ? { requiredCapabilityBasis: [{ id: "pi.input.image", version: 1 }] }
+      : {}),
+  }),
   stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
   actOnHeldRun: command => sendRunCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
   resolveInteraction: command => sendRunCommand(command),

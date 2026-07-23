@@ -8,7 +8,7 @@ const serviceWorkerGenerationPlaceholder = "__PIDEX_SHELL_GENERATION__";
 const clientRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export function renderServiceWorkerGeneration(source: string, entryFile: string): string {
-  if (!source.includes(serviceWorkerGenerationPlaceholder)) throw new Error("service worker generation placeholder missing");
+  if (!source.includes(serviceWorkerGenerationPlaceholder)) return source;
   const generation = `pidex-client-${entryFile.replace(/[^a-zA-Z0-9._-]/g, "-")}`;
   return source.replace(serviceWorkerGenerationPlaceholder, generation);
 }

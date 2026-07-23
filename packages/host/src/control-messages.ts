@@ -1,4 +1,5 @@
 import { sessionReadStateCapability } from "../../protocol/src/status.js";
+import { runInputImagesSchema } from "../../protocol/src/input-image.js";
 import type {
   SteerCommand,
   StopCommand,
@@ -98,6 +99,7 @@ export interface RunQueueActionMessage {
 export interface RunSteerMessage extends SteerCommand {
   type: "run.steer";
   requiredCapability: "run.steer";
+  requiredCapabilityBasis?: CapabilityBasisRequirement[];
 }
 
 export interface RunStopMessage extends StopCommand {
@@ -196,13 +198,16 @@ export function isRunSubmitMessage(value: unknown): value is RunSubmitMessage {
 
   const isSubmitType =
     value.type === "run.submit" || value.type === "run.follow-up";
+  const images = runInputImagesSchema.safeParse(value.images ?? []);
   return (
     isSubmitType &&
     typeof value.commandId === "string" &&
     typeof value.sessionId === "string" &&
     typeof value.prompt === "string" &&
-    value.prompt.trim().length > 0 &&
+    (value.prompt.trim().length > 0 ||
+      (images.success && images.data.length > 0)) &&
     value.prompt.length <= MAX_RUN_PROMPT_LENGTH &&
+    images.success &&
     value.requiredCapability === value.type &&
     (value.invokingView === undefined || isViewIdentity(value.invokingView)) &&
     (value.requiredCapabilityBasis === undefined ||
@@ -305,6 +310,7 @@ export function isRunSteerMessage(value: unknown): value is RunSteerMessage {
     return false;
   }
 
+  const images = runInputImagesSchema.safeParse(value.images ?? []);
   return (
     value.type === "run.steer" &&
     value.requiredCapability === "run.steer" &&
@@ -314,8 +320,13 @@ export function isRunSteerMessage(value: unknown): value is RunSteerMessage {
     typeof value.workerGeneration === "string" &&
     isPositiveSafeInteger(value.observedTimelineRevision) &&
     typeof value.text === "string" &&
-    value.text.trim().length > 0 &&
-    value.text.length <= MAX_RUN_PROMPT_LENGTH
+    (value.text.trim().length > 0 ||
+      (images.success && images.data.length > 0)) &&
+    value.text.length <= MAX_RUN_PROMPT_LENGTH &&
+    images.success &&
+    (value.requiredCapabilityBasis === undefined ||
+      (Array.isArray(value.requiredCapabilityBasis) &&
+        value.requiredCapabilityBasis.every(isCapabilityBasisRequirement)))
   );
 }
 

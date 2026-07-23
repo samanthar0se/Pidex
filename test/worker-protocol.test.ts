@@ -42,7 +42,15 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
         provider: "unchecked",
       },
     }),
-    createFrame("execute", 2, { correlationId: "run-1", prompt: "build" }),
+    createFrame("execute", 2, {
+      correlationId: "run-1",
+      prompt: "build",
+      images: [{
+        type: "image",
+        data: "aGVsbG8=",
+        mimeType: "image/png",
+      }],
+    }),
     createFrame("fact", 3, {
       correlationId: "run-1",
       fact: { type: "assistant.delta", text: "ok" },
@@ -53,6 +61,11 @@ test("worker IPC admits every bounded protocol family and rejects unknown data",
     createFrame("steer", 5, {
       correlationId: "run-1",
       text: "test too",
+      images: [{
+        type: "image",
+        data: "aGVsbG8=",
+        mimeType: "image/png",
+      }],
     }),
     createFrame("stop", 6, { correlationId: "run-1", reason: "user" }),
     createFrame("interaction.request", 7, {

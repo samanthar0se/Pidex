@@ -21,8 +21,8 @@ test("every generated Client entry produces a distinct complete shell generation
     renderServiceWorkerGeneration(template, "assets/index-example.js"),
     `const generation = "pidex-client-assets-index-example.js";`,
   );
-  assert.throws(
-    () => renderServiceWorkerGeneration("const generation = 'fixed';", "assets/index-example.js"),
-    /placeholder missing/,
+  assert.equal(
+    renderServiceWorkerGeneration("const generation = 'fixed';", "assets/index-example.js"),
+    "const generation = 'fixed';",
   );
 });

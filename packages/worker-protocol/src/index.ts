@@ -1,10 +1,11 @@
 import { z } from "zod";
 import { timingSafeEqual } from "node:crypto";
 import type { Duplex } from "node:stream";
+import { runInputImagesSchema } from "../../protocol/src/input-image.js";
 
 export const WORKER_PROTOCOL_GENERATION = 1 as const;
-export const MAX_WORKER_FRAME_BYTES = 256 * 1024;
-export const MAX_WORKER_QUEUE_BYTES = 4 * 1024 * 1024;
+export const MAX_WORKER_FRAME_BYTES = 12 * 1024 * 1024;
+export const MAX_WORKER_QUEUE_BYTES = 16 * 1024 * 1024;
 export const WORKER_HEARTBEAT_TIMEOUT_MS = 30_000;
 
 const identifierSchema = z.string().min(1).max(200);
@@ -129,6 +130,7 @@ export const workerFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("execute"),
     ...correlationFields,
     prompt: textSchema,
+    images: runInputImagesSchema.optional(),
     model: identifierSchema.optional(),
     mode: identifierSchema.optional(),
   }),
@@ -148,6 +150,7 @@ export const workerFrameSchema = z.discriminatedUnion("type", [
     type: z.literal("steer"),
     ...correlationFields,
     text: textSchema,
+    images: runInputImagesSchema.optional(),
   }),
   z.strictObject({
     ...envelopeFields,
