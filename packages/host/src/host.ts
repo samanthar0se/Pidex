@@ -30,6 +30,7 @@ import {
   type ServerMessage,
   type TerminalRun,
   type TimelineChange,
+  type TimelineEntry,
 } from "../../protocol/src/status.js";
 import {
   type CoverageDiagnostic,
@@ -1359,6 +1360,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     forceEnforcedRunIds.delete(runId);
     presentationContextByRun.delete(runId);
     invalidateWorkerGeneration(sessionId, workerGeneration);
+    publishSettlementTimeline(sessionId, cancelled.timeline);
     publishRunCompletion(sessionId, cancelled.run);
     clearForcedStopTimer(runId);
   }
@@ -1382,6 +1384,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           adapters.clock.now(),
         );
         presentationContextByRun.delete(run.runId);
+        publishSettlementTimeline(run.sessionId, failed.timeline);
         publishRunCompletion(run.sessionId, failed.run);
         store.holdQueued(run.sessionId);
         return;
@@ -1460,6 +1463,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         }
         forceEnforcedRunIds.delete(run.runId);
         presentationContextByRun.delete(run.runId);
+        publishSettlementTimeline(run.sessionId, completed.timeline);
         publishRunCompletion(run.sessionId, completed.run);
         const nextRun = store.dispatchNext(run.sessionId);
         if (nextRun) {
@@ -1487,6 +1491,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
               invalidateWorkerGeneration(run.sessionId, workerGeneration);
             }
             presentationContextByRun.delete(run.runId);
+            publishSettlementTimeline(run.sessionId, cancelled.timeline);
             publishRunCompletion(run.sessionId, cancelled.run);
             return;
           }
@@ -1506,6 +1511,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             adapters.clock.now(),
           );
           presentationContextByRun.delete(run.runId);
+          publishSettlementTimeline(run.sessionId, failed.timeline);
           publishRunCompletion(run.sessionId, failed.run);
           store.holdQueued(run.sessionId);
         } catch {
@@ -1546,7 +1552,24 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     presentationContextByRun.delete(run.runId);
+    publishSettlementTimeline(run.sessionId, interrupted.timeline);
     publishRunCompletion(run.sessionId, interrupted.run);
+  }
+
+  function publishSettlementTimeline(
+    sessionId: string,
+    timeline: readonly TimelineEntry[],
+  ): void {
+    const entry = timeline.at(-1);
+    const revision = store.projection().sessions.find(
+      session => session.sessionId === sessionId,
+    )?.timelineRevision;
+    if (!entry || revision === undefined) return;
+    publishTimelineChange(sessionId, {
+      baseRevision: revision - 1,
+      revision,
+      entry,
+    });
   }
 
   function publishRunCompletion(sessionId: string, run: TerminalRun): void {

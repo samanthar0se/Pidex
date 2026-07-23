@@ -2,5 +2,8 @@ node_modules/
 .env
 .pidex-data/
 .pidex-data-dev/
+.pidex-data-*/
 .pidex-source-instance.json
 build/
+playwright-report/
+test-results/

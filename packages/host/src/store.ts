@@ -2435,7 +2435,6 @@ export class AuthorityStore {
          (latest_unread_milestone_timeline_revision IS NOT NULL AND NOT EXISTS (
            SELECT 1 FROM timeline_entries te LEFT JOIN runs r ON r.run_id = te.run_id
            WHERE te.session_id = s.session_id
-             AND te.entry_order + 1 = s.latest_unread_milestone_timeline_revision
              AND (te.kind = 'interaction' OR r.state IN ('completed','failed','cancelled','interrupted'))
          )) LIMIT 1`,
     ).get();

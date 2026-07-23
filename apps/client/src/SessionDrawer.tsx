@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
-import { Archive, ChevronDown, ChevronRight, Menu, Plus, Search, X } from "lucide-react";
+import { Archive, ChevronDown, ChevronRight, Folder, Menu, MessageSquarePlus, Search, X } from "lucide-react";
 import { useStore } from "zustand";
 import type { ClientStore, SessionFact } from "./client-store.js";
 import { selectDiscoveryGroups } from "./client-store.js";
@@ -79,17 +79,33 @@ function handleNavigationKey(event: ReactKeyboardEvent<HTMLElement>) {
 export function SessionDrawer({ store, drawer }: { store: ClientStore; drawer: SessionDrawerController }) {
   const state = useStore(store);
   const groups = selectDiscoveryGroups(state);
+  const projectGroups = groups.filter(group => group.id !== "chats");
+  const chats = groups.find(group => group.id === "chats");
   const searching = state.searchQuery.trim() !== "";
   const chooseSession = (sessionId: string) => {
     void store.getState().openSession(sessionId, "push");
     drawer.close();
   };
+  const sessionRows = (sessions: readonly SessionFact[]) => sessions.map(session => {
+    const cues = describeSessionCues(session);
+    return <div className="session-row" key={session.sessionId}>
+      <button className={`session-link ${session.attention === "working" ? "session-working" : ""}`} aria-current={state.selectedSessionId === session.sessionId ? "page" : undefined}
+        aria-label={cues.accessibleName} onClick={() => chooseSession(session.sessionId)}>
+        <span className="session-name">{session.name}</span>
+        <span className="cues" aria-hidden="true">{session.attention !== "quiet" && <i className={`attention-dot ${session.attention ?? "quiet"}`}/>} {cues.unread && <i className="unread"/>}</span>
+      </button>
+      {state.discoveryMode === "archived" && <button className="restore" onClick={() => void store.getState().restoreSession(session.sessionId)}>Restore</button>}
+    </div>;
+  });
 
   return <>
     <button className="drawer-backdrop" aria-label="Close Session drawer" onClick={drawer.close}/>
     <aside aria-label="Session drawer" onKeyDown={event => { if (event.key === "Escape") drawer.close(); }}>
-      <div className="brand"><strong>PIDEX</strong><button ref={drawer.closeRef} className="close-drawer" aria-label="Close Session drawer" onClick={drawer.close}><X/></button></div>
-      <button className="new-session-button" onClick={() => { void store.getState().openNewSession(); drawer.close(); }}><Plus size={16}/> New Session</button>
+      <div className="brand"><strong>Pidex</strong><ChevronDown className="brand-chevron" aria-hidden="true"/><button ref={drawer.closeRef} className="close-drawer" aria-label="Close Session drawer" onClick={drawer.close}><X/></button></div>
+      <div className="rail-actions">
+        <button className="new-session-button" onClick={() => { void store.getState().openNewSession(); drawer.close(); }}><MessageSquarePlus size={16}/> <strong>New Session</strong></button>
+        <button className="archived" aria-pressed={state.discoveryMode === "archived"} onClick={() => store.getState().setDiscoveryMode(state.discoveryMode === "archived" ? "available" : "archived")}><Archive size={16}/>{state.discoveryMode === "archived" ? "Back to Sessions" : "Archived"}</button>
+      </div>
       <label className="search"><Search size={15}/><input ref={drawer.searchRef} aria-label="Search Sessions" placeholder="Search Sessions" value={state.searchQuery} onChange={event => store.getState().setSearchQuery(event.target.value)} onKeyDown={event => {
         if (event.key !== "Escape") return;
         event.stopPropagation();
@@ -97,27 +113,20 @@ export function SessionDrawer({ store, drawer }: { store: ClientStore; drawer: S
         else document.querySelector<HTMLButtonElement>('.session-link[aria-current="page"]')?.focus();
       }}/></label>
       <nav aria-label={state.discoveryMode === "archived" ? "Archived Sessions" : "Sessions"} onKeyDown={handleNavigationKey}>
-        {groups.map(group => {
+        {projectGroups.length > 0 && <p className="nav-section-label">Projects</p>}
+        {projectGroups.map(group => {
           const expanded = searching || group.id === "chats" || state.expandedProjectIds.includes(group.id);
           return <section className="discovery-group" key={group.id}>
             <button className="group-heading" aria-expanded={expanded} onClick={() => group.id !== "chats" && void store.getState().toggleProject(group.id)}>
-              {group.id !== "chats" && (expanded ? <ChevronDown/> : <ChevronRight/>)}<span>{group.name}</span>
+              {expanded ? <ChevronDown/> : <ChevronRight/>}<Folder className="group-folder"/><span>{group.name}</span>
             </button>
-            {expanded && group.sessions.map(session => {
-              const cues = describeSessionCues(session);
-              return <div className="session-row" key={session.sessionId}>
-                <button className="session-link" aria-current={state.selectedSessionId === session.sessionId ? "page" : undefined}
-                  aria-label={cues.accessibleName} onClick={() => chooseSession(session.sessionId)}>
-                  <span className="session-name">{session.name}</span><span className="cues" aria-hidden="true">{cues.unread && <i className="unread"/>}{cues.attention}</span>
-                </button>
-                {state.discoveryMode === "archived" && <button className="restore" onClick={() => void store.getState().restoreSession(session.sessionId)}>Restore</button>}
-              </div>;
-            })}
+            {expanded && sessionRows(group.sessions)}
           </section>;
         })}
+        {chats && <section className="discovery-group chats-group"><p className="nav-section-label">Chats</p>{sessionRows(chats.sessions)}</section>}
         {groups.length === 0 && <p className="no-results">No matching Sessions</p>}
       </nav>
-      <button className="archived" aria-pressed={state.discoveryMode === "archived"} onClick={() => store.getState().setDiscoveryMode(state.discoveryMode === "archived" ? "available" : "archived")}><Archive size={16}/>{state.discoveryMode === "archived" ? "Back to Sessions" : "Archived"}</button>
+      <div className="rail-footer"><div className="host-state"><i/><span><strong>{state.authority.status === "current" ? "Host connected" : state.authority.status}</strong><small>{state.authority.status === "current" ? "This Anonymous Client is current" : "Authoritative controls unavailable"}</small></span></div></div>
     </aside>
   </>;
 }

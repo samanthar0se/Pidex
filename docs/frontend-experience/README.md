@@ -6,6 +6,10 @@ This package is the normative implementation contract for Pidex's core daily cod
 
 The accepted issue resolutions and immutable prototypes linked from the evidence matrix are source context, not competing specifications. `.scratch/pidex-product-and-architecture/SPEC.md`, prototype branches, and issue comments do not override this package. Resolve any conflict here before implementation proceeds.
 
+The subordinate [Chat Presentation Profile](chat-presentation.md) defines the detailed turn, activity, final-response, motion, viewport, and assistant-ui composition required by `FX-TL-*`, `FX-QUAL-*`, and `FX-ARCH-03`. It elaborates this contract and cannot override its authority or privacy rules.
+
+The standalone [Chat Interface Anatomy diagram](chat-interface-anatomy.html) is an interactive terminology reference for discussing that profile. It is explanatory only and does not add requirements or authority.
+
 ## Destination and scope
 
 Pidex will replace its current PWA with a responsive, Codex-like Client for the core loop: shell, Session discovery, New Session, Session Timeline, Composer and Run controls, open Interactions, responsive mobile behavior, and essential connection state.

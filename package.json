@@ -13,7 +13,8 @@
     "sandcastle": "tsx .sandcastle/main.mts",
     "status": "tsx packages/cli/src/main.ts status",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/**/*.test.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "test:visual": "playwright test --config test/visual/playwright.config.ts",
     "build:client": "vite build apps/client --config apps/client/vite.config.ts",
     "build:unpacked": "npm run build:client && node scripts/build-unpacked.mjs",
     "check:anonymous-runtime": "node scripts/check-anonymous-runtime.mjs",
@@ -22,6 +23,7 @@
   },
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.12.0",
+    "@playwright/test": "^1.61.1",
     "@types/jsdom": "^28.0.3",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",

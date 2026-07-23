@@ -1,0 +1,1662 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Pidex Chat Interface Anatomy</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --page: #0b0d0e;
+      --rail: #11181c;
+      --surface: #17191a;
+      --surface-2: #1f2224;
+      --surface-3: #292d30;
+      --line: #30363a;
+      --line-strong: #4a5359;
+      --text: #f1f3f4;
+      --muted: #a4aaae;
+      --faint: #737b80;
+      --green: #56c58a;
+      --green-dim: #193d2c;
+      --amber: #efb356;
+      --amber-dim: #443219;
+      --blue: #79aef2;
+      --blue-dim: #1d3048;
+      --violet: #bb9cf5;
+      --violet-dim: #302348;
+      --red: #ff7c73;
+      --red-dim: #431f1d;
+      --cyan: #64ced5;
+      --shadow: 0 22px 70px #0008;
+      --radius: 14px;
+      --fast: 120ms;
+      --basic: 160ms;
+      --disclosure: 200ms;
+      --ease: cubic-bezier(.4, 0, .2, 1);
+      --enter: cubic-bezier(.19, 1, .22, 1);
+      --snappy: cubic-bezier(.23, 1, .32, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; min-width: 320px; background: radial-gradient(circle at 65% -20%, #1a2429 0, transparent 38%), var(--page); color: var(--text); }
+    button, input, select { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    a { color: #a9caff; }
+    code, kbd { font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; }
+    kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 5px; background: #242729; color: #dfe2e4; font-size: 11px; }
+    :focus-visible { outline: 2px solid #8ebeff; outline-offset: 3px; }
+    [hidden] { display: none !important; }
+    .skip-link { position: fixed; z-index: 100; top: 8px; left: 8px; padding: 8px 11px; border-radius: 8px; background: #fff; color: #111; transform: translateY(-150%); }
+    .skip-link:focus { transform: none; }
+    .eyebrow { color: var(--green); font-size: 11px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    .muted { color: var(--muted); }
+    .faint { color: var(--faint); }
+    .mono { font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace; }
+    .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+    .page-header { max-width: 1640px; margin: auto; padding: 30px clamp(18px, 4vw, 64px) 22px; }
+    .header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 30px; }
+    .page-header h1 { max-width: 900px; margin: 8px 0 10px; font-size: clamp(30px, 5vw, 58px); line-height: 1.02; letter-spacing: -.045em; }
+    .page-header p { max-width: 820px; margin: 0; color: var(--muted); font-size: clamp(14px, 1.5vw, 18px); }
+    .doc-mark { flex: 0 0 auto; display: grid; place-items: center; width: 62px; height: 62px; border: 1px solid #3d474d; border-radius: 20px; background: linear-gradient(145deg, #222a2f, #121517); color: var(--green); box-shadow: var(--shadow); font: 800 20px/1 "Cascadia Mono", monospace; transform: rotate(-3deg); }
+    .purpose-note { display: inline-flex; align-items: center; gap: 8px; margin-top: 18px; padding: 7px 10px; border: 1px solid #304239; border-radius: 999px; background: #15231c; color: #bde8ce; font-size: 12px; }
+    .purpose-note::before { width: 7px; height: 7px; border-radius: 50%; background: var(--green); content: ""; }
+
+    .control-deck { position: sticky; z-index: 50; top: 0; border-block: 1px solid #273036; background: #0d1113ee; backdrop-filter: blur(16px); }
+    .control-inner { max-width: 1640px; margin: auto; display: flex; align-items: center; gap: 18px; padding: 10px clamp(18px, 4vw, 64px); overflow-x: auto; }
+    .control-group { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+    .control-label { margin-right: 3px; color: var(--faint); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .segmented { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: #151819; }
+    .segmented button, .plain-button { min-height: 32px; padding: 5px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .segmented button:hover, .plain-button:hover { color: var(--text); background: #24282a; }
+    .segmented button[aria-pressed=true] { background: #30363a; color: #fff; box-shadow: 0 1px 5px #0008; }
+    .plain-button { border: 1px solid var(--line); }
+    .plain-button.primary { border-color: #39634c; background: #1c3a2a; color: #d7f4e2; }
+    .spacer { flex: 1 1 auto; }
+
+    main { max-width: 1640px; margin: auto; padding: 28px clamp(18px, 4vw, 64px) 90px; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 16px; }
+    .section-head h2 { margin: 4px 0 0; font-size: clamp(22px, 3vw, 34px); letter-spacing: -.03em; }
+    .section-head p { max-width: 650px; margin: 0; color: var(--muted); }
+
+    .explainer-grid { display: grid; grid-template-columns: 210px minmax(560px, 1fr) 340px; align-items: start; gap: 16px; }
+    .panel { border: 1px solid var(--line); border-radius: var(--radius); background: #131617; box-shadow: 0 14px 35px #0004; }
+    .panel-heading { padding: 14px 14px 10px; border-bottom: 1px solid #262c2f; }
+    .panel-heading strong { display: block; font-size: 13px; }
+    .panel-heading span { display: block; margin-top: 3px; color: var(--faint); font-size: 11px; }
+
+    .layer-panel { position: sticky; top: 70px; overflow: hidden; }
+    .layer-list { display: grid; gap: 5px; padding: 10px; }
+    .layer-button { width: 100%; display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 8px; padding: 8px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted); text-align: left; }
+    .layer-button:hover { border-color: var(--line); background: #1b1f21; color: var(--text); }
+    .layer-button[aria-pressed=true] { border-color: #455057; background: #24292c; color: #fff; }
+    .layer-swatch { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px; color: #fff; font-size: 10px; font-weight: 800; }
+    .layer-button[data-layer=anatomy] .layer-swatch { background: var(--blue-dim); color: var(--blue); }
+    .layer-button[data-layer=authority] .layer-swatch { background: var(--violet-dim); color: var(--violet); }
+    .layer-button[data-layer=motion] .layer-swatch { background: var(--amber-dim); color: var(--amber); }
+    .layer-button[data-layer=accessibility] .layer-swatch { background: var(--green-dim); color: var(--green); }
+    .layer-button[data-layer=feedback] .layer-swatch { background: #353026; color: #f2d89e; }
+    .layer-copy b { display: block; font-size: 12px; font-weight: 650; }
+    .layer-copy small { display: block; color: var(--faint); font-size: 10px; }
+    .keyboard-card { margin: 4px 10px 12px; padding: 10px; border: 1px solid #2c3235; border-radius: 9px; background: #0f1213; color: var(--faint); font-size: 10px; }
+    .keyboard-card div { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; }
+
+    .diagram-panel { min-width: 0; overflow: hidden; background: #0e1112; }
+    .diagram-toolbar { min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--line); background: #171a1c; }
+    .traffic { display: flex; gap: 6px; }
+    .traffic i { width: 9px; height: 9px; border-radius: 50%; background: #3f464b; }
+    .diagram-title { margin-left: 4px; color: var(--muted); font-size: 11px; }
+    .scenario-readout { margin-left: auto; padding: 4px 8px; border: 1px solid #384148; border-radius: 999px; background: #202528; color: #cbd1d5; font-size: 10px; }
+    .device-stage { min-height: 720px; display: grid; place-items: center; padding: 28px; background-image: linear-gradient(#20242655 1px, transparent 1px), linear-gradient(90deg, #20242655 1px, transparent 1px); background-size: 24px 24px; }
+    .client-frame { position: relative; width: 100%; max-width: 980px; height: 660px; display: grid; grid-template-columns: 190px minmax(0, 1fr); overflow: hidden; border: 1px solid #3b4246; border-radius: 16px; background: #171717; box-shadow: 0 26px 80px #000b; transition: width 260ms var(--snappy), height 260ms var(--snappy); }
+    .device-stage[data-device=mobile] .client-frame { width: 390px; height: 700px; grid-template-columns: 1fr; border-radius: 24px; }
+    .device-stage[data-device=mobile] .mock-rail { display: none; }
+    .device-stage[data-device=mobile] .mock-main { border-radius: 0; }
+    .device-stage[data-device=mobile] .mobile-menu { display: grid; }
+    .device-stage[data-device=mobile] .mock-thread { padding-inline: 18px; }
+    .device-stage[data-device=mobile] .mock-prompt { max-width: 86%; }
+
+    .mock-rail { min-width: 0; display: flex; flex-direction: column; padding: 10px 8px; background: #162027; }
+    .mock-brand { height: 38px; display: flex; align-items: center; gap: 8px; padding: 0 7px; font-size: 13px; font-weight: 700; }
+    .mock-new { height: 31px; margin: 4px 0 9px; padding: 0 8px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 7px; background: transparent; color: #e8ebed; font-size: 11px; }
+    .mock-new:hover { background: #27333a; }
+    .mock-nav-label { margin: 10px 8px 5px; color: #7f8990; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+    .mock-project { padding: 6px 8px; color: #dce0e2; font-size: 10px; }
+    .mock-session { display: flex; align-items: center; gap: 7px; min-height: 29px; padding: 5px 8px 5px 17px; border-radius: 7px; color: #aeb5b9; font-size: 10px; }
+    .mock-session.selected { background: #334047; color: #fff; }
+    .mock-session i { width: 5px; height: 5px; margin-left: auto; border-radius: 50%; background: var(--green); }
+    .mock-host { margin-top: auto; padding: 9px 7px 2px; border-top: 1px solid #2c373d; color: #96a0a6; font-size: 9px; }
+    .mock-host b { display: block; color: #d5dadc; font-weight: 600; }
+
+    .mock-main { min-width: 0; position: relative; display: grid; grid-template-rows: 48px minmax(0, 1fr); overflow: hidden; background: #171717; }
+    .mock-header { display: flex; align-items: center; gap: 8px; padding: 0 13px; border-bottom: 1px solid #2d3133; }
+    .mobile-menu { width: 28px; height: 28px; display: none; place-items: center; border: 1px solid #33383b; border-radius: 7px; background: #202223; }
+    .mock-header-title { min-width: 0; flex: 1; }
+    .mock-header-title b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+    .mock-header-title small { color: #7f8589; font-size: 8px; }
+    .mock-stop { padding: 5px 8px; border: 1px solid #3a3e40; border-radius: 7px; background: #222; color: #d6d8da; font-size: 9px; }
+    .mock-thread { min-height: 0; overflow: auto; padding: 32px max(26px, calc((100% - 570px) / 2)) 145px; scroll-behavior: smooth; }
+    .mock-turn { position: relative; display: flex; flex-direction: column; gap: 15px; margin-bottom: 32px; }
+    .mock-prompt { width: fit-content; max-width: 77%; align-self: flex-end; padding: 9px 11px; border-radius: 14px; background: #292929; color: #f0f0f0; font-size: 10px; line-height: 1.45; }
+    .mock-work { position: relative; color: #a7aaac; font-size: 9px; }
+    .mock-work-trigger { max-width: 100%; display: flex; align-items: center; gap: 6px; padding: 2px 0; border: 0; background: transparent; color: inherit; text-align: left; }
+    .mock-work-trigger b { color: #c3c6c8; font-size: 9px; }
+    .mock-work-trigger span { min-width: 0; overflow: hidden; color: #777d80; text-overflow: ellipsis; white-space: nowrap; }
+    .mock-chevron { transition: transform var(--disclosure) var(--snappy); }
+    .mock-work[data-expanded=true] .mock-chevron { transform: rotate(90deg); }
+    .mock-work-panel { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--disclosure) var(--snappy), opacity var(--disclosure) var(--ease); }
+    .mock-work[data-expanded=true] .mock-work-panel { grid-template-rows: 1fr; opacity: 1; }
+    .mock-work-clip { min-height: 0; overflow: hidden; }
+    .mock-activity-list { position: relative; display: grid; gap: 6px; margin: 7px 0 0; padding-left: 1px; }
+    .mock-activity-list::before { position: absolute; top: 8px; bottom: 8px; left: 7px; width: 1px; background: #34393c; content: ""; }
+    .mock-activity { position: relative; display: grid; grid-template-columns: 15px minmax(0, 1fr); align-items: start; gap: 6px; }
+    .activity-dot { z-index: 1; width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid #3a4145; border-radius: 50%; background: #171717; color: #8f969a; font-size: 7px; }
+    .mock-activity[data-running=true] .activity-dot { border-color: #3c7658; color: var(--green); box-shadow: 0 0 0 3px #56c58a12; }
+    .activity-text { min-width: 0; padding-top: 1px; }
+    .activity-text b { display: block; overflow: hidden; color: #b9bdc0; font-size: 8.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+    .activity-text small { display: block; margin-top: 2px; color: #72787c; font: 7.5px/1.4 "Cascadia Mono", monospace; }
+    .mock-response { position: relative; color: #e9eaeb; font-size: 10px; line-height: 1.65; animation: response-enter 180ms var(--enter) both; }
+    .mock-response p { margin: 0 0 8px; }
+    .mock-response-actions { height: 23px; display: flex; align-items: center; margin-top: 5px; opacity: .75; }
+    .mock-response-actions button { width: 23px; height: 23px; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: #8d9295; font-size: 10px; }
+    .mock-abnormal { position: relative; padding: 9px 10px; border-left: 3px solid var(--red); border-radius: 4px 8px 8px 4px; background: var(--red-dim); color: #ffd5d2; font-size: 9px; }
+    .mock-abnormal b { display: block; margin-bottom: 3px; color: var(--red); font-size: 8px; text-transform: uppercase; }
+    .mock-jump { position: absolute; z-index: 4; right: 18px; bottom: 124px; padding: 6px 9px; border: 1px solid #50575b; border-radius: 999px; background: #292b2c; color: #eee; font-size: 8px; box-shadow: 0 8px 22px #0008; }
+    .mock-dock { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; padding: 38px max(20px, calc((100% - 570px) / 2)) 12px; background: linear-gradient(transparent, #171717 40%); }
+    .mock-composer { position: relative; min-height: 73px; overflow: hidden; border: 1px solid #3b3e40; border-radius: 15px; background: #292929; box-shadow: 0 10px 25px #0006; }
+    .mock-draft { min-height: 42px; padding: 11px 12px 4px; color: #85898c; font-size: 9px; }
+    .mock-composer-bar { display: flex; align-items: center; gap: 6px; padding: 3px 7px 7px 11px; color: #8f9497; font-size: 8px; }
+    .mock-send { width: 25px; height: 25px; display: grid; place-items: center; margin-left: auto; border: 0; border-radius: 50%; background: #eee; color: #151515; font-size: 11px; }
+    .mock-interaction { position: relative; overflow: hidden; border: 1px solid #5b5034; border-radius: 14px; background: #232220; }
+    .mock-interaction-head { display: flex; padding: 7px 10px; background: #302b1e; color: #e7c778; font-size: 8px; }
+    .mock-interaction-head span { margin-left: auto; }
+    .mock-interaction p { margin: 0; padding: 10px; color: #eee; font-size: 9px; font-weight: 600; }
+    .mock-options { display: flex; gap: 6px; padding: 0 10px 10px; }
+    .mock-options button { flex: 1; padding: 6px; border: 1px solid #47443a; border-radius: 7px; background: #292929; font-size: 8px; }
+
+    .hotspot { --spot: var(--blue); position: absolute; z-index: 12; width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 2px solid #101213; border-radius: 50%; background: var(--spot); color: #0b1114; box-shadow: 0 0 0 3px color-mix(in srgb, var(--spot) 25%, transparent), 0 4px 12px #0008; font-size: 9px; font-weight: 850; transition: transform var(--fast) var(--ease), opacity var(--fast) var(--ease); }
+    .hotspot:hover, .hotspot:focus-visible, .hotspot[aria-pressed=true] { transform: scale(1.18); }
+    .hotspot[data-layer=authority] { --spot: var(--violet); }
+    .hotspot[data-layer=motion] { --spot: var(--amber); }
+    .hotspot[data-layer=accessibility] { --spot: var(--green); }
+    .hotspot.filtered { opacity: .14; pointer-events: none; }
+    .hotspot.active { box-shadow: 0 0 0 5px color-mix(in srgb, var(--spot) 32%, transparent), 0 5px 16px #000b; }
+    .spot-rail { top: 64px; left: 158px; }
+    .spot-header { top: 12px; left: 52%; }
+    .spot-thread { top: 72px; left: 39%; }
+    .spot-turn { top: -9px; left: -12px; }
+    .spot-prompt { top: -8px; right: -9px; }
+    .spot-work { top: -8px; right: 1px; }
+    .spot-activity { top: 16px; right: -8px; }
+    .spot-response { top: -8px; right: -8px; }
+    .spot-actions { right: -9px; bottom: -8px; }
+    .spot-abnormal { top: -8px; right: -8px; }
+    .spot-tail { right: 4px; bottom: 122px; }
+    .spot-composer { top: -9px; left: -9px; }
+    .spot-interaction { top: -9px; left: -9px; }
+    .spot-run { top: 9px; right: 72px; }
+    .spot-entry { top: 12px; left: -11px; }
+    .spot-disclosure-motion { left: 44%; bottom: -12px; }
+
+    @keyframes response-enter { from { opacity: 0; transform: translateY(5px); } }
+    @keyframes working-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+    .is-working .mock-work-trigger b { color: transparent; background: linear-gradient(90deg, #81878b 15%, #f1f2f2 43%, #81878b 70%); background-size: 260% 100%; background-clip: text; animation: working-shimmer 2.2s ease-in-out infinite; }
+
+    .inspector-panel { position: sticky; top: 70px; min-height: 620px; overflow: hidden; }
+    .inspector-empty { padding: 28px 20px; color: var(--faint); text-align: center; }
+    .inspector-empty .target { width: 54px; height: 54px; display: grid; place-items: center; margin: 0 auto 14px; border: 1px dashed #4a5358; border-radius: 50%; color: var(--blue); font-size: 20px; }
+    .inspector-content { padding: 16px; }
+    .term-topline { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .term-layer { padding: 3px 6px; border-radius: 5px; background: var(--blue-dim); color: var(--blue); font-size: 9px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+    .term-layer[data-layer=authority] { background: var(--violet-dim); color: var(--violet); }
+    .term-layer[data-layer=motion] { background: var(--amber-dim); color: var(--amber); }
+    .term-layer[data-layer=accessibility] { background: var(--green-dim); color: var(--green); }
+    .term-id { margin-left: auto; color: var(--faint); font: 9px "Cascadia Mono", monospace; }
+    .inspector-content h3 { margin: 0 0 5px; font-size: 24px; line-height: 1.1; letter-spacing: -.025em; }
+    .term-kicker { margin: 0 0 15px; color: #c1c6c9; font-size: 12px; }
+    .definition { margin: 0 0 16px; color: var(--muted); }
+    .inspector-block { margin-top: 12px; padding: 11px; border: 1px solid #2e3437; border-radius: 9px; background: #0f1213; }
+    .inspector-block h4 { margin: 0 0 6px; color: #858d92; font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+    .inspector-block p { margin: 0; color: #d4d7d9; font-size: 11px; }
+    .say-this { border-color: #315440; background: #13251b; }
+    .avoid-this { border-color: #543331; background: #271615; }
+    .term-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+    .term-chip { padding: 4px 6px; border: 1px solid #343a3e; border-radius: 6px; background: #1b1e20; color: #b8bdc0; font-size: 9px; }
+
+    .state-section, .language-section, .flow-section { margin-top: 54px; }
+    .state-map { overflow: hidden; }
+    .state-steps { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); overflow-x: auto; }
+    .state-step { position: relative; min-height: 150px; padding: 16px 14px; border: 0; border-right: 1px solid var(--line); background: #141718; color: var(--muted); text-align: left; }
+    .state-step:last-child { border-right: 0; }
+    .state-step:hover { background: #1b1f21; }
+    .state-step[aria-pressed=true] { background: linear-gradient(180deg, #20352a, #171c19); color: #fff; }
+    .state-step[aria-pressed=true]::after { position: absolute; right: 14px; bottom: 0; left: 14px; height: 3px; border-radius: 3px 3px 0 0; background: var(--green); content: ""; }
+    .step-number { display: grid; place-items: center; width: 23px; height: 23px; margin-bottom: 13px; border: 1px solid #465057; border-radius: 50%; color: #c7cccf; font-size: 9px; }
+    .state-step b { display: block; margin-bottom: 4px; color: inherit; font-size: 12px; }
+    .state-step small { display: block; color: var(--faint); font-size: 10px; line-height: 1.45; }
+    .state-detail { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 1px; border-top: 1px solid var(--line); background: var(--line); }
+    .state-detail > div { padding: 15px; background: #111415; }
+    .state-detail h3 { margin: 0 0 7px; font-size: 11px; }
+    .state-detail p { margin: 0; color: var(--muted); font-size: 11px; }
+
+    .language-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(340px, .85fr); gap: 16px; }
+    .glossary-panel { overflow: hidden; }
+    .glossary-tools { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+    .glossary-tools input, .glossary-tools select, .builder-grid select { min-height: 36px; border: 1px solid #3b4347; border-radius: 8px; background: #1d2022; color: #e9ebec; }
+    .glossary-tools input { min-width: 0; flex: 1; padding: 7px 10px; }
+    .glossary-tools select { padding: 6px 9px; }
+    .glossary-list { max-height: 570px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; overflow: auto; background: #292f32; }
+    .glossary-card { min-height: 150px; padding: 14px; border: 0; background: #121516; color: inherit; text-align: left; }
+    .glossary-card:hover { background: #1a1e20; }
+    .glossary-card .card-layer { color: var(--blue); font-size: 8px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .glossary-card[data-layer=authority] .card-layer { color: var(--violet); }
+    .glossary-card[data-layer=motion] .card-layer { color: var(--amber); }
+    .glossary-card[data-layer=accessibility] .card-layer { color: var(--green); }
+    .glossary-card b { display: block; margin: 4px 0 5px; color: #f1f2f2; font-size: 13px; }
+    .glossary-card p { margin: 0; color: var(--muted); font-size: 10px; }
+    .glossary-card code { display: block; margin-top: 8px; color: #757e83; font-size: 8px; }
+
+    .builder-panel { overflow: hidden; }
+    .builder-body { padding: 14px; }
+    .builder-grid { display: grid; gap: 10px; }
+    .builder-grid label { display: grid; gap: 4px; color: #8b9296; font-size: 9px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    .builder-grid select { width: 100%; padding: 6px 9px; color: #e6e8e9; font-size: 11px; text-transform: none; letter-spacing: normal; }
+    .feedback-output { margin-top: 14px; padding: 14px; border: 1px solid #385445; border-radius: 10px; background: #14231b; }
+    .feedback-output small { color: #7da88d; font-size: 9px; text-transform: uppercase; }
+    .feedback-output p { margin: 7px 0 0; color: #e2f2e8; font-size: 13px; }
+    .copy-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+    .copy-row button { padding: 6px 9px; border: 1px solid #41644f; border-radius: 7px; background: #1d3929; color: #d8efdf; font-size: 10px; }
+    .copy-status { color: #87aa94; font-size: 9px; }
+    .confusion-table { width: 100%; margin-top: 14px; border-collapse: collapse; font-size: 10px; }
+    .confusion-table th, .confusion-table td { padding: 8px; border: 1px solid #303638; vertical-align: top; text-align: left; }
+    .confusion-table th { background: #1c2022; color: #cbd0d2; }
+    .confusion-table td { color: var(--muted); }
+    .confusion-table strong { color: #eee; }
+
+    .flow-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .flow-card { position: relative; min-height: 210px; padding: 15px; overflow: hidden; }
+    .flow-card::before { position: absolute; top: 0; right: 0; left: 0; height: 3px; background: var(--blue); content: ""; }
+    .flow-card.authority::before { background: var(--violet); }
+    .flow-card.motion::before { background: var(--amber); }
+    .flow-card.a11y::before { background: var(--green); }
+    .flow-card h3 { margin: 3px 0 7px; font-size: 14px; }
+    .flow-card p { margin: 0 0 12px; color: var(--muted); font-size: 10px; }
+    .flow-list { display: grid; gap: 6px; }
+    .flow-item { display: flex; align-items: flex-start; gap: 7px; padding: 7px; border-radius: 7px; background: #0f1213; color: #b8bdc0; font-size: 9px; }
+    .flow-item i { flex: 0 0 auto; width: 17px; height: 17px; display: grid; place-items: center; border-radius: 5px; background: #252a2d; color: #dfe2e3; font-style: normal; font-size: 8px; }
+
+    .footer-note { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; gap: 20px; color: var(--faint); font-size: 10px; }
+    .footer-note p { max-width: 800px; margin: 0; }
+
+    @media (max-width: 1280px) {
+      .explainer-grid { grid-template-columns: 180px minmax(520px, 1fr) 300px; }
+      .device-stage { padding: 18px; }
+      .client-frame { grid-template-columns: 165px minmax(0, 1fr); }
+      .spot-rail { left: 136px; }
+    }
+
+    @media (max-width: 1080px) {
+      .explainer-grid { grid-template-columns: 170px minmax(0, 1fr); }
+      .inspector-panel { position: static; grid-column: 1 / -1; min-height: 0; }
+      .inspector-empty { padding: 18px; }
+      .inspector-content { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .term-topline, .inspector-content h3, .term-kicker, .definition { grid-column: 1 / -1; }
+      .language-grid { grid-template-columns: 1fr; }
+      .flow-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 760px) {
+      .page-header { padding-top: 22px; }
+      .header-row { position: relative; display: block; }
+      .page-header h1 { padding-right: 62px; }
+      .doc-mark { position: absolute; top: 0; right: 0; width: 48px; height: 48px; border-radius: 15px; }
+      .purpose-note { max-width: 100%; white-space: normal; }
+      .section-head { display: block; }
+      .section-head p { margin-top: 10px; }
+      .control-inner { flex-wrap: wrap; gap: 7px; overflow: visible; padding-inline: 12px; }
+      .control-inner > .control-group:first-child { width: 100%; overflow-x: auto; }
+      .control-inner > .control-group:first-child .segmented { flex: 0 0 auto; }
+      .control-inner .spacer { display: none; }
+      #clear-selection { margin-left: auto; }
+      .control-label { display: none; }
+      .explainer-grid { display: block; }
+      .layer-panel { position: static; margin-bottom: 12px; }
+      .layer-list { grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: visible; }
+      .layer-button:last-child { grid-column: 1 / -1; }
+      .keyboard-card { display: none; }
+      .diagram-panel { margin-bottom: 12px; }
+      .device-stage { min-height: 650px; padding: 10px; overflow: auto; place-items: start center; }
+      .client-frame { width: 760px; flex: 0 0 auto; }
+      .state-detail { grid-template-columns: 1fr; }
+      .glossary-list { grid-template-columns: 1fr; }
+      .flow-grid { grid-template-columns: 1fr; }
+      .footer-note { display: block; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0s !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#diagram">Skip to diagram</a>
+
+  <header class="page-header">
+    <div class="header-row">
+      <div>
+        <div class="eyebrow">Interactive vocabulary diagram</div>
+        <h1>The anatomy of a Pidex chat interface</h1>
+        <p>Click the numbered callouts, change the turn phase, and switch analytical lenses. The goal is precise feedback: naming the exact surface, state, behavior, and authority boundary you mean.</p>
+        <div class="purpose-note">Documentation reference · not a live Host View</div>
+      </div>
+      <div class="doc-mark" aria-hidden="true">P/</div>
+    </div>
+  </header>
+
+  <nav class="control-deck" aria-label="Diagram controls">
+    <div class="control-inner">
+      <div class="control-group">
+        <span class="control-label">Turn phase</span>
+        <div class="segmented" id="scenario-controls">
+          <button type="button" data-scenario="working" aria-pressed="true">Working</button>
+          <button type="button" data-scenario="responding" aria-pressed="false">Responding</button>
+          <button type="button" data-scenario="complete" aria-pressed="false">Complete</button>
+          <button type="button" data-scenario="abnormal" aria-pressed="false">Abnormal</button>
+          <button type="button" data-scenario="interaction" aria-pressed="false">Interaction</button>
+          <button type="button" data-scenario="detached" aria-pressed="false">Detached</button>
+        </div>
+      </div>
+      <div class="control-group">
+        <span class="control-label">Viewport</span>
+        <div class="segmented" id="device-controls">
+          <button type="button" data-device="desktop" aria-pressed="true">Desktop</button>
+          <button type="button" data-device="mobile" aria-pressed="false">Mobile</button>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <button class="plain-button" type="button" id="clear-selection">Clear callout <kbd>Esc</kbd></button>
+      <button class="plain-button primary" type="button" id="play-turn">Play turn</button>
+    </div>
+  </nav>
+
+  <main>
+    <section id="diagram" aria-labelledby="diagram-title">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">01 · Interface map</div>
+          <h2 id="diagram-title">Click through the anatomy</h2>
+        </div>
+        <p>The mock interface is a diagram, not a screenshot. Every callout names a stable concept you can use in design, product, accessibility, and implementation feedback.</p>
+      </div>
+
+      <div class="explainer-grid">
+        <aside class="panel layer-panel" aria-label="Analytical lenses">
+          <div class="panel-heading"><strong>Analytical lens</strong><span>Filter callouts by the kind of feedback you want to give.</span></div>
+          <div class="layer-list" id="layer-controls">
+            <button class="layer-button" type="button" data-layer="anatomy" aria-pressed="true"><span class="layer-swatch">A</span><span class="layer-copy"><b>Anatomy</b><small>what it is</small></span></button>
+            <button class="layer-button" type="button" data-layer="authority" aria-pressed="false"><span class="layer-swatch">H</span><span class="layer-copy"><b>Authority</b><small>who owns truth</small></span></button>
+            <button class="layer-button" type="button" data-layer="motion" aria-pressed="false"><span class="layer-swatch">M</span><span class="layer-copy"><b>Motion</b><small>what transitions</small></span></button>
+            <button class="layer-button" type="button" data-layer="accessibility" aria-pressed="false"><span class="layer-swatch">K</span><span class="layer-copy"><b>Accessibility</b><small>how it is operated</small></span></button>
+            <button class="layer-button" type="button" data-layer="feedback" aria-pressed="false"><span class="layer-swatch">F</span><span class="layer-copy"><b>All terms</b><small>show everything</small></span></button>
+          </div>
+          <div class="keyboard-card">
+            Keyboard
+            <div><span>Next callout</span><kbd>→</kbd></div>
+            <div><span>Previous</span><kbd>←</kbd></div>
+            <div><span>Inspect</span><kbd>Enter</kbd></div>
+            <div><span>Clear</span><kbd>Esc</kbd></div>
+          </div>
+        </aside>
+
+        <div class="panel diagram-panel">
+          <div class="diagram-toolbar">
+            <span class="traffic" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span class="diagram-title">Pidex Client · annotated View</span>
+            <span class="scenario-readout" id="scenario-readout">Turn phase: working</span>
+          </div>
+          <div class="device-stage" id="device-stage" data-device="desktop">
+            <div class="client-frame" id="client-frame">
+              <aside class="mock-rail" aria-label="Mock discovery rail">
+                <div class="mock-brand">Pidex</div>
+                <button class="mock-new" type="button">＋ <span>New Session</span></button>
+                <div class="mock-nav-label">Projects</div>
+                <div class="mock-project">⌄ Pidex</div>
+                <div class="mock-session selected">Chat presentation <i></i></div>
+                <div class="mock-session">Receipt recovery</div>
+                <div class="mock-nav-label">Chats</div>
+                <div class="mock-session">Untitled Session</div>
+                <div class="mock-host"><b>Host connected</b>Anonymous Client is current</div>
+              </aside>
+              <button class="hotspot spot-rail" type="button" data-term="discovery-rail" data-layer="anatomy" aria-label="Inspect Discovery rail">1</button>
+
+              <section class="mock-main" aria-label="Mock selected Session View">
+                <header class="mock-header">
+                  <button class="mobile-menu" type="button" aria-label="Open discovery">☰</button>
+                  <div class="mock-header-title"><b>Chat presentation anatomy</b><small>Pidex · C:\git\Pidex</small></div>
+                  <button class="mock-stop" type="button" id="mock-stop">Stop</button>
+                  <button class="hotspot spot-header" type="button" data-term="session-header" data-layer="anatomy" aria-label="Inspect Session header">2</button>
+                  <button class="hotspot spot-run" type="button" data-term="run" data-layer="authority" aria-label="Inspect Run">14</button>
+                </header>
+
+                <div class="mock-thread" id="mock-thread">
+                  <button class="hotspot spot-thread" type="button" data-term="session-timeline" data-layer="anatomy" aria-label="Inspect Session Timeline">3</button>
+                  <article class="mock-turn is-working" id="mock-turn" data-phase="working">
+                    <button class="hotspot spot-turn" type="button" data-term="turn" data-layer="authority" aria-label="Inspect presented turn">4</button>
+                    <div class="mock-prompt">Build an interactive diagram that gives me precise language for chat-interface feedback.
+                      <button class="hotspot spot-prompt" type="button" data-term="prompt" data-layer="anatomy" aria-label="Inspect prompt">5</button>
+                    </div>
+
+                    <section class="mock-work" id="mock-work" data-expanded="false">
+                      <button class="mock-work-trigger" id="mock-work-trigger" type="button" aria-expanded="false" aria-controls="mock-work-panel"><span class="mock-chevron">›</span><b id="work-label">Working</b><span id="work-summary">Mapping terminology and interface layers</span></button>
+                      <button class="hotspot spot-work" type="button" data-term="activity-disclosure" data-layer="anatomy" aria-label="Inspect activity disclosure">6</button>
+                      <div class="mock-work-panel" id="mock-work-panel">
+                        <div class="mock-work-clip">
+                          <div class="mock-activity-list">
+                            <div class="mock-activity"><span class="activity-dot">✦</span><span class="activity-text"><b>Mapped the canonical turn structure</b><small>assistant work · finalized</small></span></div>
+                            <div class="mock-activity"><span class="activity-dot">›_</span><span class="activity-text"><b>Read the frontend experience contract</b><small>tool activity · finalized</small></span></div>
+                            <div class="mock-activity" id="running-activity" data-running="true"><span class="activity-dot">›_</span><span class="activity-text"><b id="running-copy">Building the interactive anatomy</b><small id="running-meta">tool activity · mutable</small></span></div>
+                            <button class="hotspot spot-activity" type="button" data-term="activity-row" data-layer="anatomy" aria-label="Inspect activity row">7</button>
+                            <button class="hotspot spot-entry" type="button" data-term="timeline-entry" data-layer="authority" aria-label="Inspect Timeline entry">15</button>
+                          </div>
+                        </div>
+                      </div>
+                      <button class="hotspot spot-disclosure-motion" type="button" data-term="disclosure-choreography" data-layer="motion" aria-label="Inspect disclosure choreography">16</button>
+                    </section>
+
+                    <div class="mock-response" id="mock-response" hidden>
+                      <p id="response-copy">The diagram now separates interface anatomy from state, authority, motion, and accessibility vocabulary.</p>
+                      <p>Use the callouts to identify the exact surface before describing the behavior you want changed.</p>
+                      <div class="mock-response-actions" id="response-actions"><button type="button" aria-label="Copy response">⧉</button></div>
+                      <button class="hotspot spot-response" type="button" data-term="final-response" data-layer="anatomy" aria-label="Inspect final response">8</button>
+                      <button class="hotspot spot-actions" type="button" data-term="message-actions" data-layer="accessibility" aria-label="Inspect response actions">9</button>
+                    </div>
+
+                    <div class="mock-abnormal" id="mock-abnormal" hidden><b>Run interrupted</b>The exact abnormal outcome remains visible outside ordinary collapsed work.
+                      <button class="hotspot spot-abnormal" type="button" data-term="abnormal-outcome" data-layer="authority" aria-label="Inspect abnormal outcome">10</button>
+                    </div>
+                  </article>
+                </div>
+
+                <button class="mock-jump" id="mock-jump" type="button" hidden>Jump to latest</button>
+                <button class="hotspot spot-tail" type="button" data-term="tail-following" data-layer="motion" aria-label="Inspect tail following">11</button>
+
+                <div class="mock-dock">
+                  <div class="mock-composer" id="mock-composer">
+                    <div class="mock-draft">Ask a follow-up…</div>
+                    <div class="mock-composer-bar"><span id="composer-mode">Draft belongs to this Client environment</span><button class="mock-send" type="button" id="mock-send">■</button></div>
+                    <button class="hotspot spot-composer" type="button" data-term="composer" data-layer="anatomy" aria-label="Inspect Composer">12</button>
+                  </div>
+                  <div class="mock-interaction" id="mock-interaction" hidden>
+                    <div class="mock-interaction-head"><b>Interaction</b><span>selection · Run 18</span></div>
+                    <p>Which terminology set should the explainer emphasize?</p>
+                    <div class="mock-options"><button type="button">Product language</button><button type="button">Implementation language</button></div>
+                    <button class="hotspot spot-interaction" type="button" data-term="interaction" data-layer="authority" aria-label="Inspect Interaction">13</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+
+        <aside class="panel inspector-panel" aria-label="Terminology inspector" aria-live="polite">
+          <div class="panel-heading"><strong>Terminology inspector</strong><span>Name the part, then describe its behavior.</span></div>
+          <div class="inspector-empty" id="inspector-empty"><div class="target">◎</div><p>Select any numbered callout. The definition, preferred feedback language, authority owner, and related terms will appear here.</p></div>
+          <div class="inspector-content" id="inspector-content" hidden>
+            <div class="term-topline"><span class="term-layer" id="term-layer">Anatomy</span><span class="term-id" id="term-id">CP-TERM</span></div>
+            <h3 id="term-name"></h3>
+            <p class="term-kicker" id="term-kicker"></p>
+            <p class="definition" id="term-definition"></p>
+            <div class="inspector-block say-this"><h4>Useful feedback phrasing</h4><p id="term-say"></p></div>
+            <div class="inspector-block avoid-this"><h4>Avoid saying</h4><p id="term-avoid"></p></div>
+            <div class="inspector-block"><h4>Authority / state source</h4><p id="term-authority"></p></div>
+            <div class="inspector-block"><h4>Related terms</h4><div class="term-chips" id="term-related"></div></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="state-section" aria-labelledby="state-title">
+      <div class="section-head"><div><div class="eyebrow">02 · Turn choreography</div><h2 id="state-title">A turn is a sequence, not a card</h2></div><p>Choose a stage to see what changes, what stays stable, and which term describes the transition.</p></div>
+      <div class="panel state-map">
+        <div class="state-steps" id="state-steps">
+          <button class="state-step" type="button" data-state="accepted" aria-pressed="false"><span class="step-number">1</span><b>Prompt accepted</b><small>Prompt appears; Composer action retargets the exact Run.</small></button>
+          <button class="state-step" type="button" data-state="working" aria-pressed="true"><span class="step-number">2</span><b>Activity primary</b><small>Working disclosure stays collapsed as ordered rows arrive.</small></button>
+          <button class="state-step" type="button" data-state="responding" aria-pressed="false"><span class="step-number">3</span><b>Response begins</b><small>Work condenses; response enters once and becomes primary.</small></button>
+          <button class="state-step" type="button" data-state="streaming" aria-pressed="false"><span class="step-number">4</span><b>Response streams</b><small>Text revises in place; outer identity and scroll policy stay stable.</small></button>
+          <button class="state-step" type="button" data-state="complete" aria-pressed="false"><span class="step-number">5</span><b>Response finalizes</b><small>Mutable treatment clears and local message actions become available.</small></button>
+          <button class="state-step" type="button" data-state="followup" aria-pressed="false"><span class="step-number">6</span><b>Follow-up ready</b><small>Composer remains in place for the next Run or steering message.</small></button>
+        </div>
+        <div class="state-detail">
+          <div><h3>Visual priority</h3><p id="state-priority">Activity is the primary evidence while no response exists.</p></div>
+          <div><h3>Stable identity</h3><p id="state-stable">The turn, prompt, Run association, and existing activity rows remain mounted.</p></div>
+          <div><h3>Feedback vocabulary</h3><p id="state-vocabulary">“New tool activity should remain collapsed until I expand its disclosure.”</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="language-section" aria-labelledby="language-title">
+      <div class="section-head"><div><div class="eyebrow">03 · Shared language</div><h2 id="language-title">Glossary and feedback builder</h2></div><p>Search implementation, product, state, authority, motion, and accessibility terms. Then compose a sentence that identifies the surface and desired behavior precisely.</p></div>
+      <div class="language-grid">
+        <div class="panel glossary-panel">
+          <div class="glossary-tools"><label class="sr-only" for="glossary-search">Search terminology</label><input id="glossary-search" type="search" placeholder="Search terms, definitions, or requirement IDs…"><label class="sr-only" for="glossary-filter">Filter category</label><select id="glossary-filter"><option value="all">All categories</option><option value="anatomy">Anatomy</option><option value="authority">Authority & identity</option><option value="state">State & phase</option><option value="motion">Motion & viewport</option><option value="accessibility">Accessibility</option></select></div>
+          <div class="glossary-list" id="glossary-list" aria-live="polite"></div>
+        </div>
+        <div class="panel builder-panel">
+          <div class="panel-heading"><strong>Feedback phrase builder</strong><span>Specific object + current context + desired behavior + reason.</span></div>
+          <div class="builder-body">
+            <div class="builder-grid">
+              <label>Surface<select id="builder-surface"><option>activity disclosure</option><option>prompt</option><option>activity row</option><option>final response</option><option>Composer</option><option>Session Timeline</option><option>Interaction dock</option><option>jump-to-latest control</option><option>abnormal outcome</option></select></label>
+              <label>Context<select id="builder-context"><option>while the turn is working</option><option>when the response begins</option><option>while the response is streaming</option><option>when the response finalizes</option><option>when the reader is detached from the tail</option><option>under reduced motion</option><option>on narrow mobile</option><option>after an abnormal settlement</option></select></label>
+              <label>Desired behavior<select id="builder-behavior"><option>should remain collapsed until manually expanded</option><option>should collapse automatically</option><option>should update in place without remounting</option><option>should preserve the visible anchor</option><option>should stay outside collapsed ordinary work</option><option>should expose its exact state without hover</option><option>should keep keyboard focus stable</option><option>should become quieter without disappearing</option></select></label>
+              <label>Reason<select id="builder-reason"><option>so the current source of truth stays legible</option><option>so the final answer becomes the narrative priority</option><option>so the reader is not pulled away from history</option><option>so exact Host authority is not obscured</option><option>so the transition feels continuous rather than jumpy</option><option>so keyboard and touch users receive equivalent affordances</option></select></label>
+            </div>
+            <div class="feedback-output"><small>Precise feedback</small><p id="feedback-sentence"></p><div class="copy-row"><button type="button" id="copy-feedback">Copy sentence</button><span class="copy-status" id="copy-status" aria-live="polite"></span></div></div>
+            <table class="confusion-table">
+              <thead><tr><th>Often confused</th><th>Use this distinction</th></tr></thead>
+              <tbody>
+                <tr><td><strong>Session</strong> vs <strong>turn</strong></td><td>A Session is the durable conversation scope; a turn is one presented prompt/work/response grouping.</td></tr>
+                <tr><td><strong>Run state</strong> vs <strong>turn phase</strong></td><td>Run state is Host-authoritative execution state; phase is a Client-derived presentation description.</td></tr>
+                <tr><td><strong>Timeline entry</strong> vs <strong>activity row</strong></td><td>The entry is an authoritative fact; the row is its visual presentation inside a disclosure.</td></tr>
+                <tr><td><strong>Interaction</strong> vs <strong>tool approval</strong></td><td>An Interaction is an exact Host request with identity/revision; it is not a generic tool confirmation.</td></tr>
+                <tr><td><strong>Streaming</strong> vs <strong>working</strong></td><td>Working makes activity primary before an answer; streaming means an existing response entry is revising in place.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="flow-section" aria-labelledby="flow-title">
+      <div class="section-head"><div><div class="eyebrow">04 · Four ways to review</div><h2 id="flow-title">Separate concerns before giving feedback</h2></div><p>The same visual element can be correct anatomically but wrong in authority, motion, or accessibility. Name the review lens explicitly.</p></div>
+      <div class="flow-grid">
+        <article class="panel flow-card"><div class="eyebrow">Anatomy</div><h3>Composition and hierarchy</h3><p>Ask whether the interface tells the story prompt → work → response with the right visual priority.</p><div class="flow-list"><div class="flow-item"><i>1</i>Is this the correct surface?</div><div class="flow-item"><i>2</i>Is it grouped at the correct level?</div><div class="flow-item"><i>3</i>Is ordinary detail progressively disclosed?</div><div class="flow-item"><i>4</i>Does the final answer own narrative width?</div></div></article>
+        <article class="panel flow-card authority"><div class="eyebrow">Authority</div><h3>Identity and source of truth</h3><p>Ask whether presentation preserves Host facts rather than inventing state, order, duration, or targeting.</p><div class="flow-list"><div class="flow-item"><i>1</i>Which exact entry or Run owns this?</div><div class="flow-item"><i>2</i>Is the state authoritative or derived?</div><div class="flow-item"><i>3</i>Could stale state retarget an action?</div><div class="flow-item"><i>4</i>Was any semantic status inferred from prose?</div></div></article>
+        <article class="panel flow-card motion"><div class="eyebrow">Motion</div><h3>Continuity and choreography</h3><p>Ask whether state changes preserve identity, reading position, focus, and geometry while shifting visual priority.</p><div class="flow-list"><div class="flow-item"><i>1</i>What enters once versus revises in place?</div><div class="flow-item"><i>2</i>Was the reader following or detached?</div><div class="flow-item"><i>3</i>Does disclosure motion move its trigger?</div><div class="flow-item"><i>4</i>Does reduced motion reach the same state?</div></div></article>
+        <article class="panel flow-card a11y"><div class="eyebrow">Accessibility</div><h3>Semantics and operation</h3><p>Ask whether state is perceivable and operable by keyboard, touch, and assistive technology without noisy announcements.</p><div class="flow-list"><div class="flow-item"><i>1</i>Is the control a real button?</div><div class="flow-item"><i>2</i>Do expanded/busy states stay truthful?</div><div class="flow-item"><i>3</i>Can hidden content receive focus?</div><div class="flow-item"><i>4</i>Does automatic change steal focus?</div></div></article>
+      </div>
+    </section>
+
+    <footer class="footer-note">
+      <p>This explainer is subordinate to <a href="chat-presentation.md">Pidex Chat Presentation Profile</a> and <a href="README.md">Pidex Frontend Experience Contract</a>. It teaches vocabulary; it does not create Host facts, command targets, or product requirements.</p>
+      <p>Static local-only document · no network · no storage · no telemetry</p>
+    </footer>
+  </main>
+
+  <script>
+    const terms = {
+      "discovery-rail": {
+        name: "Discovery rail",
+        kicker: "Session discovery and selection, not conversation content",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "FX-DISC-01",
+        definition: "The persistent desktop region that organizes Projects, scoped Sessions, unscoped Chats, archived access, search, attention cues, and connection context. Selecting here changes the focused View; it does not change Session lifecycle.",
+        say: "The selected Session row in the discovery rail needs stronger contrast, while unread and working cues should remain independent.",
+        avoid: "The chat sidebar is wrong. 'Sidebar' does not identify whether the problem is discovery, navigation, status, or project grouping.",
+        authority: "Catalog order, Session metadata, attention, and read status come from Host projection. Expansion and search filtering are Client-environment presentation state.",
+        related: ["Session", "View", "Session attention", "read status", "Project"]
+      },
+      "session-header": {
+        name: "Session header",
+        kicker: "Stable context and exact-target controls for the selected View",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "FX-RESP-05",
+        definition: "The workbench header naming the selected Session and quiet scope context. On mobile it also owns the discovery trigger and directly reachable exact-target Stop control.",
+        say: "The Session header should keep exact-target Stop reachable while the Interaction dock has taken over the Composer footprint.",
+        avoid: "Put the status at the top. Name the exact status, whether it is persistent, and whether it belongs to Session, Run, View, or connection state.",
+        authority: "Session name and scope are Host facts. Drawer state is Client-local. Stop targets the exact observed Run and worker generation.",
+        related: ["Session", "View", "Run", "exact-target Stop", "scope context"]
+      },
+      "session-timeline": {
+        name: "Session Timeline",
+        kicker: "The authoritative ordered account rendered as a readable narrative",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "FX-TL-01",
+        definition: "The scrollable presentation of authoritative Timeline facts for one Session. It contains presented turns and standalone historical or abnormal facts, plus paging and near-tail behavior.",
+        say: "The Session Timeline should preserve the first visible entry when older history is prepended.",
+        avoid: "The messages should not jump. Specify whether the jump comes from paging, response growth, disclosure collapse, Composer resize, or tail following.",
+        authority: "Entry identity, order, revision, finalization, Run association, and text are Host-owned. Grouping, disclosure, and viewport state are Client presentation.",
+        related: ["Timeline entry", "turn", "projection", "visible anchor", "tail following"]
+      },
+      "turn": {
+        name: "Presented turn",
+        kicker: "One cohesive prompt → activity → response narrative",
+        layer: "authority",
+        category: "anatomy",
+        id: "CP-MODEL-02",
+        definition: "A Client-derived visual grouping that usually begins with a prompt and contains compatible entries for one known Run. It is not a durable Host entity and cannot become a command target.",
+        say: "This presented turn merges entries from two known Runs; it needs a boundary before the second Run's activity.",
+        avoid: "This conversation block is confusing. 'Block' hides the distinction between durable Session, executable Run, authoritative entries, and their visual grouping.",
+        authority: "The Host owns the entries and Run IDs. The Client owns the pure projection that presents them as one turn without inventing identity.",
+        related: ["Run", "prompt", "activity disclosure", "final response", "turn phase"]
+      },
+      "prompt": {
+        name: "Prompt",
+        kicker: "The user-authored entry that establishes a turn",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TURN-01",
+        definition: "The restrained, inline-end presentation of the accepted user input. Its bounded neutral container distinguishes authored input from the unboxed assistant response.",
+        say: "The prompt should remain visually bounded and preserve multiline text without becoming the pending-state indicator.",
+        avoid: "The user bubble should be smaller. Prefer 'prompt', then name width, padding, rhythm, or alignment.",
+        authority: "Prompt text and its Timeline identity are Host-authoritative after acceptance. The Composer Draft before acceptance is Client-environment state.",
+        related: ["Composer Draft", "Timeline entry", "turn boundary", "final response"]
+      },
+      "activity-disclosure": {
+        name: "Activity disclosure",
+        kicker: "One progressive-detail boundary for consecutive work entries",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TURN-02",
+        definition: "The turn-level trigger and panel that groups consecutive assistant-work and tool entries. It stays collapsed by default as live rows arrive and remains manually inspectable throughout the turn.",
+        say: "New tool activity should append to the collapsed activity disclosure without opening it or moving its trigger.",
+        avoid: "Hide the chain of thought. Pidex is grouping exact projected activity; name the disclosure, the summaries, and which raw detail should remain reachable.",
+        authority: "The rows and their order come from Host facts. Expanded state and manual override are Client presentation state. Duration must not be fabricated.",
+        related: ["activity row", "manual disclosure mode", "progressive disclosure", "Working", "Worked"]
+      },
+      "activity-row": {
+        name: "Activity row",
+        kicker: "The visual presentation of one assistant-work or tool entry",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TURN-04",
+        definition: "An ordered row inside the activity disclosure with kind-specific iconography, an exact summary, and running treatment only when mutability justifies it. A tool row with raw output adds its own nested disclosure, collapsed by default.",
+        say: "Keep each tool row's raw output collapsed until its own summary trigger is opened; finalization should not open it automatically.",
+        avoid: "Show each tool as a card. The intended hierarchy is an ordered activity list, not a stack of competing containers.",
+        authority: "Kind, text, identity, finalization, tool-call identity, and order are Host-owned. Icon, typography, and row entry motion are presentation.",
+        related: ["Timeline entry", "tool activity", "assistant work", "semantic summary", "raw detail"]
+      },
+      "final-response": {
+        name: "Final response",
+        kicker: "The assistant answer at primary narrative width",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TURN-05",
+        definition: "The unboxed assistant response that takes visual priority after work. It may be mutable while streaming and finalized later, but retains one stable entry and DOM identity throughout.",
+        say: "The final response should stream as solid text and revise in place; only its first insertion should animate.",
+        avoid: "The assistant bubble is flickering. The response is intentionally unboxed; identify token-delta animation, remounting, or reflow as the fault.",
+        authority: "Response text, revision, and finalization are Host facts. Paragraph rendering and quiet local actions are Client presentation.",
+        related: ["streaming response", "finalization", "stable identity", "message actions"]
+      },
+      "message-actions": {
+        name: "Message actions",
+        kicker: "Quiet Client-local conveniences attached to finalized content",
+        layer: "accessibility",
+        category: "accessibility",
+        id: "CP-TURN-06",
+        definition: "Low-priority controls following a finalized response. The initial action is Copy response; it does not create a Host command or Timeline fact.",
+        say: "Copy response should be keyboard reachable after finalization and discoverable on touch without changing the response geometry.",
+        avoid: "Add buttons under every message. Specify which finalized content owns the action and whether it is local or authoritative.",
+        authority: "Copy is entirely Client-local. It must not imply that the Host accepted, rated, branched, or mutated anything.",
+        related: ["final response", "finalization", "focus visibility", "touch affordance"]
+      },
+      "abnormal-outcome": {
+        name: "Abnormal outcome",
+        kicker: "Exact failure, cancellation, interruption, or trust-relevant settlement",
+        layer: "authority",
+        category: "authority",
+        id: "CP-FLOW-06",
+        definition: "A visible authoritative fact that explains why normal prompt → work → final-answer resolution did not occur. It remains outside ordinary collapsed work and uses restrained severity.",
+        say: "The Interrupted outcome should remain visible outside the collapsed activity disclosure because no normal final answer resolved the turn.",
+        avoid: "Show an error if the text sounds bad. Abnormal treatment requires an exact fact, not prose matching or Client inference.",
+        authority: "The Host supplies the exact outcome and terminal state. The Client may style its severity but may not infer or soften its meaning.",
+        related: ["Run state", "Timeline fact", "failed", "cancelled", "interrupted"]
+      },
+      "tail-following": {
+        name: "Tail following",
+        kicker: "A viewport policy, not an always-scroll-to-bottom command",
+        layer: "motion",
+        category: "motion",
+        id: "CP-SCROLL-01",
+        definition: "The View is following when the Timeline tail is visible or within 24 px. Mutable-tail updates then keep the tail presented. Scrolling upward detaches the reader and exposes Jump to latest.",
+        say: "While the reader is detached, response growth should preserve the visible anchor and show Jump to latest rather than forcing the viewport down.",
+        avoid: "Always keep the newest message visible. That would fight readers reviewing earlier history.",
+        authority: "Current scroll position and follow/detached state are View-local. Mark-read still requires visibly presenting the authoritative tail.",
+        related: ["detached reader", "Timeline tail", "Jump to latest", "visible anchor", "read-through position"]
+      },
+      "composer": {
+        name: "Composer",
+        kicker: "The persistent bottom control surface for draft, steering, Send, and Stop",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "FX-COMP-01",
+        definition: "The bounded dock surface that holds one Client-environment Draft and changes its exact action according to current authoritative Run context. It may be replaced in-place by Interaction or held-work controls.",
+        say: "The Composer geometry should remain stable while its primary action changes from exact-target Stop to Send as the draft changes.",
+        avoid: "The input box should stay fixed. 'Composer' includes the draft, mode-dependent primary action, outcome text, and takeover footprint.",
+        authority: "Draft text and focus are Client-environment state. Send, steer, and Stop target exact observed Host identities and revisions.",
+        related: ["Composer Draft", "control dock", "steering", "exact-target Stop", "Interaction takeover"]
+      },
+      "interaction": {
+        name: "Interaction",
+        kicker: "An exact Host request for user input, rendered once in the control dock",
+        layer: "authority",
+        category: "authority",
+        id: "FX-INT-01",
+        definition: "A Host-authored request with Interaction identity, Run association, worker generation, revision, response shape, provenance, and optional deadline. Live controls appear in the dock; historical Timeline facts remain inert.",
+        say: "This Interaction takeover must target the exact Interaction revision and restore the preserved Composer Draft after settlement.",
+        avoid: "The tool approval pop-up should close. An Interaction is not generically a tool approval, and it may be select, confirm, input, or editor.",
+        authority: "Identity, ordering, state, deadline, and terminal cause are Host-authoritative. The in-progress input value is private Client UI state until exact submission.",
+        related: ["control dock", "Interaction revision", "worker generation", "historical Interaction fact"]
+      },
+      "run": {
+        name: "Run",
+        kicker: "The Host-authoritative execution unit for accepted work",
+        layer: "authority",
+        category: "authority",
+        id: "FX-FOUND-02",
+        definition: "The durable execution identity associated with accepted work. Its state can be queued, executing, cancelling, held, completed, failed, cancelled, or interrupted. A Run is not the Session and not the presented turn.",
+        say: "The header Stop control must continue targeting the exact executing Run observed by this View.",
+        avoid: "The chat is running. Name the Run as executing; Sessions do not have an invented active or idle lifecycle state.",
+        authority: "Run identity and state are exclusively Host-owned. The Client may derive a turn presentation phase from exact Run and entry facts.",
+        related: ["Session", "presented turn", "Run state", "worker generation", "exact target"]
+      },
+      "timeline-entry": {
+        name: "Timeline entry",
+        kicker: "One authoritative ordered fact in a Session Timeline",
+        layer: "authority",
+        category: "authority",
+        id: "FX-TL-04",
+        definition: "A fact with stable entry identity, kind, exact text, order, revision, finalization, and optional Run, blob, or tool-call association. Projection may change its presentation but not its meaning or order.",
+        say: "The mutable response entry should replace revision 1 with revision 2 in place because its entryId is unchanged.",
+        avoid: "Deduplicate similar messages. Only identical authoritative identity and monotonic replacement rules justify reconciliation.",
+        authority: "The Host owns every semantic field. DOM data attributes retain enough evidence to inspect identity and finalization.",
+        related: ["entryId", "revision", "finalization", "projection", "activity row"]
+      },
+      "disclosure-choreography": {
+        name: "Disclosure choreography",
+        kicker: "Coordinated geometry, opacity, chevron, focus, and scroll continuity",
+        layer: "motion",
+        category: "motion",
+        id: "CP-MOTION-03",
+        definition: "The 200 ms transition that opens or closes activity detail as one event. The trigger stays stable, the chevron tracks panel state, collapsed content becomes inert, and viewport policy prevents unintended jumps.",
+        say: "The activity disclosure should collapse over the disclosure token while preserving the trigger position and current tail distance.",
+        avoid: "Make the arrow animate. The chevron alone is not the choreography; geometry, opacity, interaction, focus, and scroll must agree.",
+        authority: "Disclosure state is Client presentation state. The entries inside remain exact Host facts throughout the transition.",
+        related: ["activity disclosure", "manual mode", "scroll lock", "inert", "reduced motion"]
+      },
+      "host": {
+        name: "Host",
+        kicker: "Pidex authority for execution, durable state, ordering, and command settlement",
+        layer: "authority",
+        category: "authority",
+        id: "FX-ARCH-01",
+        definition: "The local control plane that owns authoritative Sessions, Runs, Interactions, Timeline facts, command receipts, synchronization, and durable ordering. Reachability under the prototype LAN posture grants control but does not authenticate a user.",
+        say: "This label must reflect the exact Host-projected Run state rather than a Client timer or optimistic assumption.",
+        avoid: "The backend says… when the distinction is really Host authority versus Client presentation.",
+        authority: "The Host is the authority owner. It does not own Client drafts, focus, disclosure preference, or scroll position.",
+        related: ["Anonymous Client", "authority", "projection", "command receipt"]
+      },
+      "anonymous-client": {
+        name: "Anonymous Client",
+        kicker: "A browser or integration supervising the Host under Prototype LAN reachability",
+        layer: "authority",
+        category: "authority",
+        id: "FX-FOUND-01",
+        definition: "A Client without durable identity, credential, or per-Client authority. It renders projections, keeps local drafts/preferences, and sends exact commands without becoming the source of truth.",
+        say: "This disclosure preference is local to the mounted Anonymous Client View and should not become a Host fact.",
+        avoid: "This device owns the state. A Client environment is not durable device identity.",
+        authority: "The Client owns presentation and local environment state only. Host facts remain authoritative across all Clients.",
+        related: ["Host", "Client environment", "View", "Prototype LAN reachability"]
+      },
+      "view": {
+        name: "View",
+        kicker: "One current or stale presentation context for a Session",
+        layer: "authority",
+        category: "authority",
+        id: "FX-STATE-02",
+        definition: "The Client-side context displaying a selected Session at a particular authority/synchronization state. A View owns focus, scroll, follow-tail state, and local disclosure behavior; it does not wake or stop a Session by being opened or closed.",
+        say: "This non-current View should keep the draft editable but disable Host mutations until reconciliation.",
+        avoid: "Opening the chat makes it active. View lifecycle never implies Session or Run lifecycle.",
+        authority: "Current/stale status is established through Host synchronization. Focus, viewport, and transient selection are local.",
+        related: ["Session", "current View", "stale state", "tail following", "read-through"]
+      },
+      "session": {
+        name: "Session",
+        kicker: "The durable conversation and execution scope",
+        layer: "authority",
+        category: "authority",
+        id: "FX-FOUND-01",
+        definition: "A Host-owned durable scope containing Timeline facts, Runs, Interactions, metadata, read state, and optional Project/Workspace context. It can contain many turns and Runs.",
+        say: "The Session remains selected while its latest Run moves from executing to completed.",
+        avoid: "The Session is active/idle. Pidex does not invent an aggregate Session lifecycle state.",
+        authority: "Session identity, metadata, history, and durable scope are Host-owned. Selection is View-local.",
+        related: ["Run", "turn", "Session Timeline", "Project", "Workspace"]
+      },
+      "projection": {
+        name: "Timeline presentation projection",
+        kicker: "A pure mapping from Host facts to renderable turn segments",
+        layer: "authority",
+        category: "authority",
+        id: "CP-MODEL-01",
+        definition: "The deterministic Client function that groups compatible entries into turns and consecutive activity spans while preserving identity and authoritative order. Its output is presentation-only.",
+        say: "The projection must split this activity span because an authoritative abnormal fact intervenes between the two tool entries.",
+        avoid: "The UI can reorder these for clarity. Clarity cannot override authoritative entry order or known Run boundaries.",
+        authority: "Inputs are Host facts; grouping is Client-owned and replaceable. Projection output cannot target commands.",
+        related: ["Timeline entry", "presented turn", "turn segment", "known Run boundary"]
+      },
+      "turn-phase": {
+        name: "Turn presentation phase",
+        kicker: "A derived description: working, responding, or complete",
+        layer: "authority",
+        category: "state",
+        id: "CP-MODEL-04",
+        definition: "A View-only phase used to coordinate disclosure and response priority. Working means activity is primary; responding means a mutable response exists; complete means no visible entry is mutable and no exact associated Run is executing.",
+        say: "The turn presentation phase should change to responding when the first mutable response entry appears.",
+        avoid: "Set the Run to responding. Responding is a presentation phase, not a Host Run state.",
+        authority: "Derived by the Client from exact Host facts. It must not be persisted or reported as domain state.",
+        related: ["Run state", "working", "responding", "complete", "projection"]
+      },
+      "manual-disclosure-mode": {
+        name: "Manual disclosure mode",
+        kicker: "The first user toggle overrides the phase-derived collapsed default",
+        layer: "accessibility",
+        category: "state",
+        id: "CP-TURN-03",
+        definition: "Mounted-turn Client state entered after the user toggles activity. Once manual, new activity and response arrival do not override the user's chosen expansion state.",
+        say: "Because the user manually expanded this activity disclosure, new tool activity and response arrival should preserve that choice.",
+        avoid: "Remember it forever. Persistence beyond the mounted turn requires a separate Client-preference contract.",
+        authority: "Entirely Client-local and non-authoritative. It never changes Timeline facts or Run state.",
+        related: ["activity disclosure", "automatic mode", "mounted lifetime", "focus stability"]
+      },
+      "streaming-response": {
+        name: "Streaming response",
+        kicker: "A mutable response entry revising in place",
+        layer: "motion",
+        category: "state",
+        id: "CP-FLOW-04",
+        definition: "The interval after a response entry exists but before it is finalized. Text may grow or reflow, while the response container, entry identity, turn, and viewport policy stay stable.",
+        say: "During streaming, replace response text in place without replaying entry animation or announcing every delta.",
+        avoid: "Animate the typing. Per-token opacity, transform, or shimmer harms readability and continuity.",
+        authority: "Each revision and finalization flag comes from the Host. The Client renders deltas without inventing completion.",
+        related: ["mutable entry", "revision", "final response", "aria-busy", "finalization"]
+      },
+      "finalization": {
+        name: "Finalization",
+        kicker: "The authoritative transition from mutable to settled entry content",
+        layer: "authority",
+        category: "state",
+        id: "FX-TL-04",
+        definition: "A monotonic Host fact indicating that an entry will no longer be rewritten. Finalization should remove busy treatment and reveal eligible local actions without remounting content.",
+        say: "Finalization should change data-finalized and action availability on the existing response node.",
+        avoid: "The stream looks done, so mark it complete. Visual punctuation or a pause is not authoritative finalization.",
+        authority: "Host-owned and monotonic. The Client may only reflect it.",
+        related: ["mutable entry", "revision", "stable identity", "message actions"]
+      },
+      "revision": {
+        name: "Revision",
+        kicker: "Monotonic replacement order for one stable authoritative identity",
+        layer: "authority",
+        category: "authority",
+        id: "FX-TL-04",
+        definition: "The Host-provided ordering used to reconcile newer content for the same entry identity. A higher revision updates in place; a different identity appends or occupies its own ordered position.",
+        say: "Ignore the delayed revision 3 because revision 4 for this entryId is already projected.",
+        avoid: "Use whichever update arrived last. Network arrival order is not authoritative revision order.",
+        authority: "Host-owned. The Client compares but never increments authoritative revisions optimistically.",
+        related: ["entryId", "mutable entry", "finalization", "stale update"]
+      },
+      "stable-identity": {
+        name: "Stable identity",
+        kicker: "The same semantic thing remains the same rendered thing across revisions",
+        layer: "authority",
+        category: "authority",
+        id: "CP-FLOW-05",
+        definition: "Entry and turn keys remain stable as content or phase changes. This prevents duplicate messages, replayed animation, lost focus, and discontinuous assistive-technology interpretation.",
+        say: "Keep the response keyed by entryId so streaming revisions and finalization do not remount it.",
+        avoid: "Re-render the answer when it finishes. React can update the same semantic node without replacing it.",
+        authority: "Identity originates in Host facts. DOM continuity is the Client's responsibility.",
+        related: ["entryId", "revision", "finalization", "DOM continuity"]
+      },
+      "semantic-summary": {
+        name: "Semantic activity summary",
+        kicker: "Concise exact activity text in the main narrative",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TOOL-02",
+        definition: "The short, scannable line shown for an activity entry while remaining raw text is available in expanded detail. Current completed tool entries split their projected tool name from the complete raw result.",
+        say: "Use the projected tool name as the collapsed summary and keep every raw result line inert inside expanded detail.",
+        avoid: "Rename this to 'Edited three files' unless structured Host facts prove that semantic label and count.",
+        authority: "Derived only by a conservative text split today. Richer labels require structured Host projection.",
+        related: ["activity row", "raw detail", "tool activity", "progressive disclosure"]
+      },
+      "tool-activity": {
+        name: "Tool activity",
+        kicker: "An ordered Timeline entry representing a tool operation or update",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TOOL-01",
+        definition: "A tool-kind entry rendered as semantic activity. It may be mutable or finalized, but finalized does not automatically mean successful.",
+        say: "The tool activity should retain its authoritative order and raw detail inside the turn disclosure.",
+        avoid: "Mark every finished tool green. Finalized is not synonymous with successful.",
+        authority: "Kind, identity, order, text, and finalization are Host facts. Tool-specific iconography is presentation.",
+        related: ["activity row", "toolCallId", "finalization", "abnormal outcome"]
+      },
+      "assistant-work": {
+        name: "Assistant work",
+        kicker: "Projected agent activity distinct from the final response",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-TURN-04",
+        definition: "Assistant-kind Timeline activity that communicates progress or reasoning-level work in the disclosure rather than the final narrative answer.",
+        say: "Assistant work and tool activity should share one ordered disclosure but retain distinct row iconography.",
+        avoid: "Put all assistant text in the answer. Activity and response have different narrative roles and state choreography.",
+        authority: "Text and kind are Host-projected. The Client decides the subordinate activity presentation.",
+        related: ["activity disclosure", "activity row", "final response"]
+      },
+      "detached-reader": {
+        name: "Detached reader",
+        kicker: "A View whose user has moved away from the Timeline tail",
+        layer: "motion",
+        category: "motion",
+        id: "CP-SCROLL-02",
+        definition: "The viewport state after upward movement leaves the near-tail threshold. New content must not force this reader downward; an explicit Jump to latest control restores following.",
+        say: "When detached, preserve the reader's visible entry anchor through response growth and disclosure transitions.",
+        avoid: "Auto-scroll unless they are selecting text. Detachment is based on viewport intent, not only text selection.",
+        authority: "View-local interaction state. It does not change Host read state until the authoritative tail becomes visibly presented.",
+        related: ["tail following", "visible anchor", "Jump to latest", "read-through"]
+      },
+      "visible-anchor": {
+        name: "Visible entry anchor",
+        kicker: "The authoritative entry and top offset used to preserve reading position",
+        layer: "motion",
+        category: "motion",
+        id: "CP-SCROLL-05",
+        definition: "The first currently visible entry plus its viewport offset, captured before prepending history or compensating a layout change and restored afterward.",
+        say: "Capture the first visible entry before the older page is inserted, then restore its top offset.",
+        avoid: "Keep scrollTop the same. Prepending content changes geometry; a content anchor preserves what the reader sees.",
+        authority: "Entry identity is Host-owned; measured geometry is View-local.",
+        related: ["paging", "detached reader", "scroll compensation", "Timeline entry"]
+      },
+      "jump-latest": {
+        name: "Jump to latest",
+        kicker: "Explicit recovery from detached reading to tail following",
+        layer: "motion",
+        category: "motion",
+        id: "CP-SCROLL-03",
+        definition: "A compact workbench-relative control shown only while detached. It returns to the Timeline tail with a bounded 260 ms cubic ease-out, or instantly under reduced motion.",
+        say: "Keep Jump to latest above the control dock and animate no longer than 260 ms.",
+        avoid: "Show a down arrow all the time. The control communicates a specific detached state.",
+        authority: "Entirely View-local. Reaching the visible tail may then permit exact read-through reporting.",
+        related: ["detached reader", "tail following", "reduced motion", "control dock"]
+      },
+      "reduced-motion": {
+        name: "Reduced motion",
+        kicker: "The same state transitions without decorative interpolation",
+        layer: "accessibility",
+        category: "accessibility",
+        id: "CP-MOTION-06",
+        definition: "A user preference under which transforms, disclosure interpolation, entry animation, shimmer, and smooth scrolling resolve immediately while state and detail remain equally available.",
+        say: "Under reduced motion, the disclosure should reach the same expanded state immediately and the Working shimmer should become static text.",
+        avoid: "Turn animations off by hiding transitional content. Reduced motion changes interpolation, not semantics.",
+        authority: "Client-environment preference combined with operating-system media query. It never changes Host facts.",
+        related: ["disclosure choreography", "shimmer", "Jump to latest", "state equivalence"]
+      },
+      "aria-busy": {
+        name: "Busy semantics",
+        kicker: "Truthful mutability without announcing every streamed delta",
+        layer: "accessibility",
+        category: "accessibility",
+        id: "CP-A11Y-01",
+        definition: "The use of aria-busy on mutable activity or response regions to communicate incompleteness. Streaming text itself should not be placed in a repeatedly replayed assertive live region.",
+        say: "Mark the mutable response aria-busy, but do not announce every token revision.",
+        avoid: "Make screen readers read the stream live. High-frequency announcements destroy comprehension.",
+        authority: "Busy state reflects exact entry finalization and Run facts; ARIA mapping is Client presentation.",
+        related: ["streaming response", "finalization", "live region", "Working"]
+      },
+      "inert-content": {
+        name: "Inert collapsed content",
+        kicker: "Visually hidden detail is also removed from interaction and navigation",
+        layer: "accessibility",
+        category: "accessibility",
+        id: "CP-A11Y-01",
+        definition: "Collapsed disclosure content is aria-hidden and inert so keyboard focus and assistive navigation cannot enter invisible rows or controls.",
+        say: "When the panel collapses, make its content inert and keep focus on the disclosure trigger.",
+        avoid: "Set height to zero. Geometry alone does not remove hidden controls from focus or accessibility navigation.",
+        authority: "Client-owned semantic presentation of visibility. Underlying Timeline facts remain present in projection.",
+        related: ["activity disclosure", "focus stability", "aria-expanded"]
+      },
+      "focus-stability": {
+        name: "Focus stability",
+        kicker: "Automatic presentation changes never steal or strand keyboard focus",
+        layer: "accessibility",
+        category: "accessibility",
+        id: "CP-A11Y-02",
+        definition: "Manual disclosure toggles retain focus on their trigger. New activity and response transitions do not move focus. If authoritative replacement would hide a focused descendant, focus returns to the trigger first.",
+        say: "Appending a new activity row must not open the disclosure or move focus away from its current control.",
+        avoid: "Focus the newest content. Reading priority does not imply keyboard focus ownership.",
+        authority: "Entirely Client interaction state, constrained by authoritative content changes.",
+        related: ["manual disclosure mode", "inert", "automatic collapse", "keyboard"]
+      },
+      "control-dock": {
+        name: "Control dock",
+        kicker: "One bounded bottom footprint with mutually exclusive control surfaces",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "FX-RESP-06",
+        definition: "The safe-area-aware bottom region occupied by the Composer, Interaction stack, or held-work controls. These surfaces replace one another instead of stacking and covering Timeline content.",
+        say: "The Interaction stack should take over the same control-dock footprint while preserving the Composer Draft.",
+        avoid: "Show the prompt and approval boxes together. Name which control surface owns the dock at that moment.",
+        authority: "Which exact controls are required comes from Host facts; dock layout and preserved draft are Client responsibilities.",
+        related: ["Composer", "Interaction", "held work", "safe area"]
+      },
+      "composer-draft": {
+        name: "Composer Draft",
+        kicker: "Unsubmitted text belonging to the Client environment",
+        layer: "authority",
+        category: "authority",
+        id: "FX-STATE-05",
+        definition: "The editable local text for new work or steering. It is not a Timeline fact, Run, command, or Host draft until an exact submission is durably accepted and projected.",
+        say: "Preserve the Composer Draft across offline state, Interaction takeover, and uncertain submission reconciliation.",
+        avoid: "The Host should save every keystroke. Draft ownership belongs to the Client environment under the current contract.",
+        authority: "Client-environment state. Command outcome and accepted prompt projection are Host-owned.",
+        related: ["Composer", "Client environment", "prompt", "uncertain command"]
+      },
+      "exact-target": {
+        name: "Exact-target command",
+        kicker: "An action bound to the precise observed identity and revision",
+        layer: "authority",
+        category: "authority",
+        id: "FX-STATE-04",
+        definition: "A command such as Stop or Interaction response that includes the exact Session, Run, Interaction, worker generation, and revision required by its contract. Stale outcomes never retarget successors.",
+        say: "Disable this Stop action after reconciliation shows that its exact observed Run is no longer executing.",
+        avoid: "Stop whatever is currently running. That can retarget a successor Run after stale state.",
+        authority: "The Client captures observed targeting facts; the Host validates and settles the command authoritatively.",
+        related: ["Run", "worker generation", "revision", "stale state", "command receipt"]
+      },
+      "session-attention": {
+        name: "Session attention summary",
+        kicker: "A discovery cue: quiet, working, or needs response",
+        layer: "authority",
+        category: "state",
+        id: "FX-STATE-01",
+        definition: "A Host-derived discovery summary with needs response taking precedence over working, and working over quiet. It is independent from read status and is not a Session lifecycle state.",
+        say: "Keep the working attention dot while the Session is read; attention and read status communicate different facts.",
+        avoid: "Mark the Session active. Use the canonical attention summary without inventing lifecycle.",
+        authority: "Derived from exact Host Run and Interaction facts and projected by the Host.",
+        related: ["read status", "Session", "working", "needs response"]
+      },
+      "read-status": {
+        name: "Session read status",
+        kicker: "Whether an unread-producing milestone lies beyond read-through",
+        layer: "authority",
+        category: "state",
+        id: "FX-STATE-02",
+        definition: "A Host-derived discovery cue independent from attention. A current View may advance read-through only after visibly presenting the authoritative Timeline tail.",
+        say: "Do not clear unread until this current View has visibly presented the authoritative tail.",
+        avoid: "Opening the Session marks it read. Selection alone does not prove the tail was presented.",
+        authority: "Read-through and derived read status are Host-global facts; visibility evidence originates in a current View.",
+        related: ["read-through position", "Timeline tail", "Session attention", "current View"]
+      },
+      "motion-token": {
+        name: "Motion token",
+        kicker: "A bounded shared duration and easing for a specific interaction class",
+        layer: "motion",
+        category: "motion",
+        id: "CP-MOTION-01",
+        definition: "One of the small turn-presentation vocabulary values: 120 ms fast, 160 ms basic, 200 ms disclosure, or 300 ms relaxed, paired with standard, enter, or snappy easing.",
+        say: "Use the 200 ms disclosure token for both panel interpolation and chevron rotation.",
+        avoid: "Make it smoother. Name the property, duration, easing, displacement, and continuity objective.",
+        authority: "Pure Client presentation. Motion must never imply domain state not supplied by the Host.",
+        related: ["disclosure choreography", "entry animation", "reduced motion", "easing"]
+      },
+      "entry-animation": {
+        name: "One-time entry animation",
+        kicker: "Motion only when a semantic row or response first mounts",
+        layer: "motion",
+        category: "motion",
+        id: "CP-MOTION-04",
+        definition: "A restrained opacity and 4–6 px vertical transition applied once to a newly inserted activity row or response. Revisions to existing identity do not replay it.",
+        say: "Animate the response container on first insertion, then leave token revisions unanimated.",
+        avoid: "Fade each update. Repeated entry motion makes stable identity appear unstable.",
+        authority: "The Host determines when a new identity exists; the Client applies bounded presentation motion.",
+        related: ["stable identity", "streaming response", "activity row", "motion token"]
+      },
+      "turn-segment": {
+        name: "Turn segment",
+        kicker: "One ordered presentation unit inside a projected turn",
+        layer: "authority",
+        category: "authority",
+        id: "CP-MODEL-03",
+        definition: "A projection output representing either one ordinary Timeline entry or one consecutive activity span. Segments preserve authoritative order while allowing compatible work entries to share a disclosure.",
+        say: "The abnormal outcome must remain its own turn segment between these two activity spans rather than being reordered after them.",
+        avoid: "Put all the work together even if another fact intervenes. Grouping cannot cross an authoritative ordering boundary.",
+        authority: "Segment boundaries are Client projection; every contained entry retains Host identity and order.",
+        related: ["presented turn", "projection", "activity span", "Timeline entry"]
+      },
+      "assistant-ui-thread": {
+        name: "assistant-ui Thread primitive",
+        kicker: "A replaceable rendering seam for viewport and conversation composition",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-AUI-02",
+        definition: "The assistant-ui concept that can render the conversation viewport, message sequence, and jump control. In Pidex it must be backed by Pidex paging, follow-tail, and read-through rules rather than owning them.",
+        say: "The Thread primitive may render Jump to latest, but Pidex must continue deciding detached state and authoritative read-through eligibility.",
+        avoid: "Let assistant-ui manage the thread state. Separate rendering primitives from Pidex authority and synchronization.",
+        authority: "assistant-ui may own component mechanics. Pidex retains ordering, current/stale state, paging, and command semantics.",
+        related: ["Session Timeline", "tail following", "paging", "assistant-ui Message primitive"]
+      },
+      "assistant-ui-message": {
+        name: "assistant-ui Message primitive",
+        kicker: "A rendering primitive for user or assistant message content",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-AUI-02",
+        definition: "The assistant-ui seam that can render a prompt or final assistant response. Pidex supplies stable keys, role mapping, exact text, revision, and finalization rather than delegating identity generation.",
+        say: "Map the Pidex response entry to one Message primitive keyed by entryId so streaming revisions do not remount it.",
+        avoid: "Treat each stream chunk as a message. Chunks revise one stable Pidex response entry.",
+        authority: "The primitive renders. Pidex projection owns message identity, order, and semantic role.",
+        related: ["prompt", "final response", "stable identity", "message part"]
+      },
+      "message-part": {
+        name: "Message part",
+        kicker: "A renderable content unit within an assistant-ui-compatible message",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "CP-AUI-02",
+        definition: "An implementation-level content unit such as text, reasoning, tool activity, or a Pidex custom data part. Parts can express presentation structure but cannot replace authoritative Timeline entry identity.",
+        say: "Render historical outcome facts as Pidex custom data parts while preserving their original entry IDs and order.",
+        avoid: "A tool part is the tool call. The part is a rendering mapping; toolCallId and Timeline identity remain Pidex facts.",
+        authority: "Part selection is projection. Underlying content and identity are Host-projected.",
+        related: ["assistant-ui Message primitive", "tool activity", "custom data part", "Timeline entry"]
+      },
+      "authority-boundary": {
+        name: "Presentation authority boundary",
+        kicker: "The line between rendering choices and durable product truth",
+        layer: "authority",
+        category: "authority",
+        id: "CP-AUI-01",
+        definition: "The architectural rule that Pidex Host facts remain the only source for identity, order, revision, finalization, Run state, Interaction state, and command settlement while the Client owns reversible presentation state.",
+        say: "This timer crosses the presentation authority boundary because it displays Client elapsed time as though it were an authoritative Run duration.",
+        avoid: "It is only UI state. Ask whether the value can influence targeting, ordering, retention, read status, or semantic truth.",
+        authority: "Host on the durable side; Client projection and local interaction on the presentation side.",
+        related: ["Host", "Anonymous Client", "projection", "Client environment", "exact-target command"]
+      },
+      "working-worked-language": {
+        name: "Working / Worked language",
+        kicker: "Present-tense activity priority versus settled historical detail",
+        layer: "anatomy",
+        category: "state",
+        id: "CP-TURN-02",
+        definition: "Working indicates that activity is the turn's current primary evidence. Worked indicates that activity is now historical because response content has begun or the ordinary work span settled. Neither label invents duration or success.",
+        say: "Change Working to Worked when the response begins, but keep abnormal settlement explicit rather than implying normal success.",
+        avoid: "Worked means the Run succeeded. Past tense describes presentation priority, not terminal success.",
+        authority: "Derived presentation language constrained by exact response, finalization, and Run facts.",
+        related: ["turn phase", "activity disclosure", "abnormal outcome", "duration"]
+      },
+      "responsive-hierarchy": {
+        name: "Responsive hierarchy",
+        kicker: "The same information architecture with reduced whitespace, not a second product",
+        layer: "anatomy",
+        category: "anatomy",
+        id: "FX-RESP-02",
+        definition: "Desktop, constrained, and narrow-mobile layouts preserve prompt → activity → response order, exact controls, readable text, and one control dock while changing rail and spacing geometry.",
+        say: "On narrow mobile, move discovery into the header-triggered drawer but preserve the turn and control-dock hierarchy.",
+        avoid: "Make mobile simpler by hiding work details. Responsive layout cannot remove required state or inspection.",
+        authority: "Layout is Client presentation; content and exact action availability remain Host-driven.",
+        related: ["mobile drawer", "control dock", "touch affordance", "safe area"]
+      }
+    };
+
+    const turnStages = {
+      accepted: {
+        label: "prompt accepted",
+        phase: "working",
+        work: false,
+        active: true,
+        expanded: false,
+        response: false,
+        responseFinal: false,
+        abnormal: false,
+        interaction: false,
+        detached: false,
+        stop: true,
+        composerAction: "■",
+        composerMode: "Accepted prompt · exact Run target pending projection"
+      },
+      working: {
+        label: "working",
+        phase: "working",
+        work: true,
+        active: true,
+        expanded: false,
+        response: false,
+        responseFinal: false,
+        abnormal: false,
+        interaction: false,
+        detached: false,
+        stop: true,
+        composerAction: "■",
+        composerMode: "Empty Draft · exact-target Stop"
+      },
+      responding: {
+        label: "responding",
+        phase: "responding",
+        work: true,
+        active: false,
+        expanded: false,
+        response: true,
+        responseFinal: false,
+        abnormal: false,
+        interaction: false,
+        detached: false,
+        stop: true,
+        composerAction: "■",
+        composerMode: "Response streaming · exact-target Stop remains available"
+      },
+      streaming: {
+        label: "streaming response",
+        phase: "responding",
+        work: true,
+        active: false,
+        expanded: false,
+        response: true,
+        responseFinal: false,
+        abnormal: false,
+        interaction: false,
+        detached: false,
+        stop: true,
+        composerAction: "■",
+        composerMode: "Response revises in place · Draft can steer exact Run"
+      },
+      complete: {
+        label: "complete",
+        phase: "complete",
+        work: true,
+        active: false,
+        expanded: false,
+        response: true,
+        responseFinal: true,
+        abnormal: false,
+        interaction: false,
+        detached: false,
+        stop: false,
+        composerAction: "↑",
+        composerMode: "Follow-up Draft · Send starts the next Run"
+      },
+      followup: {
+        label: "follow-up ready",
+        phase: "complete",
+        work: true,
+        active: false,
+        expanded: false,
+        response: true,
+        responseFinal: true,
+        abnormal: false,
+        interaction: false,
+        detached: false,
+        stop: false,
+        composerAction: "↑",
+        composerMode: "Composer remains stable for the next Run"
+      },
+      abnormal: {
+        label: "abnormal settlement",
+        phase: "complete",
+        work: true,
+        active: false,
+        expanded: true,
+        response: false,
+        responseFinal: false,
+        abnormal: true,
+        interaction: false,
+        detached: false,
+        stop: false,
+        composerAction: "↑",
+        composerMode: "Run interrupted · follow-up remains available"
+      },
+      interaction: {
+        label: "interaction required",
+        phase: "working",
+        work: true,
+        active: true,
+        expanded: false,
+        response: false,
+        responseFinal: false,
+        abnormal: false,
+        interaction: true,
+        detached: false,
+        stop: true,
+        composerAction: "■",
+        composerMode: ""
+      },
+      detached: {
+        label: "detached reader",
+        phase: "responding",
+        work: true,
+        active: false,
+        expanded: false,
+        response: true,
+        responseFinal: false,
+        abnormal: false,
+        interaction: false,
+        detached: true,
+        stop: true,
+        composerAction: "■",
+        composerMode: "New output arrives without forcing the reader down"
+      }
+    };
+
+    const stateDetails = {
+      accepted: {
+        priority: "The accepted prompt is visible immediately; no worker output is required before acknowledgment.",
+        stable: "The Composer footprint and accepted prompt remain stable while exact Run projection arrives.",
+        vocabulary: "“The accepted prompt should appear in one rendered frame without optimistic Run identity.”"
+      },
+      working: {
+        priority: "Activity is the primary evidence while no response exists.",
+        stable: "The turn, prompt, Run association, and existing activity rows remain mounted.",
+        vocabulary: "“New tool activity should remain collapsed until I expand its disclosure.”"
+      },
+      responding: {
+        priority: "The first response content takes narrative priority as activity condenses.",
+        stable: "The prompt, turn, activity rows, and disclosure trigger retain identity and order.",
+        vocabulary: "“When the response begins, preserve my disclosure choice and insert the response once.”"
+      },
+      streaming: {
+        priority: "Readable response text is primary; compact Worked activity remains inspectable.",
+        stable: "The response entry and DOM node update in place across monotonic revisions.",
+        vocabulary: "“Keep the streaming response solid and do not replay entry animation on text deltas.”"
+      },
+      complete: {
+        priority: "The finalized answer remains primary; local actions become quietly available.",
+        stable: "Finalization changes busy/action treatment without replacing the response node.",
+        vocabulary: "“Reveal Copy response after finalization without adding a redundant success banner.”"
+      },
+      followup: {
+        priority: "The completed answer stays readable while the stable Composer invites the next intent.",
+        stable: "The prior turn remains historical; the Composer Draft can become a new exact Run submission.",
+        vocabulary: "“Keep the Composer footprint stable between finalization and the next follow-up.”"
+      }
+    };
+
+    const layerLabels = {
+      anatomy: "Anatomy",
+      authority: "Authority",
+      motion: "Motion",
+      accessibility: "Accessibility"
+    };
+
+    const scenarioControls = document.querySelectorAll("[data-scenario]");
+    const deviceControls = document.querySelectorAll("[data-device]");
+    const layerControls = document.querySelectorAll(".layer-button");
+    const hotspots = [...document.querySelectorAll(".hotspot")];
+    const mockTurn = document.querySelector("#mock-turn");
+    const mockWork = document.querySelector("#mock-work");
+    const mockWorkTrigger = document.querySelector("#mock-work-trigger");
+    const mockWorkPanel = document.querySelector("#mock-work-panel");
+    const mockResponse = document.querySelector("#mock-response");
+    const responseActions = document.querySelector("#response-actions");
+    const responseActionsHotspot = document.querySelector('[data-term="message-actions"]');
+    const mockAbnormal = document.querySelector("#mock-abnormal");
+    const mockComposer = document.querySelector("#mock-composer");
+    const mockInteraction = document.querySelector("#mock-interaction");
+    const mockJump = document.querySelector("#mock-jump");
+    const mockJumpHotspot = document.querySelector('[data-term="tail-following"]');
+    const mockStop = document.querySelector("#mock-stop");
+    const mockSend = document.querySelector("#mock-send");
+    const mockThread = document.querySelector("#mock-thread");
+    const scenarioReadout = document.querySelector("#scenario-readout");
+    const workLabel = document.querySelector("#work-label");
+    const workSummary = document.querySelector("#work-summary");
+    const runningActivity = document.querySelector("#running-activity");
+    const runningCopy = document.querySelector("#running-copy");
+    const runningMeta = document.querySelector("#running-meta");
+    const responseCopy = document.querySelector("#response-copy");
+    const composerMode = document.querySelector("#composer-mode");
+    const inspectorEmpty = document.querySelector("#inspector-empty");
+    const inspectorContent = document.querySelector("#inspector-content");
+    const stateSteps = document.querySelectorAll(".state-step");
+    const playButton = document.querySelector("#play-turn");
+    let activeLayer = "anatomy";
+    let activeTerm = null;
+    let currentStage = "working";
+    let manualExpanded = null;
+    let playTimers = [];
+
+    function applyTurnStage(stageName, options = {}) {
+      const stage = turnStages[stageName];
+      if (!stage) return;
+      currentStage = stageName;
+      if (options.resetManual) manualExpanded = null;
+      const expanded = manualExpanded ?? stage.expanded;
+      mockTurn.dataset.phase = stage.phase;
+      mockTurn.classList.toggle("is-working", stage.active);
+      mockWork.hidden = !stage.work;
+      mockWork.dataset.expanded = String(expanded);
+      mockWorkTrigger.setAttribute("aria-expanded", String(expanded));
+      mockWorkPanel.setAttribute("aria-hidden", String(!expanded));
+      mockWorkPanel.inert = !expanded;
+      workLabel.textContent = stageName === "abnormal" ? "Work details" : stage.active ? "Working" : "Worked";
+      workSummary.textContent = stage.active ? "Mapping terminology and interface layers" : "3 steps";
+      runningActivity.dataset.running = String(stage.active);
+      runningCopy.textContent = stage.active ? "Building the interactive anatomy" : "Built the interactive anatomy";
+      runningMeta.textContent = stage.active ? "tool activity · mutable" : "tool activity · finalized";
+      mockResponse.hidden = !stage.response;
+      mockResponse.setAttribute("aria-busy", String(stage.response && !stage.responseFinal));
+      responseActions.hidden = !stage.responseFinal;
+      responseActionsHotspot.hidden = !stage.responseFinal;
+      responseCopy.textContent = stageName === "streaming"
+        ? "The diagram now separates interface anatomy from state, authority, motion, accessibility, and viewport terminology while preserving one stable response entry."
+        : "The diagram now separates interface anatomy from state, authority, motion, and accessibility vocabulary.";
+      mockAbnormal.hidden = !stage.abnormal;
+      mockComposer.hidden = stage.interaction;
+      mockInteraction.hidden = !stage.interaction;
+      mockJump.hidden = !stage.detached;
+      mockJumpHotspot.hidden = !stage.detached;
+      mockStop.hidden = !stage.stop;
+      mockSend.textContent = stage.composerAction;
+      composerMode.textContent = stage.composerMode;
+      scenarioReadout.textContent = `Turn phase: ${stage.label}`;
+      scenarioControls.forEach(button => button.setAttribute("aria-pressed", String(button.dataset.scenario === stageName)));
+      if (stage.detached) mockThread.scrollTop = 0;
+      else mockThread.scrollTop = mockThread.scrollHeight;
+      syncStateStep(stageName);
+    }
+
+    function syncStateStep(stageName) {
+      const direct = [...stateSteps].find(button => button.dataset.state === stageName);
+      if (!direct) return;
+      stateSteps.forEach(button => button.setAttribute("aria-pressed", String(button === direct)));
+      updateStateDetail(stageName);
+    }
+
+    function updateStateDetail(stateName) {
+      const detail = stateDetails[stateName];
+      if (!detail) return;
+      document.querySelector("#state-priority").textContent = detail.priority;
+      document.querySelector("#state-stable").textContent = detail.stable;
+      document.querySelector("#state-vocabulary").textContent = detail.vocabulary;
+    }
+
+    function setLayer(layer) {
+      activeLayer = layer;
+      layerControls.forEach(button => button.setAttribute("aria-pressed", String(button.dataset.layer === layer)));
+      hotspots.forEach(hotspot => hotspot.classList.toggle("filtered", layer !== "feedback" && hotspot.dataset.layer !== layer));
+    }
+
+    function inspectTerm(termKey, focusHotspot = false) {
+      const term = terms[termKey];
+      if (!term) return;
+      activeTerm = termKey;
+      inspectorEmpty.hidden = true;
+      inspectorContent.hidden = false;
+      document.querySelector("#term-layer").textContent = layerLabels[term.layer] ?? term.category;
+      document.querySelector("#term-layer").dataset.layer = term.layer;
+      document.querySelector("#term-id").textContent = term.id;
+      document.querySelector("#term-name").textContent = term.name;
+      document.querySelector("#term-kicker").textContent = term.kicker;
+      document.querySelector("#term-definition").textContent = term.definition;
+      document.querySelector("#term-say").textContent = term.say;
+      document.querySelector("#term-avoid").textContent = term.avoid;
+      document.querySelector("#term-authority").textContent = term.authority;
+      document.querySelector("#term-related").replaceChildren(...term.related.map(label => {
+        const chip = document.createElement("span");
+        chip.className = "term-chip";
+        chip.textContent = label;
+        return chip;
+      }));
+      hotspots.forEach(hotspot => {
+        const selected = hotspot.dataset.term === termKey;
+        hotspot.classList.toggle("active", selected);
+        hotspot.setAttribute("aria-pressed", String(selected));
+      });
+      if (focusHotspot) document.querySelector(`.hotspot[data-term="${termKey}"]`)?.focus();
+    }
+
+    function clearInspection() {
+      activeTerm = null;
+      inspectorEmpty.hidden = false;
+      inspectorContent.hidden = true;
+      hotspots.forEach(hotspot => {
+        hotspot.classList.remove("active");
+        hotspot.setAttribute("aria-pressed", "false");
+      });
+    }
+
+    function visibleHotspots() {
+      return hotspots.filter(hotspot => !hotspot.classList.contains("filtered") && hotspot.offsetParent !== null);
+    }
+
+    function moveHotspot(direction) {
+      const visible = visibleHotspots();
+      if (visible.length === 0) return;
+      const currentIndex = visible.findIndex(hotspot => hotspot.dataset.term === activeTerm);
+      const nextIndex = currentIndex < 0 ? 0 : (currentIndex + direction + visible.length) % visible.length;
+      const next = visible[nextIndex];
+      inspectTerm(next.dataset.term, true);
+    }
+
+    function playTurn() {
+      playTimers.forEach(timer => clearTimeout(timer));
+      playTimers = [];
+      playButton.disabled = true;
+      manualExpanded = null;
+      const sequence = ["accepted", "working", "responding", "streaming", "complete", "followup"];
+      const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const interval = reduced ? 650 : 1350;
+      sequence.forEach((stage, index) => {
+        playTimers.push(setTimeout(() => {
+          applyTurnStage(stage);
+          if (index === sequence.length - 1) playButton.disabled = false;
+        }, index * interval));
+      });
+    }
+
+    function renderGlossary() {
+      const query = document.querySelector("#glossary-search").value.trim().toLowerCase();
+      const category = document.querySelector("#glossary-filter").value;
+      const matches = Object.entries(terms)
+        .filter(([, term]) => category === "all" || term.category === category)
+        .filter(([, term]) => `${term.name} ${term.kicker} ${term.definition} ${term.id} ${term.related.join(" ")}`.toLowerCase().includes(query))
+        .sort((left, right) => left[1].name.localeCompare(right[1].name));
+      const cards = matches.map(([key, term]) => {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "glossary-card";
+        card.dataset.layer = term.layer;
+        card.innerHTML = `<span class="card-layer">${escapeHtml(term.category)}</span><b>${escapeHtml(term.name)}</b><p>${escapeHtml(term.definition)}</p><code>${escapeHtml(term.id)}</code>`;
+        card.addEventListener("click", () => {
+          inspectTerm(key);
+          document.querySelector("#diagram").scrollIntoView({ block: "start", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+        });
+        return card;
+      });
+      if (cards.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "glossary-card";
+        empty.innerHTML = "<b>No matching terminology</b><p>Try a broader phrase or another category.</p>";
+        cards.push(empty);
+      }
+      document.querySelector("#glossary-list").replaceChildren(...cards);
+    }
+
+    function escapeHtml(value) {
+      return value.replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", "\"": "&quot;" })[character]);
+    }
+
+    function updateFeedbackSentence() {
+      const surface = document.querySelector("#builder-surface").value;
+      const context = document.querySelector("#builder-context").value;
+      const behavior = document.querySelector("#builder-behavior").value;
+      const reason = document.querySelector("#builder-reason").value;
+      document.querySelector("#feedback-sentence").textContent = `The ${surface}, ${context}, ${behavior} ${reason}.`;
+      document.querySelector("#copy-status").textContent = "";
+    }
+
+    async function copyFeedback() {
+      const text = document.querySelector("#feedback-sentence").textContent;
+      let copied = false;
+      if (navigator.clipboard) {
+        try {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        } catch {}
+      }
+      if (!copied) {
+        const textarea = document.createElement("textarea");
+        const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        textarea.value = text;
+        textarea.readOnly = true;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.append(textarea);
+        textarea.select();
+        try { copied = document.execCommand("copy"); } catch {}
+        textarea.remove();
+        focused?.focus({ preventScroll: true });
+      }
+      document.querySelector("#copy-status").textContent = copied ? "Copied" : "Select and copy the sentence manually";
+    }
+
+    scenarioControls.forEach(button => button.addEventListener("click", () => applyTurnStage(button.dataset.scenario)));
+    deviceControls.forEach(button => button.addEventListener("click", () => {
+      document.querySelector("#device-stage").dataset.device = button.dataset.device;
+      deviceControls.forEach(control => control.setAttribute("aria-pressed", String(control === button)));
+    }));
+    layerControls.forEach(button => button.addEventListener("click", () => setLayer(button.dataset.layer)));
+    hotspots.forEach(hotspot => hotspot.addEventListener("click", () => inspectTerm(hotspot.dataset.term)));
+    mockWorkTrigger.addEventListener("click", () => {
+      const current = mockWork.dataset.expanded === "true";
+      manualExpanded = !current;
+      mockWork.dataset.expanded = String(manualExpanded);
+      mockWorkTrigger.setAttribute("aria-expanded", String(manualExpanded));
+      mockWorkPanel.setAttribute("aria-hidden", String(!manualExpanded));
+      mockWorkPanel.inert = !manualExpanded;
+    });
+    stateSteps.forEach(button => button.addEventListener("click", () => {
+      applyTurnStage(button.dataset.state);
+      stateSteps.forEach(step => step.setAttribute("aria-pressed", String(step === button)));
+      updateStateDetail(button.dataset.state);
+    }));
+    document.querySelector("#clear-selection").addEventListener("click", clearInspection);
+    playButton.addEventListener("click", playTurn);
+    document.querySelector("#mock-jump").addEventListener("click", () => applyTurnStage("responding"));
+    document.querySelector("#glossary-search").addEventListener("input", renderGlossary);
+    document.querySelector("#glossary-filter").addEventListener("change", renderGlossary);
+    document.querySelectorAll(".builder-grid select").forEach(select => select.addEventListener("change", updateFeedbackSentence));
+    document.querySelector("#copy-feedback").addEventListener("click", copyFeedback);
+    document.addEventListener("keydown", event => {
+      if (event.target.matches("input, select, textarea")) return;
+      if (event.key === "Escape") clearInspection();
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        moveHotspot(1);
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveHotspot(-1);
+      }
+    });
+
+    applyTurnStage("working");
+    setLayer("anatomy");
+    renderGlossary();
+    updateFeedbackSentence();
+  </script>
+</body>
+</html>
