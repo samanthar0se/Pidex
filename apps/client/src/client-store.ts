@@ -1,5 +1,6 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { InteractionTerminalCause } from "../../../packages/protocol/src/status.js";
+import { randomUuid } from "./client-identifier.js";
 
 export type SessionAttention = "quiet" | "working" | "needs-response";
 export interface ProjectFact { projectId: string; name: string; }
@@ -163,7 +164,7 @@ export interface ClientState {
 export type ClientStore = StoreApi<ClientState>;
 
 export function createClientStore(adapters: ClientAdapters): ClientStore {
-  const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
+  const commandId = adapters.commandIds ?? randomUuid;
   const store = createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
     timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
@@ -211,9 +212,17 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         return;
       }
       set({ newSession: { ...initial, progress: { phase: "creating" } } });
-      const created = await adapters.host.createSession({
-        commandId: commandId(), projectId: initial.projectId, workspaceId: initial.workspaceId,
-      });
+      let created: SessionCreateResult;
+      try {
+        created = await adapters.host.createSession({
+          commandId: commandId(), projectId: initial.projectId, workspaceId: initial.workspaceId,
+        });
+      } catch (error) {
+        set({ newSession: { ...initial, progress: {
+          phase: "creation-failed", result: { kind: "uncertain", reason: commandFailureReason(error) },
+        } } });
+        return;
+      }
       if (created.kind !== "accepted" || !created.session) {
         const reason = created.kind === "accepted" ? "Host accepted creation without a Session projection" : created.reason;
         const kind = created.kind === "uncertain" ? "uncertain" : "rejected";
@@ -229,14 +238,19 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         newSession: durable,
       }));
       if (createEmpty) {
-        adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
+        await get().openSession(sessionId);
         return;
       }
       if (!adapters.host.submitRun) return;
       set({ newSession: { ...durable, progress: { phase: "submitting-run", sessionId } } });
-      const submitted = await adapters.host.submitRun({ commandId: commandId(), sessionId, prompt });
+      let submitted: CommandResult;
+      try {
+        submitted = await adapters.host.submitRun({ commandId: commandId(), sessionId, prompt });
+      } catch (error) {
+        submitted = { kind: "uncertain", reason: commandFailureReason(error) };
+      }
       set({ newSession: { ...durable, progress: { phase: "run-finished", sessionId, result: submitted } } });
-      if (submitted.kind === "accepted") adapters.routing.replace(`/sessions/${encodeURIComponent(sessionId)}`);
+      if (submitted.kind === "accepted") await get().openSession(sessionId);
     },
     async openSession(sessionId, navigation = "replace") {
       set({ selectedSessionId: sessionId, isSessionCurrent: false, newSession: undefined, paging: "idle" });
@@ -527,6 +541,10 @@ function offlineAuthority(authority: AuthorityState, error: unknown): AuthorityS
     status: "offline",
     reason: error instanceof Error ? error.message : "Host unavailable",
   };
+}
+
+function commandFailureReason(error: unknown): string {
+  return error instanceof Error ? error.message : "Host unavailable";
 }
 
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }

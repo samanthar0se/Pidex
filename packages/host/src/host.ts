@@ -84,6 +84,7 @@ import {
   type ViewIdentity,
   type ViewObserveMessage,
 } from "./control-messages.js";
+import { createClientAssetResolver } from "./client-assets.js";
 
 const DEFAULT_PORT = 7443;
 const RELEASE_ID = "pidex@0.1.0";
@@ -111,17 +112,6 @@ const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
 ]);
-
-interface PwaAsset {
-  file: string;
-  contentType: string;
-  cacheControl?: string;
-}
-
-interface ViteManifestEntry {
-  file: string;
-  css?: string[];
-}
 
 interface RunPresentationContext {
   client: WebSocket;
@@ -160,63 +150,7 @@ interface ClientDelivery {
 }
 
 const CLIENT_DIST = process.env.PIDEX_CLIENT_DIST ?? "apps/client/dist";
-const clientManifest = JSON.parse(
-  readFileSync(resolve(CLIENT_DIST, ".vite/manifest.json"), "utf8"),
-) as Record<string, ViteManifestEntry>;
-const clientEntry = clientManifest["index.html"];
-if (!clientEntry) {
-  throw new Error("production Client manifest has no index entry");
-}
-
-const PWA_ASSETS: Record<string, PwaAsset> = {
-  "/": {
-    file: `${CLIENT_DIST}/index.html`,
-    contentType: "text/html",
-    cacheControl: "no-cache",
-  },
-  "/index.html": {
-    file: `${CLIENT_DIST}/index.html`,
-    contentType: "text/html",
-    cacheControl: "no-cache",
-  },
-  [`/${clientEntry.file}`]: {
-    file: `${CLIENT_DIST}/${clientEntry.file}`,
-    contentType: "text/javascript",
-    cacheControl: "public, max-age=31536000, immutable",
-  },
-  ...Object.fromEntries(
-    (clientEntry.css ?? []).map(file => [`/${file}`, {
-      file: `${CLIENT_DIST}/${file}`,
-      contentType: "text/css",
-      cacheControl: "public, max-age=31536000, immutable",
-    }]),
-  ),
-  "/service-worker.js": {
-    file: `${CLIENT_DIST}/service-worker.js`,
-    contentType: "text/javascript",
-    cacheControl: "no-cache",
-  },
-  "/manifest.webmanifest": {
-    file: `${CLIENT_DIST}/manifest.webmanifest`,
-    contentType: "application/manifest+json",
-    cacheControl: "no-cache",
-  },
-  "/icons/pidex-app-icon-white.png": {
-    file: "icon/pidex-app-icon-white.png",
-    contentType: "image/png",
-    cacheControl: "public, max-age=86400",
-  },
-  "/icons/pidex-app-icon-white.svg": {
-    file: "icon/pidex-app-icon-white.svg",
-    contentType: "image/svg+xml",
-    cacheControl: "public, max-age=86400",
-  },
-  "/icons/pidex-gradient.svg": {
-    file: "icon/pidex-gradient.svg",
-    contentType: "image/svg+xml",
-    cacheControl: "public, max-age=86400",
-  },
-};
+const findPwaAsset = createClientAssetResolver(CLIENT_DIST);
 
 export interface HostOptions {
   dataDir: string;
@@ -367,8 +301,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         return;
       }
 
-      const asset = findPwaAsset(request);
+      const asset = findPwaAsset(request.method, request.url);
       if (!asset) {
+        response.writeHead(404).end();
+        return;
+      }
+
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(resolve(asset.file));
+      } catch {
         response.writeHead(404).end();
         return;
       }
@@ -379,7 +321,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           ? { "cache-control": asset.cacheControl }
           : {}),
       });
-      response.end(readFileSync(resolve(asset.file)));
+      response.end(bytes);
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
@@ -2276,21 +2218,6 @@ function handleApiRequest(
   }
 
   response.writeHead(404, { "cache-control": "no-store" }).end();
-}
-
-function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
-  const pathname = new URL(
-    request.url ?? "/",
-    "http://pidex.invalid",
-  ).pathname;
-  const asset = PWA_ASSETS[pathname];
-  if (asset) {
-    return asset;
-  }
-  if (request.method === "GET" && pathname.startsWith("/sessions/")) {
-    return PWA_ASSETS["/"];
-  }
-  return undefined;
 }
 
 function createDurabilityWarnings(

@@ -13,7 +13,12 @@ test("FX-COMP-01/06: New Session creates durable scope before accepting its init
   const drafts = new Map([["new-session", "keep this exact prompt"]]);
   const store = createClientStore({
     host: {
-      async readSession() { throw new Error("not used"); },
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "New Session", metadataRevision: 1, timelineRevision: 0 },
+          timeline: [],
+        };
+      },
       async createSession(command) {
         commands.push(command);
         return { kind: "accepted", session: {
@@ -42,10 +47,10 @@ test("FX-COMP-01/06: New Session creates durable scope before accepting its init
     { commandId: "command_1", projectId: "project_one", workspaceId: "workspace_two" },
     { commandId: "command_2", sessionId: "session_created", prompt: "keep this exact prompt" },
   ]);
-  assert.deepEqual(store.getState().newSession?.progress, {
-    phase: "run-finished", sessionId: "session_created", result: { kind: "accepted" },
-  });
-  assert.equal(store.getState().newSession?.draft, "keep this exact prompt");
+  assert.equal(store.getState().newSession, undefined);
+  assert.equal(store.getState().selectedSessionId, "session_created");
+  assert.equal(store.getState().isSessionCurrent, true);
+  assert.equal(drafts.get("new-session"), "keep this exact prompt");
 });
 
 test("FX-COMP-02/03 FX-STATE-03/05 FX-RESP-05/06: Composer commands retain the exact observed Run context", async () => {
@@ -189,6 +194,29 @@ test("FX-RESP-01/02/03: partial and uncertain creation outcomes preserve the exa
     projectId: "project_exact", draft: "do not duplicate", progress: {
       phase: "run-finished", sessionId: "session_durable",
       result: { kind: "uncertain", reason: "transport-lost" },
+    },
+  });
+});
+
+test("New Session adapter failures settle visibly instead of leaving submission stuck", async () => {
+  const store = createClientStore({
+    host: {
+      async readSession() { throw new Error("not used"); },
+      async createSession() { throw new Error("journal-failed"); },
+    },
+    drafts: { async read() { return "keep this prompt"; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "command-failed",
+  });
+
+  await store.getState().openNewSession();
+  await store.getState().submitNewSession();
+
+  assert.deepEqual(store.getState().newSession, {
+    draft: "keep this prompt",
+    progress: {
+      phase: "creation-failed",
+      result: { kind: "uncertain", reason: "journal-failed" },
     },
   });
 });

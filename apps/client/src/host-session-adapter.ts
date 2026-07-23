@@ -1,4 +1,5 @@
 import type { ClientAdapters, CommandResult, DiscoveryProjection, InteractionFact, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
+import { randomUuid } from "./client-identifier.js";
 import { ControlConnection } from "./control-connection.js";
 
 const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.interaction.basic"];
@@ -99,7 +100,7 @@ function readSession(sessionId: string): Promise<SessionProjection> {
 async function restoreSession(session: SessionFact): Promise<void> {
   await socketFor((message, socket, finish) => {
     if (message.type === "host.snapshot") {
-      socket.send(JSON.stringify({ type: "session.restore", commandId: crypto.randomUUID(), sessionId: session.sessionId, observedMetadataRevision: session.metadataRevision }));
+      socket.send(JSON.stringify({ type: "session.restore", commandId: randomUuid(), sessionId: session.sessionId, observedMetadataRevision: session.metadataRevision }));
     } else if (message.type === "host.change-set" && message.changes?.some((change: any) => change.type === "session.restored" && change.session.sessionId === session.sessionId)) finish(undefined);
     else if (message.type === "command.outcome" && message.outcome === "rejected") throw new Error(message.error ?? "Restore rejected");
   });
@@ -216,7 +217,7 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({
       type: "session.mark-read",
-      commandId: crypto.randomUUID(),
+      commandId: randomUuid(),
       sessionId,
       presentedTimelineRevision: timelineRevision,
       requiredCapabilityBasis: [{ id: "session.read-state", version: 1 }],

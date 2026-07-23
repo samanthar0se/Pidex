@@ -3,6 +3,7 @@ import {
   type DraftConflict,
   type EnvironmentOperations,
 } from "./client-environment-state.js";
+import { randomUuid } from "./client-identifier.js";
 
 export class ClientDraftStore {
   constructor(private readonly environment: EnvironmentOperations) {}
@@ -22,7 +23,7 @@ export class ClientDraftStore {
       const revision = current?.revision ?? 0;
       if (revision !== expectedRevision) {
         const conflict: DraftConflict = {
-          conflictId: crypto.randomUUID(),
+          conflictId: randomUuid(),
           text,
           revision: expectedRevision,
           generation,
