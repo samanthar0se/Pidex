@@ -34,8 +34,12 @@ npm ci
 npm run dev
 ```
 
-The Host serves plain HTTP on IPv4 wildcard port 7443. `PIDEX_DATA_DIR` and
-`PIDEX_PORT` may be set directly or in an untracked `.env` file.
+The Host serves plain HTTP on IPv4 wildcard port 7443. `PIDEX_DATA_DIR`,
+`PIDEX_PORT`, `PIDEX_PROJECT_PATH`, and `PIDEX_PROJECT_NAME` may be set directly
+or in an untracked `.env` file. Development registers the current checkout as
+the default Project; set `PIDEX_PROJECT_PATH` to use another checkout. Git-backed
+Projects offer Local, new managed worktree, and existing worktree choices when
+starting a Session.
 
 ### Background development Host
 
@@ -66,7 +70,8 @@ See [Prototype LAN operation](docs/prototype-lan.md) for the complete operator b
 
 The development entry point explicitly uses deterministic adapters and cannot
 select product composition through an environment switch. Optional fixture
-environment variables are `PIDEX_DATA_DIR` and `PIDEX_PORT`;
+environment variables are `PIDEX_DATA_DIR`, `PIDEX_PORT`,
+`PIDEX_PROJECT_PATH`, and `PIDEX_PROJECT_NAME`;
 explicit values override the development defaults.
 
 ```bash

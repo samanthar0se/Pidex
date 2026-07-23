@@ -38,6 +38,10 @@ Pidex's confirmation that accepted work and its dependencies crossed the applica
 **Pidex companion extension**:
 A separately versioned Pidex extension paired with supported Pi extension identities and versions. It translates explicitly registered, namespaced, data-only capabilities between worker-local Pi behavior and Host or Client surfaces; it does not tunnel raw Pi SDK objects or automatically render arbitrary Pi TUI components.
 
+**Managed worktree**:
+A detached Git worktree created beneath Host-owned data when a new Session requests isolation and persisted as that Session's Workspace. Its path is a locator, not its durable identity. Existing Git worktrees may also be selected as Workspaces and reused by more than one Session.
+_Avoid_: Branch, Project, Session
+
 **Session attention summary**:
 A user-facing discovery cue derived from exact Session, Run, and Interaction facts. It is `quiet` when no accepted work is progressing and no explicit user action can advance blocked work, `working` while accepted work progresses without user action, or `needs response` when explicit user action can advance blocked work. Read status is independent. It is not a Session lifecycle state.
 _Avoid_: Active Session, idle Session, Session state

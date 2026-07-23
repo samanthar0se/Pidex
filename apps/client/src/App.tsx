@@ -123,10 +123,58 @@ function NewSessionView({ store, newSession }: { store: ClientStore; newSession:
   const editable = newSession.progress.phase === "editing";
   const description = describeProgress(newSession.progress);
   const submit = () => void store.getState().submitNewSession();
+  const projects = store.getState().projects;
+  const worktreeCatalog = newSession.worktreeDiscovery.phase === "ready"
+    ? newSession.worktreeDiscovery.catalog
+    : undefined;
+  const existingWorktreePath = newSession.location.kind === "existing-worktree"
+    ? newSession.location.path
+    : undefined;
+  const locationValue = existingWorktreePath
+    ? `existing:${existingWorktreePath}`
+    : newSession.location.kind;
+  const locationDetail = existingWorktreePath
+    ? worktreeCatalog?.worktrees.find(item => item.path === existingWorktreePath)
+    : worktreeCatalog?.projectCheckout;
   return <section className="new-session" aria-label="New Session">
     <div className="scope-controls">
-      <label>Project <input disabled={!editable} value={newSession.projectId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: event.target.value || undefined, workspaceId: undefined })}/></label>
-      <label>Workspace <input disabled={!editable} value={newSession.workspaceId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: newSession.projectId, workspaceId: event.target.value || undefined })}/></label>
+      <label>Project
+        <select disabled={!editable} value={newSession.projectId ?? ""}
+          onChange={event => void store.getState().setNewSessionScope({ projectId: event.target.value || undefined })}>
+          <option value="">No Project</option>
+          {projects.map(project => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}
+        </select>
+      </label>
+      <label>Execution location
+        <select aria-label="Execution location" disabled={!editable || !newSession.projectId}
+          value={locationValue}
+          onChange={event => {
+            const value = event.target.value;
+            if (value === "local") void store.getState().setNewSessionLocation({ kind: "local" });
+            else if (value === "new-worktree") void store.getState().setNewSessionLocation({ kind: "new-worktree" });
+            else if (value.startsWith("existing:")) void store.getState().setNewSessionLocation({ kind: "existing-worktree", path: value.slice("existing:".length) });
+          }}>
+          <option value="local">Local checkout</option>
+          {worktreeCatalog?.available && <option value="new-worktree">New worktree from HEAD</option>}
+          {worktreeCatalog?.worktrees.map(worktree =>
+            <option key={worktree.path} value={`existing:${worktree.path}`}>
+              {worktree.branch ?? "Detached"} · {worktree.path}
+            </option>)}
+        </select>
+        <small className="location-detail">
+          {newSession.worktreeDiscovery.phase === "loading"
+            ? "Checking this Project for Git worktrees…"
+            : newSession.worktreeDiscovery.phase === "failed"
+              ? newSession.worktreeDiscovery.reason
+              : worktreeCatalog && !worktreeCatalog.available
+                ? worktreeCatalog.reason
+                : newSession.location.kind === "new-worktree"
+                  ? "Pidex will create a detached managed worktree for this Session."
+                  : locationDetail
+                    ? `${locationDetail.branch ?? "Detached HEAD"} · ${locationDetail.path}`
+                    : "Runs in the Project's configured checkout."}
+        </small>
+      </label>
       {(["Runtime", "Model", "Mode"] as const).map(choice => <label key={choice}>{choice}<select disabled title={`${choice} choices were not advertised by the Host`}><option>Host default — no choices advertised</option></select></label>)}
     </div>
     <label className="new-composer">First prompt

@@ -155,14 +155,16 @@ type WorkerReadinessErrorCode =
 export class PiSessionWorker {
   readonly #sessionId: string;
   readonly #pi: PiAdapter;
+  readonly #cwd?: string;
   #running = false;
   #activeSteeringReceiver?: PiSteeringReceiver;
   #activeCapabilityIds = new Set<string>();
   #abortController?: AbortController;
 
-  constructor(sessionId: string, pi: PiAdapter) {
+  constructor(sessionId: string, pi: PiAdapter, cwd?: string) {
     this.#sessionId = sessionId;
     this.#pi = pi;
+    this.#cwd = cwd;
   }
 
   static async probe(pi: PiAdapter): Promise<readonly WorkerCapability[]> {
@@ -247,6 +249,7 @@ export class PiSessionWorker {
         await execute({
           sessionId: this.#sessionId,
           prompt,
+          ...(this.#cwd ? { cwd: this.#cwd } : {}),
           projectTrust: true,
           resourceLoader: "public",
           onTimelineEvent: event => {

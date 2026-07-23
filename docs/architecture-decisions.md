@@ -4,6 +4,7 @@
 - **Authority and transport:** Node's SQLite binding uses WAL and `synchronous=FULL`. Plain HTTP serves React Client assets and a `ws` WebSocket control plane. Protocol messages use schema-shaped UTF-8 JSON.
 - **Identity and synchronization:** opaque UUID-qualified Host identity, epoch, and monotonic sequence are committed once in SQLite. Status is an initial `host.snapshot`, and CLI and PWA consume the same public transport contract.
 - **Testing:** Node's test runner drives real HTTP, WebSocket, React Client assets, CLI clients, and SQLite. Isolated temporary data roots make tests repeatable.
+- **Session Workspaces:** Git worktree discovery and creation are Host-owned. Managed worktrees are detached checkouts under the Host data directory, selected existing worktree paths are validated against `git worktree list`, and the resulting Workspace path is durably bound to the Session worker. Branch management, handoff, and automatic cleanup are separate lifecycle features.
 
 ## Windows Host installation (issue 02, transport superseded by PRD #163)
 

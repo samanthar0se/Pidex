@@ -31,6 +31,7 @@ The experience closely follows directly evidenced Codex desktop structure and vi
 - **FX-DISC-05:** Search filters the existing Projects + Chats hierarchy in place, may match hidden Workspace scope, hides nonmatches, and leaves the focused View intact on no results. Archived is a dedicated catalog mode with the same hierarchy; archived selection exposes reviewable content and Restore.
 - **FX-DISC-06:** Session selection installs a stable resource URL and behaves with browser history, reload, and parallel tabs/windows. View lifecycle never wakes, sleeps, archives, restores, or stops a Session.
 - **FX-DISC-07:** Global New Session opens an unscoped Client-local blank View. Project launch inherits only that Project. The blank View may add or change optional Workspace scope without replacing its draft, and exact scope remains visible above the Composer.
+- **FX-DISC-07A:** For a Git-backed Project, New Session offers the configured checkout, a new detached managed worktree, and every existing Git worktree currently discovered for that Project. The selection is made before creation; a newly created or selected worktree becomes the durable Session Workspace.
 - **FX-DISC-08:** Runtime, model, and mode controls are capability-dependent: omit unsupported choices and disable temporarily unavailable choices with a reason.
 - **FX-DISC-09:** The primary first-submit action creates the durable Session and accepts its initial Run as distinguishable Host operations. **Create empty Session** remains in the secondary Composer menu.
 - **FX-DISC-10:** Creation rejection preserves scope and draft in the blank View. Creation success plus first-Run rejection selects the durable empty Session and retains the draft. Transport uncertainty preserves the draft, blocks unsafe duplicate submission, and reconciles before another Host mutation.
@@ -81,6 +82,7 @@ The experience closely follows directly evidenced Codex desktop structure and vi
 - **FX-TRUST-03:** Disable every Host mutation until required scopes reconcile under a compatible basis. Preserve valid Client-environment draft editing and never queue offline commands.
 - **FX-TRUST-04:** Transport-uncertain commands reconcile the original Command ID and validity context to accepted, rejected, expired, or indeterminate; they never change content, target, preconditions, or identity.
 - **FX-TRUST-05:** Update-required is terminal. Reconnection verifies Host continuity and protocol basis before current controls return.
+- **FX-TRUST-06:** Compatibility is forward-rendering only. A current Client renders every Session projection exposed by its compatible current Host, including Sessions originally created or displayed through an earlier Client release, without a legacy presentation branch. An older Client need not work with a newer Host, and this requirement does not require the Host to import an unsupported older authority schema.
 
 ## Keyboard and focus contract
 

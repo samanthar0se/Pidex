@@ -137,12 +137,16 @@ export type HostStatus = z.infer<typeof hostStatusSchema>;
 export const projectSummarySchema = z.object({
   projectId: z.string(),
   name: z.string(),
+  path: z.string().min(1).optional(),
 });
 
 export const workspaceSummarySchema = z.object({
   workspaceId: z.string(),
   projectId: z.string(),
   name: z.string(),
+  path: z.string().min(1).optional(),
+  kind: z.enum(["checkout", "worktree"]).optional(),
+  managed: z.boolean().optional(),
 });
 
 export const sessionReadStateSchema = z.strictObject({

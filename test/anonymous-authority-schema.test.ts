@@ -30,7 +30,11 @@ test("fresh authority selects the exact anonymous schema", () => {
   ]);
   assert.equal(columns(database, "interactions").includes("responding_" + "device_label"), false);
   assert.equal(columns(database, "steering").includes("device_" + "id"), false);
-  assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 1);
+  assert.deepEqual(columns(database, "projects"), ["project_id", "name", "path"]);
+  assert.deepEqual(columns(database, "workspaces"), [
+    "workspace_id", "project_id", "name", "path", "kind", "managed",
+  ]);
+  assert.equal(database.prepare("PRAGMA user_version").get()?.user_version, 2);
 
   database.close();
 });

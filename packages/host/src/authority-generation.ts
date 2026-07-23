@@ -19,7 +19,7 @@ import {
 import { AuthorityStore, type InitialCatalog } from "./store.js";
 
 const GENERATION_FORMAT_VERSION = 1;
-const AUTHORITY_SCHEMA_VERSION = 1;
+const AUTHORITY_SCHEMA_VERSION = 2;
 const INITIAL_ACTIVATION_INDEX = 1;
 const CLEANUP_ACTIVATION_INDEX = 2;
 const CLEANUP_LINEAGE_LENGTH = 2;

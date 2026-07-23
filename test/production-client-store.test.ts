@@ -186,11 +186,71 @@ test("FX-RESP-01/02/03: partial and uncertain creation outcomes preserve the exa
   assert.equal(creates, 1);
   assert.equal(submissions, 1);
   assert.deepEqual(store.getState().newSession, {
-    projectId: "project_exact", draft: "do not duplicate", progress: {
+    projectId: "project_exact", draft: "do not duplicate",
+    location: { kind: "local" },
+    worktreeDiscovery: { phase: "idle" },
+    progress: {
       phase: "run-finished", sessionId: "session_durable",
       result: { kind: "uncertain", reason: "transport-lost" },
     },
   });
+});
+
+test("New Session discovers Git worktrees and sends the selected execution location", async () => {
+  const commands: unknown[] = [];
+  const store = createClientStore({
+    host: {
+      async readSession() { throw new Error("not used"); },
+      async listProjectWorktrees(projectId) {
+        return {
+          projectId,
+          available: true,
+          projectCheckout: {
+            path: "C:\\code\\project",
+            head: "abc",
+            branch: "main",
+            isProjectCheckout: true,
+          },
+          worktrees: [{
+            path: "C:\\code\\existing",
+            head: "def",
+            branch: "feature",
+            isProjectCheckout: false,
+          }],
+        };
+      },
+      async createSession(command) {
+        commands.push(command);
+        return {
+          kind: "accepted",
+          session: {
+            sessionId: "session-worktree",
+            name: "New Session",
+            metadataRevision: 1,
+            timelineRevision: 1,
+          },
+        };
+      },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "create-worktree-session",
+  });
+
+  await store.getState().openNewSession({ projectId: "project" });
+  assert.equal(store.getState().newSession?.worktreeDiscovery.phase, "ready");
+  await store.getState().setNewSessionLocation({
+    kind: "existing-worktree",
+    path: "C:\\code\\existing",
+  });
+  await store.getState().submitNewSession(true);
+
+  assert.deepEqual(commands, [{
+    commandId: "create-worktree-session",
+    projectId: "project",
+    workspaceId: undefined,
+    worktree: { kind: "existing", path: "C:\\code\\existing" },
+  }]);
 });
 
 test("FX-DISC-02 FX-DISC-03 FX-DISC-04: discovery keeps authoritative Project and Chats hierarchy while searching", async () => {

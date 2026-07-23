@@ -55,7 +55,7 @@ V1 includes Pi's core conversation and Session capabilities exposed through the 
 
 V1 preserves architectural seams, but does not deliver:
 
-- file management, Git review, worktree management, terminals, or managed background processes;
+- file management, Git review, worktree cleanup or handoff, terminals, or managed background processes;
 - Electron packaging or native mobile applications;
 - public-internet relay infrastructure or multiple Hosts;
 - multiple users, roles, teams, tenants, or per-Device authorization scopes;
@@ -168,6 +168,8 @@ Each worker starts suspended, is assigned to its own non-breakaway Windows Job O
 The daemon is authoritative for Session identity, Run identity, Session-local Run order, lifecycle, and terminal outcomes.
 
 A new Session is committed as available and sleeping before a worker or Pi artifact is required. It may remain empty. When the user submits an initial prompt, Session creation and Run acceptance remain distinguishable operations; an empty Session survives failure to accept or execute its first Run.
+
+For a Git-backed Project, New Session chooses its execution location before creation: the configured Project checkout, a newly created detached managed worktree, or an existing Git worktree discovered for that Project. A new managed worktree is persisted as the Session's Workspace before its first Run, and every worker generation for that Session is bound to that Workspace path. Worktree cleanup, branch creation, local-change transfer, and Local/Worktree handoff remain outside this scope.
 
 A prompt becomes a Run only after the daemon validates it, assigns identity and order, commits its acceptance and receipt durably, and acknowledges acceptance. Rejection before this boundary creates no Run. Every accepted Run must eventually have exactly one visible terminal outcome.
 
@@ -287,6 +289,8 @@ The opening handshake binds the connection to expected Host identity and negotia
 The Host advertises stable versioned capability identifiers and constraints, including worker-derived optional capabilities. Commands declare required capabilities. Unsupported controls are omitted or disabled, and unsupported commands are rejected.
 
 Schemas must define which optional fields are ignorable. An unknown Change type, unsupported required capability, or unknown semantic transition is a protocol fault. The Client must stop applying that affected projection and reconnect, reset, or update; it must not skip the transition while claiming to be current.
+
+Client compatibility is forward-rendering only. A current Client must render every Session projection exposed by its compatible current Host regardless of which earlier Client release originally created or displayed that Session. Client release provenance is not part of Session identity or presentation semantics. An older Client is not required to connect, synchronize, or control a newer Host after the Host is updated; an incompatible pair fails with `update required`. This guarantee does not require a newer Host to import or migrate authority from an unsupported older Host schema.
 
 ### 8.3 Cursors, revisions, and Change Sets
 
@@ -574,9 +578,9 @@ Expired pairing verifiers, temporary/staging files, superseded derived indexes, 
 
 ### 12.5 Upgrade and migration
 
-Before data-changing upgrades, the daemon preflights compatibility, integrity, and free space; creates a protected recovery snapshot; stops mutations and workers; migrates into a new versioned data generation; validates it; and activates atomically. Failure leaves the prior generation runnable by the prior release.
+Host authority schemas are exact-version contracts. A Host release may require fresh authority and may reject authority created by an unsupported older Host schema; Pidex does not promise an in-place migration for every Host update. This is separate from Client forward rendering: a current Client must display every historical Session the current Host successfully exposes, but the Host need not import Sessions from an authority schema it does not support.
 
-Pi artifacts are copy-migrated lazily when a Session first wakes under the new release. The original remains protected until a new worker verifies a stable checkpoint. A failed artifact migration isolates that Session while its Host Timeline stays readable.
+When a release explicitly declares an older Host schema supported for upgrade, the daemon preflights compatibility, integrity, and free space; creates a protected recovery snapshot; stops mutations and workers; migrates into a new versioned data generation; validates it; and activates atomically. Failure leaves the prior generation runnable by the prior release. Pi artifacts in such a supported upgrade are copy-migrated lazily when a Session first wakes under the new release. The original remains protected until a new worker verifies a stable checkpoint. A failed artifact migration isolates that Session while its Host Timeline stays readable.
 
 ## 13. Backup, storage protection, and recovery
 

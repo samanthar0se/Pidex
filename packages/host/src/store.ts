@@ -368,6 +368,11 @@ export interface InitialCatalog {
   workspaces?: WorkspaceSummary[];
 }
 
+export interface SessionCreation {
+  sessionId?: string;
+  workspace?: WorkspaceSummary;
+}
+
 export interface AuthorityGenerationMetadata {
   generationId: string;
   predecessorId: string | null;
@@ -448,13 +453,37 @@ export class AuthorityStore {
     }
     for (const project of catalog.projects ?? []) {
       this.#db
-        .prepare("INSERT OR IGNORE INTO projects VALUES (?, ?)")
-        .run(project.projectId, project.name);
+        .prepare(
+          `INSERT INTO projects (project_id, name, path) VALUES (?, ?, ?)
+           ON CONFLICT(project_id) DO UPDATE SET
+             name = excluded.name,
+             path = COALESCE(excluded.path, projects.path)`,
+        )
+        .run(project.projectId, project.name, project.path ?? null);
     }
     for (const workspace of catalog.workspaces ?? []) {
       this.#db
-        .prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)")
-        .run(workspace.workspaceId, workspace.projectId, workspace.name);
+        .prepare(
+          `INSERT INTO workspaces
+             (workspace_id, project_id, name, path, kind, managed)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(workspace_id) DO UPDATE SET
+             name = excluded.name,
+             path = COALESCE(excluded.path, workspaces.path),
+             kind = COALESCE(excluded.kind, workspaces.kind),
+             managed = MAX(
+               COALESCE(workspaces.managed, 0),
+               COALESCE(excluded.managed, 0)
+             )`,
+        )
+        .run(
+          workspace.workspaceId,
+          workspace.projectId,
+          workspace.name,
+          workspace.path ?? null,
+          workspace.kind ?? null,
+          workspace.managed === undefined ? null : Number(workspace.managed),
+        );
     }
   }
 
@@ -486,12 +515,13 @@ export class AuthorityStore {
   } {
     const projects = this.#db
       .prepare(
-        "SELECT project_id AS projectId, name FROM projects ORDER BY name",
+        "SELECT project_id AS projectId, name, path FROM projects ORDER BY name",
       )
       .all();
     const workspaces = this.#db
       .prepare(
-        `SELECT workspace_id AS workspaceId, project_id AS projectId, name
+        `SELECT workspace_id AS workspaceId, project_id AS projectId, name,
+                path, kind, managed
          FROM workspaces ORDER BY name`,
       )
       .all();
@@ -513,24 +543,51 @@ export class AuthorityStore {
     }
 
     return {
-      projects: projectSummarySchema.array().parse(projects),
-      workspaces: workspaceSummarySchema.array().parse(workspaces),
+      projects: projects.map(projectFromRow),
+      workspaces: workspaces.map(workspaceFromRow),
       sessions,
       archivedSessions,
     };
+  }
+
+  project(projectId: string): ProjectSummary | undefined {
+    const row = this.#db
+      .prepare(
+        "SELECT project_id AS projectId, name, path FROM projects WHERE project_id = ?",
+      )
+      .get(projectId);
+    return row ? projectFromRow(row) : undefined;
+  }
+
+  sessionWorkingDirectory(sessionId: string): string | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT COALESCE(w.path, p.path) AS path
+         FROM sessions s
+         LEFT JOIN workspaces w ON w.workspace_id = s.workspace_id
+         LEFT JOIN projects p ON p.project_id = s.project_id
+         WHERE s.session_id = ?`,
+      )
+      .get(sessionId) as { path?: unknown } | undefined;
+    return typeof row?.path === "string" ? row.path : undefined;
   }
 
   createSession(
     projectId: string | null,
     workspaceId: string | null,
     now: number,
+    creation: SessionCreation = {},
   ): { session: SessionSummary; cursor: string } {
     this.#db.exec("BEGIN IMMEDIATE");
     try {
+      if (creation.workspace) {
+        this.insertWorkspace(creation.workspace);
+        workspaceId = creation.workspace.workspaceId;
+      }
       this.validateSessionScope(projectId, workspaceId);
 
       const session: SessionSummary = {
-        sessionId: `session_${randomUUID()}`,
+        sessionId: creation.sessionId ?? `session_${randomUUID()}`,
         name: "Untitled Session",
         projectId,
         workspaceId,
@@ -2512,6 +2569,46 @@ export class AuthorityStore {
     }
   }
 
+  private insertWorkspace(workspace: WorkspaceSummary): void {
+    const existing = this.#db
+      .prepare(
+        `SELECT project_id AS projectId, path
+         FROM workspaces WHERE workspace_id = ?`,
+      )
+      .get(workspace.workspaceId) as
+        | { projectId: string; path: string | null }
+        | undefined;
+    if (
+      existing &&
+      (existing.projectId !== workspace.projectId ||
+        (existing.path && workspace.path && existing.path !== workspace.path))
+    ) {
+      throw new Error("workspace-identity-conflict");
+    }
+    this.#db
+      .prepare(
+        `INSERT INTO workspaces
+           (workspace_id, project_id, name, path, kind, managed)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(workspace_id) DO UPDATE SET
+           name = excluded.name,
+           path = COALESCE(excluded.path, workspaces.path),
+           kind = COALESCE(excluded.kind, workspaces.kind),
+           managed = MAX(
+             COALESCE(workspaces.managed, 0),
+             COALESCE(excluded.managed, 0)
+           )`,
+      )
+      .run(
+        workspace.workspaceId,
+        workspace.projectId,
+        workspace.name,
+        workspace.path ?? null,
+        workspace.kind ?? null,
+        workspace.managed === undefined ? null : Number(workspace.managed),
+      );
+  }
+
   private sessionHasActiveWork(sessionId: string): boolean {
     const activeRun = this.#db
       .prepare(
@@ -2788,6 +2885,36 @@ export class AuthorityStore {
 
 type SessionRow = z.infer<typeof sessionRowSchema>;
 type StoredReadStateBasis = z.infer<typeof storedReadStateBasisSchema>;
+
+function projectFromRow(row: unknown): ProjectSummary {
+  const value = row as { projectId?: unknown; name?: unknown; path?: unknown };
+  return projectSummarySchema.parse({
+    projectId: value.projectId,
+    name: value.name,
+    ...(typeof value.path === "string" ? { path: value.path } : {}),
+  });
+}
+
+function workspaceFromRow(row: unknown): WorkspaceSummary {
+  const value = row as {
+    workspaceId?: unknown;
+    projectId?: unknown;
+    name?: unknown;
+    path?: unknown;
+    kind?: unknown;
+    managed?: unknown;
+  };
+  return workspaceSummarySchema.parse({
+    workspaceId: value.workspaceId,
+    projectId: value.projectId,
+    name: value.name,
+    ...(typeof value.path === "string" ? { path: value.path } : {}),
+    ...(typeof value.kind === "string" ? { kind: value.kind } : {}),
+    ...(typeof value.managed === "number"
+      ? { managed: Boolean(value.managed) }
+      : {}),
+  });
+}
 
 function sessionFromRow(row: SessionRow): SessionSummary {
   const {

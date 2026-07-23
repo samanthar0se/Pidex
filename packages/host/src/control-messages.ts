@@ -14,7 +14,13 @@ export interface SessionCreateMessage {
   commandId: string;
   projectId?: string | null;
   workspaceId?: string | null;
+  worktree?: SessionWorktreeSelection;
 }
+
+export type SessionWorktreeSelection =
+  | { kind: "local" }
+  | { kind: "new" }
+  | { kind: "existing"; path: string };
 
 export interface SessionForkMessage {
   type: "session.fork";
@@ -149,7 +155,11 @@ export function isSessionCreateMessage(
     value.type === "session.create" &&
     typeof value.commandId === "string" &&
     isOptionalNullableString(value.projectId) &&
-    isOptionalNullableString(value.workspaceId)
+    isOptionalNullableString(value.workspaceId) &&
+    isSessionWorktreeSelection(value.worktree) &&
+    (value.worktree === undefined ||
+      value.worktree.kind === "local" ||
+      (typeof value.projectId === "string" && value.workspaceId == null))
   );
 }
 
@@ -404,4 +414,21 @@ function isPositiveSafeInteger(value: unknown): boolean {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isSessionWorktreeSelection(
+  value: unknown,
+): value is SessionWorktreeSelection | undefined {
+  if (value === undefined) return true;
+  if (!isObject(value)) return false;
+  if (value.kind === "local" || value.kind === "new") {
+    return Object.keys(value).length === 1;
+  }
+  return (
+    value.kind === "existing" &&
+    typeof value.path === "string" &&
+    value.path.length > 0 &&
+    value.path.length <= 32_767 &&
+    Object.keys(value).length === 2
+  );
 }

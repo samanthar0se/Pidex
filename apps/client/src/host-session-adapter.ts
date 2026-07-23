@@ -43,9 +43,25 @@ async function readCatalog(): Promise<DiscoveryProjection> {
   return socketFor((message, socket, finish) => {
     if (message.type === "host.snapshot") setScope(socket, []);
     else if (message.type === "scope.reset" && message.barrier?.scope?.kind === "host") {
-      finish({ projects: message.snapshot.projects, sessions: message.snapshot.sessions, archivedSessions: message.snapshot.archivedSessions });
+      finish({
+        projects: message.snapshot.projects,
+        workspaces: message.snapshot.workspaces,
+        sessions: message.snapshot.sessions,
+        archivedSessions: message.snapshot.archivedSessions,
+      });
     }
   });
+}
+
+async function listProjectWorktrees(projectId: string) {
+  const response = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/worktrees`,
+    { cache: "no-store" },
+  );
+  if (!response.ok) {
+    throw new Error(`Worktree discovery unavailable (${response.status})`);
+  }
+  return await response.json();
 }
 
 function readSession(sessionId: string): Promise<SessionProjection> {
@@ -175,6 +191,7 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   readCatalog,
   readSession,
   restoreSession,
+  listProjectWorktrees,
   createSession,
   submitRun,
   steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),

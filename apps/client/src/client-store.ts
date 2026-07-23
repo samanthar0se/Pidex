@@ -2,7 +2,15 @@ import { createStore, type StoreApi } from "zustand/vanilla";
 import type { InteractionTerminalCause } from "../../../packages/protocol/src/status.js";
 
 export type SessionAttention = "quiet" | "working" | "needs-response";
-export interface ProjectFact { projectId: string; name: string; }
+export interface ProjectFact { projectId: string; name: string; path?: string; }
+export interface WorkspaceFact {
+  workspaceId: string;
+  projectId: string;
+  name: string;
+  path?: string;
+  kind?: "checkout" | "worktree";
+  managed?: boolean;
+}
 export interface SessionFact {
   sessionId: string;
   name: string;
@@ -44,12 +52,34 @@ export interface TimelineChange { baseRevision: number; revision: number; entry:
 export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
 export interface DiscoveryProjection {
   projects: ProjectFact[];
+  workspaces?: WorkspaceFact[];
   sessions: SessionFact[];
   archivedSessions: SessionFact[];
 }
 export interface DiscoveryGroup { id: string; name: string; sessions: SessionFact[]; }
 
 export interface NewSessionScope { projectId?: string; workspaceId?: string }
+export type NewSessionLocation =
+  | { kind: "local" }
+  | { kind: "new-worktree" }
+  | { kind: "existing-worktree"; path: string };
+export interface WorktreeFact {
+  path: string;
+  head: string;
+  branch: string | null;
+  isProjectCheckout: boolean;
+}
+export interface ProjectWorktreeCatalog {
+  projectId: string;
+  available: boolean;
+  reason?: string;
+  projectCheckout?: WorktreeFact;
+  worktrees: WorktreeFact[];
+}
+export type WorktreeDiscovery =
+  | { phase: "idle" | "loading" }
+  | { phase: "ready"; catalog: ProjectWorktreeCatalog }
+  | { phase: "failed"; reason: string };
 export type CommandResult =
   | { kind: "accepted" }
   | { kind: "rejected"; reason: string }
@@ -72,6 +102,8 @@ export type NewSessionProgress =
   | { phase: "run-finished"; sessionId: string; result: CommandResult };
 export interface NewSessionState extends NewSessionScope {
   draft: string;
+  location: NewSessionLocation;
+  worktreeDiscovery: WorktreeDiscovery;
   progress: NewSessionProgress;
 }
 
@@ -90,7 +122,11 @@ export interface ClientAdapters {
     readCatalog?(): Promise<DiscoveryProjection>;
     readSession(sessionId: string): Promise<SessionProjection>;
     restoreSession?(session: SessionFact): Promise<void>;
-    createSession?(command: { commandId: string } & NewSessionScope): Promise<SessionCreateResult>;
+    listProjectWorktrees?(projectId: string): Promise<ProjectWorktreeCatalog>;
+    createSession?(command: {
+      commandId: string;
+      worktree?: { kind: "new" } | { kind: "existing"; path: string };
+    } & NewSessionScope): Promise<SessionCreateResult>;
     submitRun?(command: { commandId: string; sessionId: string; prompt: string }): Promise<CommandResult>;
     steerRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedTimelineRevision: number; text: string }): Promise<CommandResult>;
     stopRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedState: "executing"; observedTimelineRevision: number }): Promise<CommandResult>;
@@ -120,6 +156,7 @@ export interface ClientAdapters {
 export interface ClientState {
   selectedSessionId?: string;
   projects: readonly ProjectFact[];
+  workspaces: readonly WorkspaceFact[];
   sessions: Readonly<Record<string, SessionFact>>;
   sessionOrder: readonly string[];
   archivedSessions: Readonly<Record<string, SessionFact>>;
@@ -141,6 +178,7 @@ export interface ClientState {
   openSession(sessionId: string, history?: "push" | "replace" | "none"): Promise<void>;
   openNewSession(scope?: NewSessionScope): Promise<void>;
   setNewSessionScope(scope: NewSessionScope): Promise<void>;
+  setNewSessionLocation(location: NewSessionLocation): Promise<void>;
   setNewSessionDraft(value: string): Promise<void>;
   submitNewSession(createEmpty?: boolean): Promise<void>;
   setDraft(value: string): Promise<void>;
@@ -165,7 +203,7 @@ export type ClientStore = StoreApi<ClientState>;
 export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
   const store = createStore<ClientState>((set, get) => ({
-    projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
+    projects: [], workspaces: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
     timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     authority: { status: "current", lastSynchronizedAt: null },
@@ -186,13 +224,104 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     },
     async openNewSession(scope = {}) {
       const draft = await adapters.drafts.read("new-session");
-      set({ selectedSessionId: undefined, newSession: { ...scope, draft, progress: { phase: "editing" } } });
+      set({
+        selectedSessionId: undefined,
+        newSession: {
+          ...scope,
+          draft,
+          location: { kind: "local" },
+          worktreeDiscovery: { phase: "idle" },
+          progress: { phase: "editing" },
+        },
+      });
       adapters.routing.replace("/new");
+      if (scope.projectId) await get().setNewSessionScope(scope);
     },
     async setNewSessionScope(scope) {
       const current = get().newSession;
       if (!current || current.progress.phase !== "editing") return;
-      set({ newSession: { ...current, ...scope } });
+      const projectChanged = current.projectId !== scope.projectId;
+      set({
+        newSession: {
+          ...current,
+          ...scope,
+          ...(projectChanged
+            ? {
+                workspaceId: undefined,
+                location: { kind: "local" as const },
+                worktreeDiscovery: { phase: "idle" as const },
+              }
+            : {}),
+        },
+      });
+      if (!scope.projectId || !adapters.host.listProjectWorktrees) return;
+      const projectId = scope.projectId;
+      const latest = get().newSession;
+      if (!latest || latest.progress.phase !== "editing") return;
+      set({
+        newSession: {
+          ...latest,
+          worktreeDiscovery: { phase: "loading" },
+        },
+      });
+      try {
+        const catalog = await adapters.host.listProjectWorktrees(projectId);
+        const after = get().newSession;
+        if (
+          !after ||
+          after.progress.phase !== "editing" ||
+          after.projectId !== projectId
+        ) return;
+        set({
+          newSession: {
+            ...after,
+            worktreeDiscovery: { phase: "ready", catalog },
+          },
+        });
+      } catch (error) {
+        const after = get().newSession;
+        if (
+          !after ||
+          after.progress.phase !== "editing" ||
+          after.projectId !== projectId
+        ) return;
+        set({
+          newSession: {
+            ...after,
+            worktreeDiscovery: {
+              phase: "failed",
+              reason: error instanceof Error
+                ? error.message
+                : "Worktree discovery failed",
+            },
+          },
+        });
+      }
+    },
+    async setNewSessionLocation(location) {
+      const current = get().newSession;
+      if (!current || current.progress.phase !== "editing") return;
+      if (
+        location.kind !== "local" &&
+        (current.worktreeDiscovery.phase !== "ready" ||
+          !current.worktreeDiscovery.catalog.available)
+      ) return;
+      const catalog = current.worktreeDiscovery.phase === "ready"
+        ? current.worktreeDiscovery.catalog
+        : undefined;
+      if (
+        location.kind === "existing-worktree" &&
+        !catalog?.worktrees.some(item =>
+          item.path === location.path
+        )
+      ) return;
+      set({
+        newSession: {
+          ...current,
+          workspaceId: undefined,
+          location,
+        },
+      });
     },
     async setNewSessionDraft(value) {
       const current = get().newSession;
@@ -212,7 +341,19 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       }
       set({ newSession: { ...initial, progress: { phase: "creating" } } });
       const created = await adapters.host.createSession({
-        commandId: commandId(), projectId: initial.projectId, workspaceId: initial.workspaceId,
+        commandId: commandId(),
+        projectId: initial.projectId,
+        workspaceId: initial.workspaceId,
+        ...(initial.location.kind === "new-worktree"
+          ? { worktree: { kind: "new" as const } }
+          : initial.location.kind === "existing-worktree"
+            ? {
+                worktree: {
+                  kind: "existing" as const,
+                  path: initial.location.path,
+                },
+              }
+            : {}),
       });
       if (created.kind !== "accepted" || !created.session) {
         const reason = created.kind === "accepted" ? "Host accepted creation without a Session projection" : created.reason;
@@ -514,6 +655,7 @@ function activeInteractions(interactions: readonly InteractionFact[]): Interacti
 function discoveryStateFrom(catalog: DiscoveryProjection) {
   return {
     projects: catalog.projects,
+    workspaces: catalog.workspaces ?? [],
     sessions: byId(catalog.sessions),
     sessionOrder: catalog.sessions.map(item => item.sessionId),
     archivedSessions: byId(catalog.archivedSessions),

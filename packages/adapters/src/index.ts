@@ -30,6 +30,8 @@ export type PiSteeringReceiver = (text: string) => Promise<void>;
 export interface PiExecuteRequest {
   sessionId: string;
   prompt: string;
+  /** Canonical Project checkout or Workspace path permanently bound to this Session. */
+  cwd?: string;
   projectTrust: true;
   resourceLoader: "public";
   /** Receives schema-shaped runtime facts; SDK objects never cross this seam. */

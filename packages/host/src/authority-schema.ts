@@ -23,12 +23,16 @@ const CREATE_AUTHORITY_SCHEMA = `
   );
   CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    path TEXT
   );
   CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id),
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    path TEXT,
+    kind TEXT CHECK(kind IS NULL OR kind IN ('checkout','worktree')),
+    managed INTEGER CHECK(managed IS NULL OR managed IN (0,1))
   );
   CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -133,7 +137,7 @@ const CREATE_AUTHORITY_SCHEMA = `
     created_at INTEGER NOT NULL
   );
 `;
-const AUTHORITY_SCHEMA_VERSION = 1;
+const AUTHORITY_SCHEMA_VERSION = 2;
 const AUTHORITY_TABLES = Array.from(
   CREATE_AUTHORITY_SCHEMA.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g),
   match => match[1],

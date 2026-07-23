@@ -47,12 +47,14 @@ import {
   type InitialCatalog,
   type MarkReadResult,
   type RenameOutcome,
+  type SessionCreation,
   type SubmitOutcome,
 } from "./store.js";
 import {
   StorageProtection,
   type StorageProtectionStatus,
 } from "./storage-protection.js";
+import { GitWorktreeManager } from "./git-worktrees.js";
 import {
   capabilityBasisKey,
   isInteractionResolveMessage,
@@ -98,6 +100,7 @@ const COOPERATIVE_CANCELLATION_DETAIL =
 const FORCED_CANCELLATION_DETAIL =
   "Cancelled by force-stopping the contained Session process tree. Recoverable partial output was retained; committed side effects may remain and were not rolled back.";
 const TIMELINE_API_PATH = /^\/api\/sessions\/([^/]+)\/timeline$/;
+const PROJECT_WORKTREES_API_PATH = /^\/api\/projects\/([^/]+)\/worktrees$/;
 const BLOB_API_PATH =
   /^\/api\/blobs\/(?:sha256%3A|sha256:)([a-f0-9]{64})$/;
 const REQUIRED_CLIENT_CAPABILITIES = [
@@ -288,6 +291,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     RELEASE_ID.replace("pidex@", ""),
     adapters,
   ).openBridge(options.initialCatalog);
+  const gitWorktrees = new GitWorktreeManager(options.dataDir);
   const availableStorageBytes = options.availableStorageBytes ?? (() => {
     const volume = statfsSync(options.dataDir);
     return Number(volume.bavail) * Number(volume.bsize);
@@ -363,7 +367,14 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const server = createServer(
     (request, response) => {
       if (request.url?.startsWith("/api/")) {
-        handleApiRequest(request.url, request, response, store, doctor);
+        handleApiRequest(
+          request.url,
+          request,
+          response,
+          store,
+          gitWorktrees,
+          doctor,
+        );
         return;
       }
 
@@ -535,7 +546,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             error: "synchronization-required",
           });
         } else if (isSessionCreateMessage(message)) {
-          handleSessionCreate(webSocket, message);
+          void handleSessionCreate(webSocket, message);
         } else if (isSessionForkMessage(message)) {
           void handleSessionFork(webSocket, message);
         } else if (isSessionRenameMessage(message)) {
@@ -802,17 +813,42 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   const origin = `http://127.0.0.1:${port}`;
   void refreshCoverage();
 
-  function handleSessionCreate(
+  async function handleSessionCreate(
     client: WebSocket,
     command: SessionCreateMessage,
-  ): void {
+  ): Promise<void> {
+    let cleanupManagedWorktree: (() => Promise<void>) | undefined;
     try {
       admitDiscretionaryWrite();
+      const projectId = command.projectId ?? null;
+      let workspaceId = command.workspaceId ?? null;
+      let creation: SessionCreation | undefined;
+
+      if (command.worktree?.kind === "new") {
+        const project = projectId ? store.project(projectId) : undefined;
+        if (!project) throw new Error("unknown-project");
+        const sessionId = `session_${randomUUID()}`;
+        const managed = await gitWorktrees.createManaged(project, sessionId);
+        cleanupManagedWorktree = managed.cleanup;
+        workspaceId = managed.workspace.workspaceId;
+        creation = { sessionId, workspace: managed.workspace };
+      } else if (command.worktree?.kind === "existing") {
+        const project = projectId ? store.project(projectId) : undefined;
+        if (!project) throw new Error("unknown-project");
+        const workspace = await gitWorktrees.selectExisting(
+          project,
+          command.worktree.path,
+        );
+        workspaceId = workspace.workspaceId;
+        creation = { workspace };
+      }
+
       adapters.storage.beforeCommit();
       const created = store.createSession(
-        command.projectId ?? null,
-        command.workspaceId ?? null,
+        projectId,
+        workspaceId,
         adapters.clock.now(),
+        creation,
       );
       const outcome: ServerMessage = {
         type: "command.outcome",
@@ -830,6 +866,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(socket, changeSet);
       }
     } catch (error) {
+      await cleanupManagedWorktree?.().catch(() => {});
       const outcome: ServerMessage = {
         type: "command.outcome",
         commandId: command.commandId,
@@ -1446,7 +1483,11 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
     const worker =
       workers.get(run.sessionId) ??
-      new PiSessionWorker(run.sessionId, adapters.pi);
+      new PiSessionWorker(
+        run.sessionId,
+        adapters.pi,
+        store.sessionWorkingDirectory(run.sessionId),
+      );
     workers.set(run.sessionId, worker);
     const workerGeneration =
       workerGenerations.get(run.sessionId) ?? randomUUID();
@@ -2191,6 +2232,7 @@ function handleApiRequest(
   request: IncomingMessage,
   response: ServerResponse,
   store: AuthorityStore,
+  gitWorktrees: GitWorktreeManager,
   doctor: () => Promise<unknown>,
 ): void {
   const url = new URL(path, "http://pidex.invalid");
@@ -2205,6 +2247,36 @@ function handleApiRequest(
         "cache-control": "no-store",
         "content-type": "application/json",
       }).end(JSON.stringify({ error: "doctor-failed" }));
+    });
+    return;
+  }
+  const worktreesMatch = PROJECT_WORKTREES_API_PATH.exec(url.pathname);
+  if (request.method === "GET" && worktreesMatch) {
+    const projectId = decodeURIComponent(worktreesMatch[1]);
+    const project = store.project(projectId);
+    if (!project) {
+      response
+        .writeHead(404, {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        })
+        .end(JSON.stringify({ error: "unknown-project" }));
+      return;
+    }
+    void gitWorktrees.list(project).then(catalog => {
+      response
+        .writeHead(200, {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        })
+        .end(JSON.stringify(catalog));
+    }, () => {
+      response
+        .writeHead(500, {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+        })
+        .end(JSON.stringify({ error: "worktree-discovery-failed" }));
     });
     return;
   }

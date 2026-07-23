@@ -16,6 +16,10 @@ _Avoid_: Workspace, repository, folder
 A concrete working copy or execution environment within one project, such as a repository checkout or worktree.
 _Avoid_: Project, repository
 
+**Managed worktree**:
+A detached Git worktree created beneath Host-owned data when a new Session requests isolation and persisted as that Session's Workspace. Its path is a locator, not its durable identity. Existing Git worktrees may also be selected as Workspaces and reused by more than one Session.
+_Avoid_: Branch, Project, Session
+
 **Session**:
 A durable conversation whose history continues across runs, clients, disconnects, and host restarts. It has fixed project and workspace scope, either of which may be absent.
 _Avoid_: Chat, thread, active session, idle session
@@ -134,6 +138,7 @@ _Avoid_: Restore, rotate keys, clone
 - A workspace belongs to exactly one project.
 - A session belongs to zero or one project and targets zero or one workspace.
 - A workspace-targeted session belongs to that workspace's project.
+- A managed worktree and a selected existing worktree are both durable Workspaces; either may later be selected by another Session.
 - A run belongs to exactly one session.
 - An interaction belongs to exactly one session and may belong to the run that caused it.
 - A session timeline belongs to exactly one session, and each of its entries belongs to at most one run.

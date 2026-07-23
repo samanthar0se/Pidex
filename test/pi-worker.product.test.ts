@@ -143,6 +143,35 @@ test("a Pi worker returns completion only after durable checkpoint flush", async
   assert.deepEqual(events, ["execute", "flush"]);
 });
 
+test("a Pi worker keeps the Session's Workspace path in every execution request", async () => {
+  let observedCwd: string | undefined;
+  const pi: PiAdapter = {
+    kind: "deterministic",
+    probe: async request => ({
+      ...request,
+      capabilities: [
+        "run.execute",
+        "checkpoint.durable",
+        "model.select",
+        "mode.select",
+        "input.text",
+      ],
+    }),
+    execute: async request => {
+      observedCwd = request.cwd;
+      return { text: "ok", checkpoint: "workspace-checkpoint" };
+    },
+    flushCheckpoint: async (_sessionId, checkpoint) => checkpoint,
+  };
+
+  await new PiSessionWorker(
+    "session-worktree",
+    pi,
+    "C:\\pidex\\worktrees\\session-worktree",
+  ).execute("work here");
+  assert.equal(observedCwd, "C:\\pidex\\worktrees\\session-worktree");
+});
+
 test("a Pi worker routes steering only to its active capable execution", async () => {
   const steeringTexts: string[] = [];
   let completeExecution: (() => void) | undefined;

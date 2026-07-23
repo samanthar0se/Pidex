@@ -61,8 +61,10 @@ footer button { align-self: end; padding: 9px 16px; }
 .command-outcome { margin: 0; color: #6e685e; font-size: 12px; }
 .command-outcome.rejected, .command-outcome.uncertain { color: #8b2d21; }
 .scope-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.scope-controls label, .new-composer { display: grid; gap: 6px; }
-.scope-controls input, .scope-controls select { min-height: 40px; }
+.scope-controls label, .new-composer { display: grid; min-width: 0; gap: 6px; }
+.scope-controls label { overflow: hidden; padding: 4px; margin: -4px; }
+.scope-controls input, .scope-controls select { width: 100%; min-width: 0; min-height: 40px; }
+.location-detail { min-height: 2.4em; overflow-wrap: anywhere; white-space: normal; }
 .new-composer { margin-top: 24px; }
 .new-composer textarea { min-height: 180px; }
 .new-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
