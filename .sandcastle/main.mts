@@ -21,11 +21,19 @@
 // Or add to package.json:
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
 
-import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
+
+if (process.platform === "win32") {
+  const cwd = process.cwd();
+  process.chdir(cwd[0].toUpperCase() + cwd.slice(1));
+}
+
+const sandcastle: typeof import("@ai-hero/sandcastle") =
+  await import("@ai-hero/sandcastle");
+const { docker }: typeof import("@ai-hero/sandcastle/sandboxes/docker") =
+  await import("@ai-hero/sandcastle/sandboxes/docker");
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -77,7 +85,9 @@ const MAX_ITERATIONS = 50;
 // Hooks run inside the sandbox before the agent starts each iteration.
 // npm install ensures the sandbox always has fresh dependencies.
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "npm install" }] },
+  sandbox: {
+    onSandboxReady: [{ command: "npm install", timeoutMs: 180_000 }],
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -111,7 +121,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     output: sandcastle.Output.object({ tag: "plan", schema: planSchema }),
   });
 
-  const issues = plan.output.issues;
+  const issues: z.infer<typeof planSchema>["issues"] = plan.output.issues;
 
   if (issues.length === 0) {
     // No unblocked work — either everything is done or everything is blocked.
@@ -167,6 +177,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             promptFile: "./.sandcastle/review-prompt.md",
             promptArgs: {
               BRANCH: issue.branch,
+              ISSUE_NUMBER: issue.id,
+              ISSUE_TITLE: issue.title,
             },
           });
 

@@ -1,6 +1,6 @@
 # TASK
 
-Review PR #{{PR_NUMBER}} on branch `{{BRANCH}}` for issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
+Review branch `{{BRANCH}}` for issue #{{ISSUE_NUMBER}}: {{ISSUE_TITLE}}
 
 You are an expert code reviewer. Your job is **not just to comment** — actively improve the code on this branch, and explain what you changed.
 
@@ -23,20 +23,6 @@ This is a **summary** of the diff — changed files with added/removed line coun
 The full patch is deliberately omitted here because it can be very long. Go deeper on the files that matter: run `git diff main..HEAD -- <path>` on the changed files above to read the actual changes before reviewing.
 
 </diff-to-main>
-
-<pr-comments>
-
-The following PR comments have been fetched by the workflow. They are tagged by surface:
-
-- `issue_comment` — top-level PR conversation comment, not anchored to code.
-- `review_thread` — inline thread anchored to a file + line. Only **unresolved** threads are included. Each has a `commentId` you can reply to in-thread.
-- `review_summary` — top-level body of a submitted review (with approve/request-changes/comment state).
-
-```json
-{{PR_COMMENTS_JSON}}
-```
-
-</pr-comments>
 
 # REVIEW PROCESS
 
@@ -62,21 +48,10 @@ Work through the skill's findings and resolve each one on this branch:
 
 **Preserve functionality.** When improving code, never change what it does — only how it does it. All original features, outputs, and behaviours must remain intact.
 
-# RESPONDING TO HUMAN COMMENTS
-
-For each unresolved `review_thread` and each `issue_comment` directed at the code, choose one:
-
-- **Address** — make a code change in your commit, then reply in-thread (or with an issue comment) explaining what you did. Use the comment's `commentId` for in-thread replies.
-- **Decline** — don't change the code, but reply explaining your reasoning. Use Decline when you have a substantive disagreement (the suggestion would break something, conflicts with project standards, is out of scope).
-- **Defer** — do nothing, no reply. Only valid when the comment isn't a code-review request (jokes, off-topic banter, stale comments about already-fixed code, side conversations between humans).
-
-Default to Address. Decline when you have a real reason. Defer only when a reply would be noise.
-
 # EXECUTION
 
 1. Run `npm run typecheck` and `npm run test` — confirm the current state passes.
 2. Make improvements + write any new edge-case tests. Stage and commit them as a **single squashed commit** on this branch with a message starting with `CLANKER: Review -`.
 3. Run `npm run typecheck` and `npm run test` again. If either fails, fix it before continuing — do not leave the branch broken.
-4. Decide which inline review comments to leave (line-anchored notes about your changes or remaining findings) and which thread replies to make.
 
-If the code is already clean and there are no human comments to address, make no commits.
+If the code is already clean, make no commits.
