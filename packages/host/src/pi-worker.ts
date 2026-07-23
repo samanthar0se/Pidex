@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type {
   PiAdapter,
+  PiInputImage,
   PiPresentationEffect,
   PiInteractionRequest,
   PiInteractionResult,
@@ -202,16 +203,17 @@ export class PiSessionWorker {
     );
   }
 
-  async steer(text: string): Promise<void> {
+  async steer(text: string, images: PiInputImage[] = []): Promise<void> {
     const receiver = this.#activeSteeringReceiver;
     if (
       !this.#running ||
       !this.#activeCapabilityIds.has("runtime.steer") ||
+      (images.length > 0 && !this.#activeCapabilityIds.has("input.image")) ||
       !receiver
     ) {
       throw new Error("steering-unavailable");
     }
-    await receiver(text);
+    await receiver(text, images);
   }
 
   stop(): void {
@@ -229,6 +231,7 @@ export class PiSessionWorker {
     onInteraction?: (
       request: PiInteractionRequest,
     ) => Promise<PiInteractionResult>,
+    images: PiInputImage[] = [],
   ): Promise<{ text: string; checkpoint: string }> {
     if (this.#running) {
       throw new Error("worker-busy");
@@ -239,17 +242,23 @@ export class PiSessionWorker {
     try {
       const capabilities = await PiSessionWorker.probe(this.#pi);
       const capabilityIds = new Set(capabilities.map(item => item.id));
+      if (images.length > 0 && !capabilityIds.has("input.image")) {
+        throw new WorkerReadinessError(
+          "missing-required-worker-capability",
+          ["input.image"],
+        );
+      }
       this.#activeCapabilityIds = capabilityIds;
-      const execute = this.#pi.execute;
-      if (!execute) {
+      if (!this.#pi.execute) {
         throw new WorkerReadinessError("pi-sdk-unavailable");
       }
 
       const executionResult = executionResultSchema.parse(
-        await execute({
+        await this.#pi.execute({
           sessionId: this.#sessionId,
           prompt,
           ...(this.#cwd ? { cwd: this.#cwd } : {}),
+          ...(images.length > 0 ? { images } : {}),
           projectTrust: true,
           resourceLoader: "public",
           onTimelineEvent: event => {

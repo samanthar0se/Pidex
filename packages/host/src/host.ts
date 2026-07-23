@@ -30,6 +30,7 @@ import {
   type ServerMessage,
   type TerminalRun,
   type TimelineChange,
+  type TimelineEntry,
 } from "../../protocol/src/status.js";
 import {
   type CoverageDiagnostic,
@@ -86,6 +87,7 @@ import {
   type ViewIdentity,
   type ViewObserveMessage,
 } from "./control-messages.js";
+import { createClientAssetResolver } from "./client-assets.js";
 
 const DEFAULT_PORT = 7443;
 const RELEASE_ID = "pidex@0.1.0";
@@ -114,17 +116,6 @@ const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
 ]);
-
-interface PwaAsset {
-  file: string;
-  contentType: string;
-  cacheControl?: string;
-}
-
-interface ViteManifestEntry {
-  file: string;
-  css?: string[];
-}
 
 interface RunPresentationContext {
   client: WebSocket;
@@ -163,63 +154,7 @@ interface ClientDelivery {
 }
 
 const CLIENT_DIST = process.env.PIDEX_CLIENT_DIST ?? "apps/client/dist";
-const clientManifest = JSON.parse(
-  readFileSync(resolve(CLIENT_DIST, ".vite/manifest.json"), "utf8"),
-) as Record<string, ViteManifestEntry>;
-const clientEntry = clientManifest["index.html"];
-if (!clientEntry) {
-  throw new Error("production Client manifest has no index entry");
-}
-
-const PWA_ASSETS: Record<string, PwaAsset> = {
-  "/": {
-    file: `${CLIENT_DIST}/index.html`,
-    contentType: "text/html",
-    cacheControl: "no-cache",
-  },
-  "/index.html": {
-    file: `${CLIENT_DIST}/index.html`,
-    contentType: "text/html",
-    cacheControl: "no-cache",
-  },
-  [`/${clientEntry.file}`]: {
-    file: `${CLIENT_DIST}/${clientEntry.file}`,
-    contentType: "text/javascript",
-    cacheControl: "public, max-age=31536000, immutable",
-  },
-  ...Object.fromEntries(
-    (clientEntry.css ?? []).map(file => [`/${file}`, {
-      file: `${CLIENT_DIST}/${file}`,
-      contentType: "text/css",
-      cacheControl: "public, max-age=31536000, immutable",
-    }]),
-  ),
-  "/service-worker.js": {
-    file: `${CLIENT_DIST}/service-worker.js`,
-    contentType: "text/javascript",
-    cacheControl: "no-cache",
-  },
-  "/manifest.webmanifest": {
-    file: `${CLIENT_DIST}/manifest.webmanifest`,
-    contentType: "application/manifest+json",
-    cacheControl: "no-cache",
-  },
-  "/icons/pidex-app-icon-white.png": {
-    file: "icon/pidex-app-icon-white.png",
-    contentType: "image/png",
-    cacheControl: "public, max-age=86400",
-  },
-  "/icons/pidex-app-icon-white.svg": {
-    file: "icon/pidex-app-icon-white.svg",
-    contentType: "image/svg+xml",
-    cacheControl: "public, max-age=86400",
-  },
-  "/icons/pidex-gradient.svg": {
-    file: "icon/pidex-gradient.svg",
-    contentType: "image/svg+xml",
-    cacheControl: "public, max-age=86400",
-  },
-};
+const findPwaAsset = createClientAssetResolver(CLIENT_DIST);
 
 export interface HostOptions {
   dataDir: string;
@@ -378,8 +313,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         return;
       }
 
-      const asset = findPwaAsset(request);
+      const asset = findPwaAsset(request.method, request.url);
       if (!asset) {
+        response.writeHead(404).end();
+        return;
+      }
+
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(resolve(asset.file));
+      } catch {
         response.writeHead(404).end();
         return;
       }
@@ -390,7 +333,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           ? { "cache-control": asset.cacheControl }
           : {}),
       });
-      response.end(readFileSync(resolve(asset.file)));
+      response.end(bytes);
     },
   );
   const webSocketServer = new WebSocketServer({ noServer: true });
@@ -1094,6 +1037,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     sessionJobs.delete(sessionId);
     workers.delete(sessionId);
     workerGenerations.delete(sessionId);
+    void adapters.pi.closeSession?.(sessionId);
   }
 
   function handleSessionMarkRead(
@@ -1256,6 +1200,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function handleRunSteer(client: WebSocket, command: RunSteerMessage): void {
+    const admittedBasis = admittedCapabilityBasisByClient.get(client);
+    if (!supportsCapabilityBasis(admittedBasis, command.requiredCapabilityBasis)) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "required-capability-basis-unavailable",
+      });
+      return;
+    }
     try {
       const result = store.acceptSteering(
         command,
@@ -1289,7 +1243,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           entry: result.entry,
         });
         const worker = workers.get(command.sessionId);
-        void worker?.steer(command.text).then(
+        void worker?.steer(command.text, command.images).then(
           () => store.markSteering(command.commandId, true),
           () => store.markSteering(command.commandId, false),
         );
@@ -1453,6 +1407,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     forceEnforcedRunIds.delete(runId);
     presentationContextByRun.delete(runId);
     invalidateWorkerGeneration(sessionId, workerGeneration);
+    publishSettlementTimeline(sessionId, cancelled.timeline);
     publishRunCompletion(sessionId, cancelled.run);
     clearForcedStopTimer(runId);
   }
@@ -1476,6 +1431,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           adapters.clock.now(),
         );
         presentationContextByRun.delete(run.runId);
+        publishSettlementTimeline(run.sessionId, failed.timeline);
         publishRunCompletion(run.sessionId, failed.run);
         store.holdQueued(run.sessionId);
         return;
@@ -1526,6 +1482,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           ),
         request =>
           waitForInteractionResolution(run.sessionId, run.runId, request),
+        store.runInputImages(run.runId),
       )
       .then(executionResult => {
         clearForcedStopTimer(run.runId);
@@ -1558,6 +1515,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         }
         forceEnforcedRunIds.delete(run.runId);
         presentationContextByRun.delete(run.runId);
+        publishSettlementTimeline(run.sessionId, completed.timeline);
         publishRunCompletion(run.sessionId, completed.run);
         const nextRun = store.dispatchNext(run.sessionId);
         if (nextRun) {
@@ -1585,6 +1543,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
               invalidateWorkerGeneration(run.sessionId, workerGeneration);
             }
             presentationContextByRun.delete(run.runId);
+            publishSettlementTimeline(run.sessionId, cancelled.timeline);
             publishRunCompletion(run.sessionId, cancelled.run);
             return;
           }
@@ -1604,6 +1563,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
             adapters.clock.now(),
           );
           presentationContextByRun.delete(run.runId);
+          publishSettlementTimeline(run.sessionId, failed.timeline);
           publishRunCompletion(run.sessionId, failed.run);
           store.holdQueued(run.sessionId);
         } catch {
@@ -1644,7 +1604,24 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     }
 
     presentationContextByRun.delete(run.runId);
+    publishSettlementTimeline(run.sessionId, interrupted.timeline);
     publishRunCompletion(run.sessionId, interrupted.run);
+  }
+
+  function publishSettlementTimeline(
+    sessionId: string,
+    timeline: readonly TimelineEntry[],
+  ): void {
+    const entry = timeline.at(-1);
+    const revision = store.projection().sessions.find(
+      session => session.sessionId === sessionId,
+    )?.timelineRevision;
+    if (!entry || revision === undefined) return;
+    publishTimelineChange(sessionId, {
+      baseRevision: revision - 1,
+      revision,
+      entry,
+    });
   }
 
   function publishRunCompletion(sessionId: string, run: TerminalRun): void {
@@ -2035,6 +2012,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       }
       for (const job of sessionJobs.values()) job.close();
       sessionJobs.clear();
+      await adapters.pi.close?.();
       for (const webSocket of webSocketServer.clients) {
         webSocket.close();
       }
@@ -2346,21 +2324,6 @@ function handleApiRequest(
   }
 
   response.writeHead(404, { "cache-control": "no-store" }).end();
-}
-
-function findPwaAsset(request: IncomingMessage): PwaAsset | undefined {
-  const pathname = new URL(
-    request.url ?? "/",
-    "http://pidex.invalid",
-  ).pathname;
-  const asset = PWA_ASSETS[pathname];
-  if (asset) {
-    return asset;
-  }
-  if (request.method === "GET" && pathname.startsWith("/sessions/")) {
-    return PWA_ASSETS["/"];
-  }
-  return undefined;
 }
 
 function createDurabilityWarnings(

@@ -1,1 +1,1 @@
-{"name":"Pidex","short_name":"Pidex","start_url":"/","display":"standalone","background_color":"#fbfaf7","theme_color":"#26251f"}
+{"name":"Pidex","short_name":"Pidex","start_url":"/","display":"standalone","background_color":"#fbfaf7","theme_color":"#26251f","icons":[{"src":"/icons/pidex-app-icon-white.png","sizes":"1024x1024","type":"image/png","purpose":"any"},{"src":"/icons/pidex-app-icon-white.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}

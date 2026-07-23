@@ -1,7 +1,8 @@
 import type { ClientAdapters, CommandResult, DiscoveryProjection, InteractionFact, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
+import { randomUuid } from "./client-identifier.js";
 import { ControlConnection } from "./control-connection.js";
 
-const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.interaction.basic"];
+const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.input.image", "pi.interaction.basic"];
 const sockets = new Map<string, WebSocket>();
 const listeners = new Map<string, Set<(change: TimelineChange) => void>>();
 const runListeners = new Map<string, Set<(runs: RunFact[]) => void>>();
@@ -115,7 +116,7 @@ function readSession(sessionId: string): Promise<SessionProjection> {
 async function restoreSession(session: SessionFact): Promise<void> {
   await socketFor((message, socket, finish) => {
     if (message.type === "host.snapshot") {
-      socket.send(JSON.stringify({ type: "session.restore", commandId: crypto.randomUUID(), sessionId: session.sessionId, observedMetadataRevision: session.metadataRevision }));
+      socket.send(JSON.stringify({ type: "session.restore", commandId: randomUuid(), sessionId: session.sessionId, observedMetadataRevision: session.metadataRevision }));
     } else if (message.type === "host.change-set" && message.changes?.some((change: any) => change.type === "session.restored" && change.session.sessionId === session.sessionId)) finish(undefined);
     else if (message.type === "command.outcome" && message.outcome === "rejected") throw new Error(message.error ?? "Restore rejected");
   });
@@ -152,7 +153,14 @@ function createSession(command: Parameters<NonNullable<ClientAdapters["host"]["c
 
 function submitRun(command: Parameters<NonNullable<ClientAdapters["host"]["submitRun"]>>[0]): Promise<CommandResult> {
   return sendRunCommand(
-    { type: "run.submit", requiredCapability: "run.submit", ...command },
+    {
+      type: "run.submit",
+      requiredCapability: "run.submit",
+      ...command,
+      ...(command.images?.length
+        ? { requiredCapabilityBasis: [{ id: "pi.input.image", version: 1 }] }
+        : {}),
+    },
     "run-rejected",
   );
 }
@@ -194,7 +202,14 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   listProjectWorktrees,
   createSession,
   submitRun,
-  steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
+  steerRun: command => sendRunCommand({
+    type: "run.steer",
+    requiredCapability: "run.steer",
+    ...command,
+    ...(command.images?.length
+      ? { requiredCapabilityBasis: [{ id: "pi.input.image", version: 1 }] }
+      : {}),
+  }),
   stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),
   actOnHeldRun: command => sendRunCommand({ type: `run.${command.action}`, commandId: command.commandId, runId: command.runId }),
   resolveInteraction: command => sendRunCommand(command),
@@ -233,7 +248,7 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({
       type: "session.mark-read",
-      commandId: crypto.randomUUID(),
+      commandId: randomUuid(),
       sessionId,
       presentedTimelineRevision: timelineRevision,
       requiredCapabilityBasis: [{ id: "session.read-state", version: 1 }],

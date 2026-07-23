@@ -18,7 +18,7 @@ const basis = [{ id: "session.read-state", version: 1 }] as const;
 test("Session authority persists milestones and serializes Host-global max mark-read transitions", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pidex-read-authority-"));
   const path = join(dir, "authority.sqlite");
-  let store = new AuthorityStore(path, adaptersFor("deterministic"));
+  let store: AuthorityStore | undefined = new AuthorityStore(path, adaptersFor("deterministic"));
   try {
     const session = store.createSession(null, null, 1).session;
     assert.deepEqual(session.readState, {
@@ -30,6 +30,10 @@ test("Session authority persists milestones and serializes Host-global max mark-
     }, 2);
     assert.equal(submitted.kind, "accepted");
     if (submitted.kind !== "accepted") throw new Error("run not accepted");
+    store.applyTimelineEvent(session.sessionId, submitted.run.runId, {
+      type: "assistant.delta", text: "streamed response",
+    }, 3);
+    store.finalizeAssistant(session.sessionId, submitted.run.runId);
     store.completeRun(submitted.run.runId, "done", "checkpoint", 3);
     const unread = store.projection().sessions[0]!;
     assert.deepEqual(unread.readState, {
@@ -53,6 +57,7 @@ test("Session authority persists milestones and serializes Host-global max mark-
     assert.deepEqual([conflict.kind, "error" in conflict && conflict.error], ["rejected", "command-id-conflict"]);
 
     store.close();
+    store = undefined;
     store = new AuthorityStore(path, adaptersFor("deterministic"));
     assert.deepEqual(store.projection().sessions[0]!.readState, {
       readThroughTimelineRevision: unread.timelineRevision,
@@ -77,7 +82,7 @@ test("Session authority persists milestones and serializes Host-global max mark-
       ["rejected", "invalid-revision"],
     );
   } finally {
-    store.close();
+    store?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });

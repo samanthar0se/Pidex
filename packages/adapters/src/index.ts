@@ -13,6 +13,12 @@ export interface PiProbeResult {
   capabilities: Array<string | PiSdkCapability>;
 }
 
+export interface PiInputImage {
+  type: "image";
+  data: string;
+  mimeType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+}
+
 /** Data-only SDK semantics. No SDK model or runtime object may cross this seam. */
 export interface PiSdkCapability {
   id: string;
@@ -25,13 +31,17 @@ export interface PiSdkCapabilityConstraints {
   maximumBytes?: number;
 }
 
-export type PiSteeringReceiver = (text: string) => Promise<void>;
+export type PiSteeringReceiver = (
+  text: string,
+  images?: PiInputImage[],
+) => Promise<void>;
 
 export interface PiExecuteRequest {
   sessionId: string;
   prompt: string;
   /** Canonical Project checkout or Workspace path permanently bound to this Session. */
   cwd?: string;
+  images?: PiInputImage[];
   projectTrust: true;
   resourceLoader: "public";
   /** Receives schema-shaped runtime facts; SDK objects never cross this seam. */
@@ -112,6 +122,10 @@ export interface PiAdapter {
   migrateArtifact?(
     request: PiArtifactMigrationRequest,
   ): Promise<PiArtifactMigrationResult>;
+  /** Releases one Session's Pi runtime after sleep or archival. */
+  closeSession?(sessionId: string): Promise<void>;
+  /** Releases all Pi runtimes during Host shutdown. */
+  close?(): Promise<void>;
 }
 
 /** A fresh contained bootstrap generation owning a verified child genesis. */
@@ -244,6 +258,11 @@ function deterministicPiAdapter(): PiAdapter {
           id: "input.text",
           version: 1,
           constraints: { maximumBytes: 100_000 },
+        },
+        {
+          id: "input.image",
+          version: 1,
+          constraints: { maximumBytes: 8 * 1024 * 1024 },
         },
         { id: "runtime.cancel", version: 1 },
         { id: "runtime.steer", version: 1 },

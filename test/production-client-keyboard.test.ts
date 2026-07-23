@@ -30,10 +30,17 @@ test("FX-KEY-01/02/04 FX-RESP-05: keyboard focus and header Stop retain exact in
   store.setState({
     selectedSessionId: "session-long", isSessionCurrent: true,
     sessions: { "session-long": { sessionId: "session-long", name: "A very long responsive Session title", projectId: "project-one", metadataRevision: 1, timelineRevision: 7 } },
-    sessionOrder: ["session-long"], drafts: { "session-long": "" }, timelines: { "session-long": [] },
+    sessionOrder: ["session-long"], drafts: { "session-long": "" }, timelines: { "session-long": [
+      { entryId: "work-stream", kind: "assistant", order: 1, finalized: false, text: "Inspecting the current implementation" },
+    ] },
     runs: { "session-long": [{ runId: "run-exact", sessionId: "session-long", sessionOrder: 1, prompt: "work", state: "executing", workerGeneration: "worker-2" }] },
   });
   render(createElement(App, { clientStore: store } as any));
+
+  const working = screen.getByText("Working");
+  assert.equal(working.classList.contains("text-shimmer"), true);
+  assert.equal((working.closest(".work-disclosure") as HTMLElement | null)?.dataset.active, "true");
+  assert.equal(screen.getByRole("button", { name: /Working/ }).getAttribute("aria-expanded"), "false");
 
   fireEvent.keyDown(document, { key: "k", ctrlKey: true });
   assert.equal(document.activeElement, screen.getByRole("textbox", { name: "Search Sessions" }));

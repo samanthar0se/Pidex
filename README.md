@@ -34,12 +34,17 @@ npm ci
 npm run dev
 ```
 
+Development and unpacked startup use the pinned Pi SDK and the model/profile
+configured in `~/.pi/agent`. Set `PIDEX_WORKSPACE` to choose the coding working
+directory; it defaults to the Pidex checkout. Pi conversation state is retained
+under the Host data directory per Session. Deterministic Pi is test-only.
+
 The Host serves plain HTTP on IPv4 wildcard port 7443. `PIDEX_DATA_DIR`,
-`PIDEX_PORT`, `PIDEX_PROJECT_PATH`, and `PIDEX_PROJECT_NAME` may be set directly
-or in an untracked `.env` file. Development registers the current checkout as
-the default Project; set `PIDEX_PROJECT_PATH` to use another checkout. Git-backed
-Projects offer Local, new managed worktree, and existing worktree choices when
-starting a Session.
+`PIDEX_PORT`, `PIDEX_PROJECT_PATH`, `PIDEX_PROJECT_NAME`, and `PIDEX_WORKSPACE`
+may be set directly or in an untracked `.env` file. Development registers the
+current checkout as the default Project; set `PIDEX_PROJECT_PATH` to use another
+checkout. Git-backed Projects offer Local, new managed worktree, and existing
+worktree choices when starting a Session.
 
 ### Background development Host
 
@@ -62,6 +67,12 @@ npm run dev:task:restart
 Task output is appended to `.pidex-data-dev/development-host.log`. Manage or
 inspect the task with `npm run dev:task:status`, `npm run dev:task:stop`, and
 `npm run dev:task:uninstall`.
+
+The task's per-user `Interactive` logon mode is also required for Pi computer
+use. The Host, Pi worker, helper, and target apps must share the signed-in,
+unlocked Windows session; a Session 0 service cannot see desktop roots. See
+`docs/computer-use.md` for the packaged-launcher constraint and verification
+steps.
 
 The development Host serves plain HTTP on IPv4 wildcard port 7443. Startup
 prints the unauthenticated-prototype warning and loopback/LAN URL guidance.

@@ -106,6 +106,11 @@ test("a current Session receives consolidated revisioned model and tool activity
     assert.equal(assistant.at(-1)?.entry.finalized, true);
     assert.equal(new Set(assistant.map(item => item.entry.entryId)).size, 1);
     assert.equal(
+      changes.at(-1)?.entry.kind,
+      "response",
+    );
+    assert.equal(changes.at(-1)?.entry.text, "hello");
+    assert.equal(
       changes.find(item => item.entry.kind === "tool")?.entry.runId !== null,
       true,
     );

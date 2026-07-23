@@ -28,7 +28,7 @@ test("development startup exposes the HTTP Host with settled Prototype LAN guida
     assert.equal(lines.filter(line => line === warning).length, 1);
     assert.deepEqual(lines.slice(-4), [
       warning,
-      `Pidex ready on 0.0.0.0:${port}`,
+      `Pidex ready with Pi SDK on 0.0.0.0:${port}`,
       `Loopback: http://localhost:${port}`,
       `LAN: http://<LAN-IP>:${port}`,
     ]);

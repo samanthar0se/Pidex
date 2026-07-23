@@ -1,10 +1,14 @@
-const SHELL_GENERATION = "pidex-client-v1";
+const SHELL_GENERATION = "pidex-client-assets-index-Dbm-aafS.js";
 const SHELL_CACHE = `pidex-shell-${SHELL_GENERATION}`;
 self.addEventListener("install", event => event.waitUntil((async () => {
   const shell = await fetch("/", { cache: "reload" });
   const markup = await shell.clone().text();
   const generatedAssets = [...markup.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)].map(match => match[1]);
-  const urls = ["/", "/index.html", "/manifest.webmanifest", ...generatedAssets];
+  const urls = [
+    "/", "/index.html", "/manifest.webmanifest", "/favicon.svg",
+    "/icons/pidex-app-icon-white.png", "/icons/pidex-app-icon-white.svg",
+    ...generatedAssets,
+  ];
   const responses = await Promise.all(urls.map(url => url === "/" ? shell : fetch(url, { cache: "reload" })));
   if (responses.some(response => !response.ok)) throw Error("incomplete shell generation");
   const cache = await caches.open(SHELL_CACHE);
@@ -21,7 +25,8 @@ self.addEventListener("fetch", event => {
   if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   const path = new URL(event.request.url).pathname;
   const isShellOrStatic = event.request.mode === "navigate" || path === "/" || path === "/index.html"
-    || path === "/manifest.webmanifest" || path.startsWith("/assets/");
+    || path === "/manifest.webmanifest" || path === "/favicon.svg"
+    || path.startsWith("/icons/") || path.startsWith("/assets/");
   if (!isShellOrStatic) { event.respondWith(fetch(event.request, { cache: "no-store" })); return; }
   event.respondWith((async () => {
     const shellCache = await caches.open(SHELL_CACHE);

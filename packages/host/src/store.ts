@@ -43,6 +43,10 @@ import {
   PiCheckpointPublisher,
   type PiCheckpointExport,
 } from "../../durability/src/pi-checkpoints.js";
+import {
+  runInputImagesSchema,
+  type RunInputImage,
+} from "../../protocol/src/input-image.js";
 
 export type { RunRecord, TimelineEntry } from "../../protocol/src/status.js";
 
@@ -52,6 +56,7 @@ export interface SubmitCommand {
   commandId: string;
   sessionId: string;
   prompt: string;
+  images?: RunInputImage[];
   requiredCapability: "run.submit" | "run.follow-up";
 }
 
@@ -62,6 +67,7 @@ export interface SteerCommand {
   workerGeneration: string;
   observedTimelineRevision: number;
   text: string;
+  images?: RunInputImage[];
 }
 
 export interface StopCommand {
@@ -105,6 +111,13 @@ const submitOutcomeSchema = z.discriminatedUnion("kind", [
     digest: z.string(),
   }),
 ]);
+const runInputManifestSchema = z.strictObject({
+  schema: z.literal("pidex-run-input-images-v1"),
+  images: runInputImagesSchema,
+});
+const optionalBlobIdSchema = z.object({
+  blobId: z.string().nullable(),
+});
 const nextRunOrderSchema = z.object({ nextOrder: z.number() });
 const activeRunReferenceSchema = z.object({ runId: z.string() });
 const authorityIntegrityCheckSchema = z.object({
@@ -1216,6 +1229,7 @@ export class AuthorityStore {
           prompt: command.prompt,
           state: isFollowUp ? "queued" : "executing",
         };
+        const inputBlobId = this.publishRunInputImages(command.images);
         this.#db
           .prepare(
             `INSERT INTO runs
@@ -1235,15 +1249,16 @@ export class AuthorityStore {
           .prepare(
             `INSERT INTO timeline_entries
              (entry_id, session_id, run_id, entry_order, kind, text,
-              checkpoint, created_at)
-             VALUES (?, ?, ?, ?, 'prompt', ?, NULL, ?)`,
+              checkpoint, blob_id, created_at)
+             VALUES (?, ?, ?, ?, 'prompt', ?, NULL, ?, ?)`,
           )
           .run(
             `entry_${randomUUID()}`,
             run.sessionId,
             run.runId,
             this.nextTimelineOrder(run.sessionId),
-            run.prompt,
+            describeRunInput(run.prompt, command.images),
+            inputBlobId,
             now,
           );
         this.#db
@@ -1331,18 +1346,21 @@ export class AuthorityStore {
       }
 
       const entryId = `entry_${randomUUID()}`;
+      const inputBlobId = this.publishRunInputImages(command.images);
       this.#db
         .prepare(
           `INSERT INTO timeline_entries
-           (entry_id, session_id, run_id, entry_order, kind, text, created_at)
-           VALUES (?, ?, ?, ?, 'steering', ?, ?)`,
+           (entry_id, session_id, run_id, entry_order, kind, text, blob_id,
+            created_at)
+           VALUES (?, ?, ?, ?, 'steering', ?, ?, ?)`,
         )
         .run(
           entryId,
           command.sessionId,
           command.runId,
           this.nextTimelineOrder(command.sessionId),
-          command.text,
+          describeRunInput(command.text, command.images),
+          inputBlobId,
           now,
         );
       this.#db
@@ -1397,6 +1415,21 @@ export class AuthorityStore {
          WHERE command_id = ? AND state = 'accepted'`,
       )
       .run(state, commandId);
+  }
+
+  runInputImages(runId: string): RunInputImage[] {
+    const row = optionalBlobIdSchema.optional().parse(
+      this.#db
+        .prepare(
+          `SELECT blob_id AS blobId FROM timeline_entries
+           WHERE run_id = ? AND kind = 'prompt'`,
+        )
+        .get(runId),
+    );
+    if (!row?.blobId) return [];
+    const bytes = this.#runArtifacts.readBlob(row.blobId);
+    if (!bytes) throw new Error("run-input-image-blob-unavailable");
+    return runInputManifestSchema.parse(JSON.parse(bytes.toString("utf8"))).images;
   }
 
   markRunSteeringUnapplied(runId: string): void {
@@ -2492,7 +2525,6 @@ export class AuthorityStore {
          (latest_unread_milestone_timeline_revision IS NOT NULL AND NOT EXISTS (
            SELECT 1 FROM timeline_entries te LEFT JOIN runs r ON r.run_id = te.run_id
            WHERE te.session_id = s.session_id
-             AND te.entry_order + 1 = s.latest_unread_milestone_timeline_revision
              AND (te.kind = 'interaction' OR r.state IN ('completed','failed','cancelled','interrupted'))
          )) LIMIT 1`,
     ).get();
@@ -2881,6 +2913,19 @@ export class AuthorityStore {
   close(): void {
     this.#db.close();
   }
+
+  private publishRunInputImages(
+    images: RunInputImage[] | undefined,
+  ): string | null {
+    if (!images?.length) return null;
+    const manifest = runInputManifestSchema.parse({
+      schema: "pidex-run-input-images-v1",
+      images,
+    });
+    return this.#runArtifacts.publishBlob(
+      Buffer.from(JSON.stringify(manifest)),
+    );
+  }
 }
 
 type SessionRow = z.infer<typeof sessionRowSchema>;
@@ -3025,6 +3070,16 @@ function submitCommandDigest(command: SubmitCommand): string {
   return createHash("sha256")
     .update(JSON.stringify(command))
     .digest("hex");
+}
+
+function describeRunInput(
+  text: string,
+  images: readonly RunInputImage[] | undefined,
+): string {
+  const count = images?.length ?? 0;
+  if (count === 0) return text;
+  const attachment = `[${count} image${count === 1 ? "" : "s"} attached]`;
+  return text ? `${text}\n${attachment}` : attachment;
 }
 
 function interactionFromRow(row: Record<string, unknown>): Interaction {

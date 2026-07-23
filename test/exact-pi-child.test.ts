@@ -68,9 +68,20 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
     generation: 3,
     protocolGeneration: 1,
   } as const;
+  const inputImage = {
+    type: "image" as const,
+    data: "aGVsbG8=",
+    mimeType: "image/png" as const,
+  };
+  let receivedImages: unknown;
   const fakeChild = {
     binding: { ...identity, cwd: "/canonical", agentDir: "/profile" },
-    execute: async (_prompt: string, onEvent?: (event: PiTimelineEvent) => void) => {
+    execute: async (
+      _prompt: string,
+      onEvent?: (event: PiTimelineEvent) => void,
+      images?: unknown,
+    ) => {
+      receivedImages = images;
       onEvent?.({ type: "assistant.delta", text: "offline" });
       return { text: "offline", checkpoint: "checkpoint-3" };
     },
@@ -104,6 +115,7 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
     sequence: 1,
     correlationId: "run-1",
     prompt: "offline prompt",
+    images: [inputImage],
   }));
 
   const frames = await output;
@@ -119,6 +131,7 @@ test("the exact Pi child endpoint binds through authenticated Session IPC and re
     },
   );
   assert.equal((frames[3] as { checkpointId: string }).checkpointId, "checkpoint-3");
+  assert.deepEqual(receivedImages, [inputImage]);
   await endpoint.close();
   host.destroy();
 });
@@ -259,7 +272,7 @@ test("the exact Pi endpoint brokers blocking extension UI and acknowledges appli
   assert.deepEqual(
     (first[0] as { capabilities: Array<{ id: string }> }).capabilities
       .map(capability => capability.id),
-    ["run.execute", "input.text", "model.select", "mode.select", "checkpoint.durable", "interaction.basic", "presentation.effects"],
+    ["run.execute", "input.text", "input.image", "model.select", "mode.select", "checkpoint.durable", "interaction.basic", "presentation.effects"],
   );
   const request = first[2] as { correlationId: string; interaction: unknown };
   assert.deepEqual(request.interaction, {

@@ -32,6 +32,22 @@ A monotonic ordering of Authority-generation activations. It records activation 
 A reconstructible hint naming the selected Authority generation. It accelerates normal startup but is not itself Host authority.
 _Avoid_: Source of truth, authoritative pointer
 
+**Prototype LAN reachability**:
+The temporary prototype authorization boundary in which any party able to reach the Host's IPv4 HTTP/WebSocket port has full Pidex control. Pidex does not establish that the reachable network is private or trusted.
+_Avoid_: Authentication, trusted LAN
+
+**Anonymous Client**:
+A browser, CLI, or integration connected under Prototype LAN reachability without a durable identity, credential, pairing, or per-Client authority record. Command idempotency and generic Client-caused facts do not identify the Client across connections.
+_Avoid_: Device, paired Client, authenticated Client
+
+**Client environment**:
+A local persistence boundary available to one or more Anonymous Clients, such as a browser storage partition or CLI data directory. It holds drafts, preferences, offline caches, and synchronization metadata without creating durable identity or authority.
+_Avoid_: Device state, Device-owned, Device-local
+
+**Host identity**:
+A non-cryptographic identifier for one Host authority instance, used to detect continuity changes in synchronization, Client caches, backup, and restore behavior. It does not authenticate the Host or prove the identity of a network peer.
+_Avoid_: Host credential, Host authentication
+
 **Durable acknowledgment**:
 Pidex's confirmation that accepted work and its dependencies crossed the applicable durable-publication boundary. It is conditional on the storage stack honoring successful flushes and does not claim that arbitrary hardware preserves the newest generation.
 

@@ -173,7 +173,13 @@ test("a Pi worker keeps the Session's Workspace path in every execution request"
 });
 
 test("a Pi worker routes steering only to its active capable execution", async () => {
-  const steeringTexts: string[] = [];
+  const steeringInputs: unknown[] = [];
+  const image = {
+    type: "image" as const,
+    data: "aGVsbG8=",
+    mimeType: "image/png" as const,
+  };
+  let executionImages: unknown;
   let completeExecution: (() => void) | undefined;
   const pi: PiAdapter = {
     kind: "deterministic",
@@ -185,12 +191,14 @@ test("a Pi worker routes steering only to its active capable execution", async (
         "model.select",
         "mode.select",
         "input.text",
+        "input.image",
         "runtime.steer",
       ],
     }),
     execute: async request => {
-      request.registerSteeringReceiver?.(async text => {
-        steeringTexts.push(text);
+      executionImages = request.images;
+      request.registerSteeringReceiver?.(async (text, images) => {
+        steeringInputs.push({ text, images });
       });
       await new Promise<void>(resolve => {
         completeExecution = resolve;
@@ -201,11 +209,18 @@ test("a Pi worker routes steering only to its active capable execution", async (
   };
 
   const worker = new PiSessionWorker("session-steering", pi);
-  const execution = worker.execute("go");
+  const execution = worker.execute(
+    "go",
+    undefined,
+    undefined,
+    undefined,
+    [image],
+  );
   await new Promise(resolve => setImmediate(resolve));
 
-  await worker.steer("also run tests");
-  assert.deepEqual(steeringTexts, ["also run tests"]);
+  await worker.steer("", [image]);
+  assert.deepEqual(executionImages, [image]);
+  assert.deepEqual(steeringInputs, [{ text: "", images: [image] }]);
 
   assert.ok(completeExecution);
   completeExecution();
