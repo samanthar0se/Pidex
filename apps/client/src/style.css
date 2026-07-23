@@ -180,6 +180,10 @@ header { min-height: 52px; display: flex; align-items: center; gap: 8px; padding
 .composer-primary:hover:not(:disabled), .new-submit:hover:not(:disabled) { background: #fff; }
 .composer-primary:disabled, .new-submit:disabled { background: #777; color: #333; opacity: .6; }
 .composer-primary.stop { border-radius: 50%; background: #efefef; }
+.image-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 9px 13px 2px; }
+.image-attachment { position: relative; flex: 0 0 auto; width: 76px; height: 76px; }
+.image-attachment img { width: 100%; height: 100%; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 9px; background: #181818; }
+.image-attachment button { position: absolute; top: -6px; right: -6px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: #292929; color: var(--text); line-height: 1; }
 .held-work { display: grid; gap: 6px; padding: 9px; border: 1px solid #574a2f; border-radius: 11px; background: #292318; }
 .held-work > div { display: flex; align-items: center; gap: 6px; }
 .held-work span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -214,6 +218,7 @@ header { min-height: 52px; display: flex; align-items: center; gap: 8px; padding
 .new-composer textarea::placeholder { color: #777; }
 .new-composer-toolbar { min-height: 43px; display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px 13px; color: #a5a6a8; font-size: 11px; }
 .new-composer-toolbar .new-submit { margin-left: auto; }
+.new-session-center > .image-attachments { margin-top: 8px; padding-inline: 4px; }
 .create-empty { float: right; margin-top: 9px; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 11px; }
 .create-empty:hover:not(:disabled) { background: #242424; color: var(--text); }
 .new-note { margin-top: 18px; color: #74777a; font-size: 10px; }
@@ -224,7 +229,6 @@ header { min-height: 52px; display: flex; align-items: center; gap: 8px; padding
 .authority-banner.update-required { border-color: #93433f; background: #3c1d1b; color: #ffaaa4; }
 .authority-banner strong { text-transform: uppercase; letter-spacing: .06em; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #7699c7; outline-offset: 2px; }
-
 @media (max-width: 900px) {
   .shell { grid-template-columns: 248px minmax(0, 1fr); }
   .timeline, .composer-dock { padding-inline: 28px; }

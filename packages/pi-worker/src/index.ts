@@ -17,11 +17,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { Duplex } from "node:stream";
-import type { PiTimelineEvent } from "../../adapters/src/index.js";
 import type {
   PiAdapter,
   PiExecuteRequest,
+  PiInputImage,
   PiInteractionResult,
+  PiTimelineEvent,
 } from "../../adapters/src/index.js";
 import {
   SessionWorkerTransport,
@@ -239,6 +240,7 @@ export class ExactPiChild {
   async execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
+    images: PiInputImage[] = [],
   ): Promise<ExactPiRunResult> {
     if (this.#disposed) throw new Error("pi-child-generation-disposed");
     if (this.#running) throw new Error("pi-child-generation-busy");
@@ -258,7 +260,10 @@ export class ExactPiChild {
         onTimelineEvent?.(timelineEvent);
       });
 
-      await session.prompt(prompt);
+      await session.prompt(
+        prompt,
+        images.length > 0 ? { images } : undefined,
+      );
       const checkpoint = createHash("sha256")
         .update(JSON.stringify(session.messages))
         .digest("hex");
@@ -275,9 +280,9 @@ export class ExactPiChild {
     }
   }
 
-  async steer(text: string): Promise<void> {
+  async steer(text: string, images: PiInputImage[] = []): Promise<void> {
     if (!this.#running || !this.#session) throw new Error("pi-child-steering-unavailable");
-    await this.#session.steer(text);
+    await this.#session.steer(text, images);
   }
 
   async stop(): Promise<void> {
@@ -376,6 +381,7 @@ export class RealPiAdapter implements PiAdapter {
         { id: "model.select", version: 1 },
         { id: "mode.select", version: 1 },
         { id: "input.text", version: 1, constraints: { maximumBytes: 100_000 } },
+        { id: "input.image", version: 1, constraints: { maximumBytes: 8 * 1024 * 1024 } },
         { id: "runtime.cancel", version: 1 },
         { id: "runtime.steer", version: 1 },
         { id: "interaction.basic", version: 1 },
@@ -391,11 +397,15 @@ export class RealPiAdapter implements PiAdapter {
   async execute(request: PiExecuteRequest) {
     const child = await this.#child(request.sessionId);
     await child.configureUI(this.#uiContext(request));
-    request.registerSteeringReceiver?.(text => child.steer(text));
+    request.registerSteeringReceiver?.((text, images) => child.steer(text, images));
     const abort = () => void child.stop().catch(() => {});
     request.signal?.addEventListener("abort", abort, { once: true });
     try {
-      const result = await child.execute(request.prompt, request.onTimelineEvent);
+      const result = await child.execute(
+        request.prompt,
+        request.onTimelineEvent,
+        request.images,
+      );
       return { text: result.text, checkpoint: result.checkpoint };
     } finally {
       request.signal?.removeEventListener("abort", abort);
@@ -497,8 +507,9 @@ interface BoundPiChild {
   execute(
     prompt: string,
     onTimelineEvent?: (event: PiTimelineEvent) => void,
+    images?: PiInputImage[],
   ): Promise<ExactPiRunResult>;
-  steer(text: string): Promise<void>;
+  steer(text: string, images?: PiInputImage[]): Promise<void>;
   stop(): Promise<void>;
   configureUI?(uiContext: ExtensionUIContext): Promise<void> | void;
   dispose(): Promise<void>;
@@ -584,6 +595,7 @@ export class ExactPiWorkerEndpoint {
         capabilities: [
           { id: "run.execute", version: 1 },
           { id: "input.text", version: 1, constraints: { maximumBytes: 100_000 } },
+          { id: "input.image", version: 1, constraints: { maximumBytes: 8 * 1024 * 1024 } },
           { id: "model.select", version: 1 },
           { id: "mode.select", version: 1 },
           { id: "checkpoint.durable", version: 1 },
@@ -600,7 +612,7 @@ export class ExactPiWorkerEndpoint {
     }
     if (frame.type === "steer") {
       this.#assertActiveRun(frame.correlationId);
-      await this.#child!.steer(frame.text);
+      await this.#child!.steer(frame.text, frame.images);
       return;
     }
     if (frame.type === "stop") {
@@ -637,9 +649,13 @@ export class ExactPiWorkerEndpoint {
 
   async #execute(frame: Extract<WorkerFrame, { type: "execute" }>): Promise<void> {
     try {
-      const result = await this.#child!.execute(frame.prompt, fact => {
-        this.#send("fact", { correlationId: frame.correlationId, fact });
-      });
+      const result = await this.#child!.execute(
+        frame.prompt,
+        fact => {
+          this.#send("fact", { correlationId: frame.correlationId, fact });
+        },
+        frame.images,
+      );
       let checkpointId = result.checkpoint;
       let checkpointState: "exported" | "published" = "exported";
       if (result.checkpointArtifact && !this.#options.checkpointStore) {

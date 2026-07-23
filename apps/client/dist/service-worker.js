@@ -1,4 +1,4 @@
-const SHELL_GENERATION = "pidex-client-assets-index-DpJJ03ZO.js";
+const SHELL_GENERATION = "pidex-client-assets-index-DAzuDJDj.js";
 const SHELL_CACHE = `pidex-shell-${SHELL_GENERATION}`;
 self.addEventListener("install", event => event.waitUntil((async () => {
   const shell = await fetch("/", { cache: "reload" });

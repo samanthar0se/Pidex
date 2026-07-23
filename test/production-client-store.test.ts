@@ -167,6 +167,50 @@ test("Composer submission records no Run identity until the Host projects one", 
   });
 });
 
+test("pasted images are submitted with the Composer and cleared only after acceptance", async () => {
+  const commands: unknown[] = [];
+  const image = {
+    type: "image" as const,
+    data: "aGVsbG8=",
+    mimeType: "image/png" as const,
+  };
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: {
+            sessionId,
+            name: "Image input",
+            metadataRevision: 1,
+            timelineRevision: 3,
+          },
+          timeline: [],
+          runs: [],
+        };
+      },
+      async submitRun(command) {
+        commands.push(command);
+        return { kind: "accepted" };
+      },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "image-command",
+  });
+
+  await store.getState().openSession("session-image");
+  store.getState().addDraftImages([image]);
+  await store.getState().submitComposer();
+
+  assert.deepEqual(commands, [{
+    commandId: "image-command",
+    sessionId: "session-image",
+    prompt: "",
+    images: [image],
+  }]);
+  assert.deepEqual(store.getState().draftImages["session-image"], []);
+});
+
 test("FX-RESP-01/02/03: partial and uncertain creation outcomes preserve the exact draft and prevent replay", async () => {
   let creates = 0;
   let submissions = 0;
@@ -217,6 +261,43 @@ test("New Session adapter failures settle visibly instead of leaving submission 
     progress: {
       phase: "creation-failed",
       result: { kind: "uncertain", reason: "journal-failed" },
+    },
+  });
+});
+
+test("initial Run adapter failures preserve image input and settle as uncertain", async () => {
+  const image = {
+    type: "image" as const,
+    data: "aGVsbG8=",
+    mimeType: "image/png" as const,
+  };
+  const store = createClientStore({
+    host: {
+      async readSession() { throw new Error("not used"); },
+      async createSession() {
+        return { kind: "accepted", session: {
+          sessionId: "session-created", name: "New Session",
+          metadataRevision: 1, timelineRevision: 0,
+        } };
+      },
+      async submitRun() { throw new Error("submit-failed"); },
+    },
+    drafts: { async read() { return "keep this prompt"; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "command-failed",
+  });
+
+  await store.getState().openNewSession();
+  store.getState().addNewSessionImages([image]);
+  await store.getState().submitNewSession();
+
+  assert.deepEqual(store.getState().newSession, {
+    draft: "keep this prompt",
+    images: [image],
+    progress: {
+      phase: "run-finished",
+      sessionId: "session-created",
+      result: { kind: "uncertain", reason: "submit-failed" },
     },
   });
 });

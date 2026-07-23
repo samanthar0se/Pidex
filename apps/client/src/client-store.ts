@@ -1,5 +1,9 @@
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { InteractionTerminalCause } from "../../../packages/protocol/src/status.js";
+import {
+  runInputImagesSchema,
+  type RunInputImage,
+} from "../../../packages/protocol/src/input-image.js";
 import { randomUuid } from "./client-identifier.js";
 
 export type SessionAttention = "quiet" | "working" | "needs-response";
@@ -73,6 +77,7 @@ export type NewSessionProgress =
   | { phase: "run-finished"; sessionId: string; result: CommandResult };
 export interface NewSessionState extends NewSessionScope {
   draft: string;
+  images?: readonly RunInputImage[];
   progress: NewSessionProgress;
 }
 
@@ -92,8 +97,8 @@ export interface ClientAdapters {
     readSession(sessionId: string): Promise<SessionProjection>;
     restoreSession?(session: SessionFact): Promise<void>;
     createSession?(command: { commandId: string } & NewSessionScope): Promise<SessionCreateResult>;
-    submitRun?(command: { commandId: string; sessionId: string; prompt: string }): Promise<CommandResult>;
-    steerRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedTimelineRevision: number; text: string }): Promise<CommandResult>;
+    submitRun?(command: { commandId: string; sessionId: string; prompt: string; images?: RunInputImage[] }): Promise<CommandResult>;
+    steerRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedTimelineRevision: number; text: string; images?: RunInputImage[] }): Promise<CommandResult>;
     stopRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedState: "executing"; observedTimelineRevision: number }): Promise<CommandResult>;
     actOnHeldRun?(command: { commandId: string; runId: string; action: "release" | "cancel" }): Promise<CommandResult>;
     resolveInteraction?(command: { type: "interaction.resolve"; commandId: string; interactionId: string; workerGeneration: number; observedRevision: number; dismiss: boolean; value?: string | boolean }): Promise<CommandResult>;
@@ -132,6 +137,7 @@ export interface ClientState {
   olderCursors: Readonly<Record<string, string | null>>;
   paging: "idle" | "loading" | "error";
   drafts: Readonly<Record<string, string>>;
+  draftImages: Readonly<Record<string, readonly RunInputImage[]>>;
   expandedProjectIds: readonly string[];
   searchQuery: string;
   discoveryMode: "available" | "archived";
@@ -143,8 +149,12 @@ export interface ClientState {
   openNewSession(scope?: NewSessionScope): Promise<void>;
   setNewSessionScope(scope: NewSessionScope): Promise<void>;
   setNewSessionDraft(value: string): Promise<void>;
+  addNewSessionImages(images: RunInputImage[]): void;
+  removeNewSessionImage(index: number): void;
   submitNewSession(createEmpty?: boolean): Promise<void>;
   setDraft(value: string): Promise<void>;
+  addDraftImages(images: RunInputImage[]): void;
+  removeDraftImage(index: number): void;
   composerCommand?: ComposerCommand;
   commandOutcomes: readonly ComposerCommand[];
   submitComposer(): Promise<void>;
@@ -167,7 +177,7 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? randomUuid;
   const store = createStore<ClientState>((set, get) => ({
     projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
-    timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
+    timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, draftImages: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     authority: { status: "current", lastSynchronizedAt: null },
     async loadDiscovery() {
@@ -201,11 +211,33 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       set({ newSession: { ...current, draft: value } });
       await adapters.drafts.write("new-session", value);
     },
+    addNewSessionImages(images) {
+      const current = get().newSession;
+      if (!current || current.progress.phase !== "editing") return;
+      const combined = runInputImagesSchema.parse([
+        ...(current.images ?? []),
+        ...images,
+      ]);
+      set({ newSession: { ...current, images: combined } });
+    },
+    removeNewSessionImage(index) {
+      const current = get().newSession;
+      if (!current || current.progress.phase !== "editing") return;
+      set({
+        newSession: {
+          ...current,
+          images: (current.images ?? []).filter((_, itemIndex) =>
+            itemIndex !== index
+          ),
+        },
+      });
+    },
     async submitNewSession(createEmpty = false) {
       const initial = get().newSession;
       if (!initial || initial.progress.phase !== "editing" || get().authority.status !== "current" || !adapters.host.createSession) return;
       const prompt = initial.draft;
-      if (!createEmpty && !prompt.trim()) {
+      const images = [...(initial.images ?? [])];
+      if (!createEmpty && !prompt.trim() && images.length === 0) {
         set({ newSession: { ...initial, progress: {
           phase: "editing", reason: "Enter a prompt or create an empty Session",
         } } });
@@ -245,7 +277,12 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       set({ newSession: { ...durable, progress: { phase: "submitting-run", sessionId } } });
       let submitted: CommandResult;
       try {
-        submitted = await adapters.host.submitRun({ commandId: commandId(), sessionId, prompt });
+        submitted = await adapters.host.submitRun({
+          commandId: commandId(),
+          sessionId,
+          prompt,
+          ...(images.length > 0 ? { images } : {}),
+        });
       } catch (error) {
         submitted = { kind: "uncertain", reason: commandFailureReason(error) };
       }
@@ -319,6 +356,29 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       set(state => ({ drafts: { ...state.drafts, [sessionId]: value } }));
       await adapters.drafts.write(sessionId, value);
     },
+    addDraftImages(images) {
+      const sessionId = get().selectedSessionId;
+      if (!sessionId) return;
+      const combined = runInputImagesSchema.parse([
+        ...(get().draftImages[sessionId] ?? []),
+        ...images,
+      ]);
+      set(state => ({
+        draftImages: { ...state.draftImages, [sessionId]: combined },
+      }));
+    },
+    removeDraftImage(index) {
+      const sessionId = get().selectedSessionId;
+      if (!sessionId) return;
+      set(state => ({
+        draftImages: {
+          ...state.draftImages,
+          [sessionId]: (state.draftImages[sessionId] ?? []).filter(
+            (_, itemIndex) => itemIndex !== index,
+          ),
+        },
+      }));
+    },
     async submitComposer() {
       const state = get();
       const sessionId = state.selectedSessionId;
@@ -326,25 +386,45 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       if (!sessionId || !session || !state.isSessionCurrent) return;
       const executing = state.runs[sessionId]?.find(run => run.state === "executing" && run.workerGeneration);
       const text = state.drafts[sessionId] ?? "";
+      const images = [...(state.draftImages[sessionId] ?? [])];
+      const hasInput = Boolean(text.trim()) || images.length > 0;
       const id = commandId();
       let target: ComposerCommandTarget;
       let result: CommandResult;
-      if (executing && text.trim() && adapters.host.steerRun) {
+      if (executing && hasInput && adapters.host.steerRun) {
         target = { action: "steer", runId: executing.runId };
         set({ composerCommand: pendingCommand(id, target) });
-        result = await adapters.host.steerRun({ commandId: id, sessionId, runId: executing.runId, workerGeneration: executing.workerGeneration!, observedTimelineRevision: session.timelineRevision, text });
-      } else if (executing && !text.trim() && adapters.host.stopRun) {
+        result = await adapters.host.steerRun({
+          commandId: id,
+          sessionId,
+          runId: executing.runId,
+          workerGeneration: executing.workerGeneration!,
+          observedTimelineRevision: session.timelineRevision,
+          text,
+          ...(images.length > 0 ? { images } : {}),
+        });
+      } else if (executing && !hasInput && adapters.host.stopRun) {
         target = { action: "stop", runId: executing.runId };
         set({ composerCommand: pendingCommand(id, target) });
         result = await adapters.host.stopRun({ commandId: id, sessionId, runId: executing.runId, workerGeneration: executing.workerGeneration!, observedState: "executing", observedTimelineRevision: session.timelineRevision });
-      } else if (text.trim() && adapters.host.submitRun) {
+      } else if (hasInput && adapters.host.submitRun) {
         target = { action: "submit" };
         set({ composerCommand: pendingCommand(id, target) });
-        result = await adapters.host.submitRun({ commandId: id, sessionId, prompt: text });
+        result = await adapters.host.submitRun({
+          commandId: id,
+          sessionId,
+          prompt: text,
+          ...(images.length > 0 ? { images } : {}),
+        });
       } else return;
       const outcome = commandState(id, target, result);
       set(current => ({ composerCommand: outcome, commandOutcomes: [...current.commandOutcomes, outcome] }));
-      if (result.kind === "accepted" && text) await get().setDraft("");
+      if (result.kind === "accepted" && hasInput) {
+        await get().setDraft("");
+        set(current => ({
+          draftImages: { ...current.draftImages, [sessionId]: [] },
+        }));
+      }
     },
     async stopRun(runId) {
       const state = get();

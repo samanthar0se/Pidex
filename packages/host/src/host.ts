@@ -1163,6 +1163,16 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   }
 
   function handleRunSteer(client: WebSocket, command: RunSteerMessage): void {
+    const admittedBasis = admittedCapabilityBasisByClient.get(client);
+    if (!supportsCapabilityBasis(admittedBasis, command.requiredCapabilityBasis)) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: "required-capability-basis-unavailable",
+      });
+      return;
+    }
     try {
       const result = store.acceptSteering(
         command,
@@ -1196,7 +1206,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           entry: result.entry,
         });
         const worker = workers.get(command.sessionId);
-        void worker?.steer(command.text).then(
+        void worker?.steer(command.text, command.images).then(
           () => store.markSteering(command.commandId, true),
           () => store.markSteering(command.commandId, false),
         );
@@ -1431,6 +1441,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           ),
         request =>
           waitForInteractionResolution(run.sessionId, run.runId, request),
+        store.runInputImages(run.runId),
       )
       .then(executionResult => {
         clearForcedStopTimer(run.runId);
