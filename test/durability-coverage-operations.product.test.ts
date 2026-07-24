@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,6 +41,7 @@ test(
 
     const host = await startHost({
       dataDir,
+      port: 0,
       installationDir: installDir,
       piCheckpointDir: piDir,
       adapters,
@@ -105,3 +107,44 @@ test(
     }
   },
 );
+
+test("failed Host startup releases resources acquired before listen", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pidex-failed-host-"));
+  const blocker = createServer();
+  await new Promise<void>((resolve, reject) => {
+    blocker
+      .listen(0, "127.0.0.1", resolve)
+      .once("error", reject);
+  });
+  const address = blocker.address();
+  assert.ok(address && typeof address === "object");
+
+  const adapters = adaptersFor("deterministic");
+  let stoppedVolumeObservation = 0;
+  let closedPi = 0;
+  adapters.windows.observeVolumeChanges = () => () => {
+    stoppedVolumeObservation += 1;
+  };
+  adapters.pi.close = async () => {
+    closedPi += 1;
+  };
+
+  try {
+    await assert.rejects(
+      startHost({
+        dataDir,
+        port: address.port,
+        bindAddress: "127.0.0.1",
+        adapters,
+      }),
+      { code: "EADDRINUSE" },
+    );
+    assert.equal(stoppedVolumeObservation, 1);
+    assert.equal(closedPi, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      blocker.close(error => error ? reject(error) : resolve());
+    });
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
