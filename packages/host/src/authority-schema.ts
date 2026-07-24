@@ -28,7 +28,8 @@ const CREATE_AUTHORITY_SCHEMA = `
   CREATE TABLE IF NOT EXISTS workspaces (
     workspace_id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(project_id),
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    directory TEXT
   );
   CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,

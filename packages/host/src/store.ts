@@ -453,8 +453,8 @@ export class AuthorityStore {
     }
     for (const workspace of catalog.workspaces ?? []) {
       this.#db
-        .prepare("INSERT OR IGNORE INTO workspaces VALUES (?, ?, ?)")
-        .run(workspace.workspaceId, workspace.projectId, workspace.name);
+        .prepare("INSERT OR IGNORE INTO workspaces (workspace_id, project_id, name, directory) VALUES (?, ?, ?, ?)")
+        .run(workspace.workspaceId, workspace.projectId, workspace.name, workspace.directory ?? null);
     }
   }
 
@@ -491,7 +491,7 @@ export class AuthorityStore {
       .all();
     const workspaces = this.#db
       .prepare(
-        `SELECT workspace_id AS workspaceId, project_id AS projectId, name
+        `SELECT workspace_id AS workspaceId, project_id AS projectId, name, directory
          FROM workspaces ORDER BY name`,
       )
       .all();
@@ -518,6 +518,51 @@ export class AuthorityStore {
       sessions,
       archivedSessions,
     };
+  }
+
+  createProjectFromDirectory(
+    name: string,
+    directory: string,
+    now: number,
+  ): { project: ProjectSummary; workspace: WorkspaceSummary; cursor: string } {
+    const trimmedName = name.trim();
+    if (!trimmedName) throw new Error("project-name-required");
+    const duplicate = this.#db.prepare(
+      "SELECT 1 FROM workspaces WHERE directory = ?",
+    ).get(directory);
+    if (duplicate) throw new Error("directory-already-added");
+
+    const project: ProjectSummary = {
+      projectId: `project_${randomUUID()}`,
+      name: trimmedName,
+    };
+    const workspace: WorkspaceSummary = {
+      workspaceId: `workspace_${randomUUID()}`,
+      projectId: project.projectId,
+      name: trimmedName,
+      directory,
+    };
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db.prepare("INSERT INTO projects (project_id, name) VALUES (?, ?)")
+        .run(project.projectId, project.name);
+      this.#db.prepare(
+        "INSERT INTO workspaces (workspace_id, project_id, name, directory) VALUES (?, ?, ?, ?)",
+      ).run(workspace.workspaceId, workspace.projectId, workspace.name, directory);
+      this.#db.prepare(
+        "UPDATE host SET sequence = sequence + 1, committed_at = ? WHERE singleton = 1",
+      ).run(now);
+      const cursor = this.recordSynchronizationChange({
+        type: "project.created",
+        project,
+        workspace,
+      });
+      this.#db.exec("COMMIT");
+      return { project, workspace, cursor };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   createSession(

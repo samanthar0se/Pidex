@@ -94,3 +94,23 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .authority-banner { display:flex; gap:.65rem; align-items:center; flex-wrap:wrap; padding:.65rem 1rem; background:#fff3cd; border-bottom:1px solid #d8b44b; color:#5f4700; font-size:.8rem; }
 .authority-banner.update-required { background:#fde8e8; border-color:#d66; color:#711; }
 .authority-banner strong { text-transform:uppercase; letter-spacing:.06em; }
+.remote-picker { align-self:center; width:min(720px,calc(100% - 32px)); max-height:calc(100vh - 120px); display:grid; grid-template-rows:auto minmax(220px,1fr) auto; overflow:hidden; border:1px solid #ddd9d0; border-radius:12px; background:#fbfaf7; box-shadow:0 18px 50px #0002; }
+.remote-picker > header,.picker-selection { padding:16px; }
+.remote-picker > header { display:flex; justify-content:space-between; gap:16px; border-bottom:1px solid #ddd9d0; }
+.remote-picker h2,.remote-picker p { margin:0; }
+.remote-picker header p,.selected-path { color:#6d6962; font-size:13px; }
+.directory-tree { overflow:auto; padding:8px; outline:none; }
+.directory-row { min-height:34px; display:flex; align-items:center; gap:7px; border-radius:6px; cursor:default; user-select:none; }
+.directory-row:hover,.directory-row.selected { background:#ece9e2; }
+.directory-row:focus-visible { outline:2px solid #7668c4; outline-offset:-2px; }
+.directory-row svg { width:16px; height:16px; flex:0 0 auto; }
+.directory-row svg:first-child { transition:transform .12s ease; }
+.directory-row svg:first-child.expanded { transform:rotate(90deg); }
+.picker-selection { display:grid; grid-template-columns:minmax(0,1fr) minmax(180px,240px) auto; align-items:end; gap:12px; border-top:1px solid #ddd9d0; }
+.selected-path { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; align-self:center; }
+.picker-selection label { display:grid; gap:5px; font-size:12px; }
+.picker-selection p { grid-column:1/-1; color:#8b2d21; }
+@media (max-width:640px) {
+  .remote-picker { width:100%; max-height:none; height:100%; border:0; border-radius:0; }
+  .picker-selection { grid-template-columns:1fr; }
+}

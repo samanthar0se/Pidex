@@ -1,7 +1,7 @@
-import type { ClientAdapters, CommandResult, DiscoveryProjection, InteractionFact, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange } from "./client-store.js";
+import type { ClientAdapters, CommandResult, DirectoryFact, DiscoveryProjection, InteractionFact, ProjectFact, RunFact, SessionCreateResult, SessionFact, SessionProjection, TimelineChange, WorkspaceFact } from "./client-store.js";
 import { ControlConnection } from "./control-connection.js";
 
-const capabilities = ["scope.host", "scope.session", "session.create", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.interaction.basic"];
+const capabilities = ["scope.host", "scope.session", "session.create", "directory.browse", "project.add-from-directory", "run.submit", "run.follow-up", "run.steer", "run.stop", "run.release", "run.cancel", "session.read-state", "session.archive", "session.restore", "pi.interaction.basic"];
 const sockets = new Map<string, WebSocket>();
 const listeners = new Map<string, Set<(change: TimelineChange) => void>>();
 const runListeners = new Map<string, Set<(runs: RunFact[]) => void>>();
@@ -43,7 +43,7 @@ async function readCatalog(): Promise<DiscoveryProjection> {
   return socketFor((message, socket, finish) => {
     if (message.type === "host.snapshot") setScope(socket, []);
     else if (message.type === "scope.reset" && message.barrier?.scope?.kind === "host") {
-      finish({ projects: message.snapshot.projects, sessions: message.snapshot.sessions, archivedSessions: message.snapshot.archivedSessions });
+      finish({ projects: message.snapshot.projects, workspaces: message.snapshot.workspaces, sessions: message.snapshot.sessions, archivedSessions: message.snapshot.archivedSessions });
     }
   });
 }
@@ -134,6 +134,52 @@ function createSession(command: Parameters<NonNullable<ClientAdapters["host"]["c
   });
 }
 
+function browseDirectories(parentToken?: string): Promise<DirectoryFact[]> {
+  const requestId = crypto.randomUUID();
+  return socketFor((message, socket, finish) => {
+    if (message.type === "host.snapshot") {
+      socket.send(JSON.stringify({ type: "directory.browse", requestId, parentToken }));
+    } else if (message.type === "directory.browse-result" && message.requestId === requestId) {
+      if (message.error) throw new Error(message.error);
+      finish(message.entries);
+    }
+  });
+}
+
+function addProject(command: { commandId: string; selectionToken: string; projectName: string }) {
+  return new Promise<CommandResult & { project?: ProjectFact; workspace?: WorkspaceFact }>(resolve => {
+    let accepted = false;
+    let created: { project: ProjectFact; workspace: WorkspaceFact } | undefined;
+    let settled = false;
+    let close = () => {};
+    const finish = (result: CommandResult & { project?: ProjectFact; workspace?: WorkspaceFact }) => {
+      if (settled) return;
+      settled = true;
+      close();
+      resolve(result);
+    };
+    close = connect(socket => socket.send(JSON.stringify({
+      type: "project.add-from-directory",
+      ...command,
+    })), message => {
+      if (message.type === "command.outcome" && message.commandId === command.commandId) {
+        if (message.outcome === "rejected") finish({ kind: "rejected", reason: message.error ?? "project-creation-rejected" });
+        else {
+          accepted = true;
+          if (created) finish({ kind: "accepted", ...created });
+        }
+      }
+      const change = message.type === "host.change-set"
+        ? message.changes?.find((item: any) => item.type === "project.created")
+        : undefined;
+      if (change) {
+        created = { project: change.project, workspace: change.workspace };
+        if (accepted) finish({ kind: "accepted", ...created });
+      }
+    }, () => finish({ kind: "uncertain", reason: "transport-lost" }));
+  });
+}
+
 function submitRun(command: Parameters<NonNullable<ClientAdapters["host"]["submitRun"]>>[0]): Promise<CommandResult> {
   return sendRunCommand(
     { type: "run.submit", requiredCapability: "run.submit", ...command },
@@ -176,6 +222,8 @@ export const hostSessionAdapter: ClientAdapters["host"] = {
   readSession,
   restoreSession,
   createSession,
+  browseDirectories,
+  addProject,
   submitRun,
   steerRun: command => sendRunCommand({ type: "run.steer", requiredCapability: "run.steer", ...command }),
   stopRun: command => sendRunCommand({ type: "run.stop", requiredCapability: "run.stop", ...command }),

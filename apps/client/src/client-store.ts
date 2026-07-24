@@ -3,6 +3,8 @@ import type { InteractionTerminalCause } from "../../../packages/protocol/src/st
 
 export type SessionAttention = "quiet" | "working" | "needs-response";
 export interface ProjectFact { projectId: string; name: string; }
+export interface WorkspaceFact { workspaceId: string; projectId: string; name: string; directory?: string | null; }
+export interface DirectoryFact { token: string; name: string; displayPath: string; hasChildren: boolean; }
 export interface SessionFact {
   sessionId: string;
   name: string;
@@ -44,6 +46,7 @@ export interface TimelineChange { baseRevision: number; revision: number; entry:
 export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
 export interface DiscoveryProjection {
   projects: ProjectFact[];
+  workspaces?: WorkspaceFact[];
   sessions: SessionFact[];
   archivedSessions: SessionFact[];
 }
@@ -55,6 +58,7 @@ export type CommandResult =
   | { kind: "rejected"; reason: string }
   | { kind: "uncertain"; reason: string };
 export type SessionCreateResult = CommandResult & { session?: SessionFact };
+export type ProjectAddResult = CommandResult & { project?: ProjectFact; workspace?: WorkspaceFact };
 export type ReconciledCommandResult =
   | { kind: "accepted" }
   | { kind: "rejected"; reason: string }
@@ -91,6 +95,8 @@ export interface ClientAdapters {
     readSession(sessionId: string): Promise<SessionProjection>;
     restoreSession?(session: SessionFact): Promise<void>;
     createSession?(command: { commandId: string } & NewSessionScope): Promise<SessionCreateResult>;
+    browseDirectories?(parentToken?: string): Promise<DirectoryFact[]>;
+    addProject?(command: { commandId: string; selectionToken: string; projectName: string }): Promise<ProjectAddResult>;
     submitRun?(command: { commandId: string; sessionId: string; prompt: string }): Promise<CommandResult>;
     steerRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedTimelineRevision: number; text: string }): Promise<CommandResult>;
     stopRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedState: "executing"; observedTimelineRevision: number }): Promise<CommandResult>;
@@ -120,6 +126,7 @@ export interface ClientAdapters {
 export interface ClientState {
   selectedSessionId?: string;
   projects: readonly ProjectFact[];
+  workspaces: readonly WorkspaceFact[];
   sessions: Readonly<Record<string, SessionFact>>;
   sessionOrder: readonly string[];
   archivedSessions: Readonly<Record<string, SessionFact>>;
@@ -137,6 +144,8 @@ export interface ClientState {
   isSessionCurrent: boolean;
   authority: AuthorityState;
   newSession?: NewSessionState;
+  browseDirectories(parentToken?: string): Promise<DirectoryFact[]>;
+  addProject(selectionToken: string, projectName: string): Promise<ProjectAddResult>;
   loadDiscovery(): Promise<void>;
   openSession(sessionId: string, history?: "push" | "replace" | "none"): Promise<void>;
   openNewSession(scope?: NewSessionScope): Promise<void>;
@@ -165,7 +174,7 @@ export type ClientStore = StoreApi<ClientState>;
 export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? (() => crypto.randomUUID());
   const store = createStore<ClientState>((set, get) => ({
-    projects: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
+    projects: [], workspaces: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
     timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     authority: { status: "current", lastSynchronizedAt: null },
@@ -188,6 +197,29 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const draft = await adapters.drafts.read("new-session");
       set({ selectedSessionId: undefined, newSession: { ...scope, draft, progress: { phase: "editing" } } });
       adapters.routing.replace("/new");
+    },
+    async browseDirectories(parentToken) {
+      if (!adapters.host.browseDirectories || get().authority.status !== "current") {
+        throw new Error("Host directory browsing is unavailable");
+      }
+      return adapters.host.browseDirectories(parentToken);
+    },
+    async addProject(selectionToken, projectName) {
+      if (!adapters.host.addProject || get().authority.status !== "current") {
+        return { kind: "rejected", reason: "Host Project creation is unavailable" };
+      }
+      const result = await adapters.host.addProject({
+        commandId: commandId(),
+        selectionToken,
+        projectName,
+      });
+      if (result.kind === "accepted" && result.project && result.workspace) {
+        set(state => ({
+          projects: [...state.projects.filter(item => item.projectId !== result.project!.projectId), result.project!],
+          workspaces: [...state.workspaces.filter(item => item.workspaceId !== result.workspace!.workspaceId), result.workspace!],
+        }));
+      }
+      return result;
     },
     async setNewSessionScope(scope) {
       const current = get().newSession;
@@ -514,6 +546,7 @@ function activeInteractions(interactions: readonly InteractionFact[]): Interacti
 function discoveryStateFrom(catalog: DiscoveryProjection) {
   return {
     projects: catalog.projects,
+    workspaces: catalog.workspaces ?? [],
     sessions: byId(catalog.sessions),
     sessionOrder: catalog.sessions.map(item => item.sessionId),
     archivedSessions: byId(catalog.archivedSessions),

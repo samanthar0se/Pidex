@@ -14,6 +14,7 @@ import { ClientHeader } from "./ClientHeader.js";
 import { InteractionControl } from "./InteractionControl.js";
 import { SessionDrawer, useSessionDrawer } from "./SessionDrawer.js";
 import { SessionTimeline } from "./SessionTimeline.js";
+import { RemoteDirectoryPicker } from "./RemoteDirectoryPicker.js";
 
 export function App({ clientStore = productionStore }: { clientStore?: ClientStore } = {}) {
   const store = clientStore;
@@ -120,13 +121,24 @@ function describeProgress(progress: NewSessionProgress) {
 }
 
 function NewSessionView({ store, newSession }: { store: ClientStore; newSession: NewSessionState }) {
+  const [addingProject, setAddingProject] = useState(false);
   const editable = newSession.progress.phase === "editing";
   const description = describeProgress(newSession.progress);
   const submit = () => void store.getState().submitNewSession();
+  if (addingProject) return <RemoteDirectoryPicker store={store} onCancel={() => setAddingProject(false)}
+    onCreated={(project, workspace) => {
+      void store.getState().setNewSessionScope({ projectId: project.projectId, workspaceId: workspace.workspaceId });
+      setAddingProject(false);
+    }}/>;
   return <section className="new-session" aria-label="New Session">
     <div className="scope-controls">
-      <label>Project <input disabled={!editable} value={newSession.projectId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: event.target.value || undefined, workspaceId: undefined })}/></label>
-      <label>Workspace <input disabled={!editable} value={newSession.workspaceId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: newSession.projectId, workspaceId: event.target.value || undefined })}/></label>
+      <label>Project <select disabled={!editable} value={newSession.projectId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: event.target.value || undefined, workspaceId: undefined })}>
+        <option value="">No Project</option>{store.getState().projects.map(project => <option key={project.projectId} value={project.projectId}>{project.name}</option>)}
+      </select></label>
+      <label>Workspace <select disabled={!editable || !newSession.projectId} value={newSession.workspaceId ?? ""} onChange={event => void store.getState().setNewSessionScope({ projectId: newSession.projectId, workspaceId: event.target.value || undefined })}>
+        <option value="">No Workspace</option>{store.getState().workspaces.filter(workspace => workspace.projectId === newSession.projectId).map(workspace => <option key={workspace.workspaceId} value={workspace.workspaceId}>{workspace.name}</option>)}
+      </select></label>
+      <button type="button" disabled={!editable} onClick={() => setAddingProject(true)}>Add Project…</button>
       {(["Runtime", "Model", "Mode"] as const).map(choice => <label key={choice}>{choice}<select disabled title={`${choice} choices were not advertised by the Host`}><option>Host default — no choices advertised</option></select></label>)}
     </div>
     <label className="new-composer">First prompt
