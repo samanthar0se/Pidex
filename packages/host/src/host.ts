@@ -727,14 +727,76 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     synchronizedClients.add(client);
   }
 
-  await new Promise<void>((resolveStart, rejectStart) => {
-    server.once("error", rejectStart);
-    server.listen(
-      options.port ?? DEFAULT_PORT,
-      options.bindAddress ?? "0.0.0.0",
-      resolveStart,
-    );
-  });
+  async function closeHostResources(): Promise<void> {
+    const failures: unknown[] = [];
+    const attempt = async (operation: () => void | Promise<void>) => {
+      try {
+        await operation();
+      } catch (cause) {
+        failures.push(cause);
+      }
+    };
+
+    clearInterval(controlLivenessInterval);
+    await attempt(() => stopVolumeObservation());
+    for (const timer of interactionDeadlineTimers.values()) {
+      clearTimeout(timer);
+    }
+    interactionDeadlineTimers.clear();
+    for (const runId of forcedStopTimers.keys()) {
+      clearForcedStopTimer(runId);
+    }
+    for (const job of sessionJobs.values()) {
+      await attempt(() => job.close());
+    }
+    sessionJobs.clear();
+    await attempt(async () => adapters.pi.close?.());
+    for (const webSocket of webSocketServer.clients) {
+      await attempt(() => webSocket.close());
+    }
+    await attempt(() => webSocketServer.close());
+    if (server.listening) {
+      await attempt(
+        () =>
+          new Promise<void>((resolveClose, rejectClose) => {
+            server.close(error => {
+              if (error) {
+                rejectClose(error);
+                return;
+              }
+              resolveClose();
+            });
+          }),
+      );
+    }
+    await attempt(() => store.close());
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Host shutdown failed");
+    }
+  }
+
+  try {
+    await new Promise<void>((resolveStart, rejectStart) => {
+      server.once("error", rejectStart);
+      server.listen(
+        options.port ?? DEFAULT_PORT,
+        options.bindAddress ?? "0.0.0.0",
+        resolveStart,
+      );
+    });
+  } catch (startupFailure) {
+    try {
+      await closeHostResources();
+    } catch (cleanupFailure) {
+      throw new AggregateError(
+        [startupFailure, cleanupFailure],
+        "Host startup failed and cleanup failed",
+        { cause: startupFailure },
+      );
+    }
+    throw startupFailure;
+  }
 
   const address = server.address();
   const port =
@@ -1959,35 +2021,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     updateStorageRoots: roots => coverage.setRoots(roots),
     rotateSynchronizationEpoch: () =>
       store.rotateSynchronizationEpoch(adapters.clock.now()),
-    close: async () => {
-      clearInterval(controlLivenessInterval);
-      stopVolumeObservation();
-      for (const timer of interactionDeadlineTimers.values()) {
-        clearTimeout(timer);
-      }
-      interactionDeadlineTimers.clear();
-      for (const runId of forcedStopTimers.keys()) {
-        clearForcedStopTimer(runId);
-      }
-      for (const job of sessionJobs.values()) job.close();
-      sessionJobs.clear();
-      await adapters.pi.close?.();
-      for (const webSocket of webSocketServer.clients) {
-        webSocket.close();
-      }
-      webSocketServer.close();
-
-      await new Promise<void>((resolveClose, rejectClose) => {
-        server.close(error => {
-          if (error) {
-            rejectClose(error);
-            return;
-          }
-          resolveClose();
-        });
-      });
-      store.close();
-    },
+    close: closeHostResources,
   };
 }
 
