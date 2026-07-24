@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, statfsSync } from "node:fs";
+import { existsSync, readFileSync, statfsSync } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   sessionIdFromReadStateResourceId,
@@ -58,7 +59,9 @@ import {
 import { GitWorktreeManager } from "./git-worktrees.js";
 import {
   capabilityBasisKey,
+  isDirectoryBrowseMessage,
   isInteractionResolveMessage,
+  isProjectAddMessage,
   isRunQueueActionMessage,
   isRunSteerMessage,
   isRunStopMessage,
@@ -72,8 +75,10 @@ import {
   isViewObserveMessage,
   parseSessionMarkReadMessage,
   supportsCapabilityBasis,
+  type DirectoryBrowseMessage,
   type InteractionResolveMessage,
   type ParsedSessionMarkReadMessage,
+  type ProjectAddMessage,
   type RunQueueActionMessage,
   type RunSteerMessage,
   type RunStopMessage,
@@ -116,6 +121,7 @@ const INTERNAL_WORKER_CAPABILITIES = new Set([
   "run.execute",
   "checkpoint.durable",
 ]);
+const MAX_DIRECTORY_ENTRIES = 1_000;
 
 interface RunPresentationContext {
   client: WebSocket;
@@ -139,6 +145,47 @@ function hasCommandId(value: unknown): value is { commandId: string } {
     "commandId" in value &&
     typeof value.commandId === "string"
   );
+}
+
+function requireDirectoryToken(tokens: Map<string, string>, token: string): string {
+  const path = tokens.get(token);
+  if (!path) throw new Error("directory-selection-expired");
+  return path;
+}
+
+function directoryRoots(): string[] {
+  if (process.platform !== "win32") return ["/"];
+  const roots: string[] = [];
+  for (let code = 65; code <= 90; code += 1) {
+    const root = `${String.fromCharCode(code)}:\\`;
+    if (existsSync(root)) roots.push(root);
+  }
+  return roots;
+}
+
+async function childDirectories(parent: string): Promise<string[]> {
+  const entries = await readdir(parent, { withFileTypes: true });
+  return entries
+    .filter(entry => entry.isDirectory())
+    .map(entry => join(parent, entry.name))
+    .sort((left, right) =>
+      left.localeCompare(right, undefined, { sensitivity: "base" })
+    );
+}
+
+function directoryDisplayName(path: string): string {
+  return basename(path) || path;
+}
+
+function directoryError(error: unknown): string {
+  if (error instanceof Error && !("code" in error)) return error.message;
+  const code =
+    typeof error === "object" && error && "code" in error
+      ? String(error.code)
+      : "";
+  if (code === "EACCES" || code === "EPERM") return "access-denied";
+  if (code === "ENOENT") return "not-found";
+  return "directory-unavailable";
 }
 
 interface OutboundMessage {
@@ -463,6 +510,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
   });
 
   webSocketServer.on("connection", webSocket => {
+    const directoryTokens = new Map<string, string>();
     liveClients.add(webSocket);
     webSocket.on("pong", () => liveClients.add(webSocket));
     webSocket.once("close", () => {
@@ -472,6 +520,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
       scopedSessionIdsByClient.delete(webSocket);
       deliveries.delete(webSocket);
       viewsByClient.delete(webSocket);
+      directoryTokens.clear();
     });
     webSocket.on("message", bytes => {
       liveClients.add(webSocket);
@@ -490,6 +539,10 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           });
         } else if (isSessionCreateMessage(message)) {
           void handleSessionCreate(webSocket, message);
+        } else if (isDirectoryBrowseMessage(message)) {
+          void handleDirectoryBrowse(webSocket, message, directoryTokens);
+        } else if (isProjectAddMessage(message)) {
+          void handleProjectAdd(webSocket, message, directoryTokens);
         } else if (isSessionForkMessage(message)) {
           void handleSessionFork(webSocket, message);
         } else if (isSessionRenameMessage(message)) {
@@ -817,6 +870,103 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         error: error instanceof Error ? error.message : "invalid-scope",
       };
       sendServerMessage(client, outcome);
+    }
+  }
+
+  async function handleDirectoryBrowse(
+    client: WebSocket,
+    message: DirectoryBrowseMessage,
+    tokens: Map<string, string>,
+  ): Promise<void> {
+    try {
+      if (
+        !admittedCapabilityBasisByClient
+          .get(client)
+          ?.has("directory.browse@1")
+      ) {
+        throw new Error("capability-unavailable");
+      }
+      const paths = message.parentToken
+        ? await childDirectories(
+            requireDirectoryToken(tokens, message.parentToken),
+          )
+        : directoryRoots();
+      const entries = paths.slice(0, MAX_DIRECTORY_ENTRIES).map(path => {
+        const token = randomUUID();
+        tokens.set(token, path);
+        return {
+          token,
+          name: directoryDisplayName(path),
+          displayPath: path,
+          hasChildren: true,
+        };
+      });
+      sendServerMessage(client, {
+        type: "directory.browse-result",
+        requestId: message.requestId,
+        parentToken: message.parentToken ?? null,
+        entries,
+      });
+    } catch (error) {
+      sendServerMessage(client, {
+        type: "directory.browse-result",
+        requestId: message.requestId,
+        parentToken: message.parentToken ?? null,
+        entries: [],
+        error: directoryError(error),
+      });
+    }
+  }
+
+  async function handleProjectAdd(
+    client: WebSocket,
+    command: ProjectAddMessage,
+    tokens: Map<string, string>,
+  ): Promise<void> {
+    try {
+      if (
+        !admittedCapabilityBasisByClient
+          .get(client)
+          ?.has("project.add-from-directory@1")
+      ) {
+        throw new Error("capability-unavailable");
+      }
+      admitDiscretionaryWrite();
+      const selected = requireDirectoryToken(tokens, command.selectionToken);
+      const canonical = await realpath(selected);
+      if (!(await stat(canonical)).isDirectory()) {
+        throw new Error("not-a-directory");
+      }
+      adapters.storage.beforeCommit();
+      const created = store.createProjectFromDirectory(
+        command.projectName,
+        canonical,
+        adapters.clock.now(),
+      );
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "accepted",
+      });
+      const changeSet: ServerMessage = {
+        type: "host.change-set",
+        cursor: created.cursor,
+        changes: [{
+          type: "project.created",
+          project: created.project,
+          workspace: created.workspace,
+        }],
+      };
+      for (const socket of admittedClients) {
+        sendServerMessage(socket, changeSet);
+      }
+    } catch (error) {
+      sendServerMessage(client, {
+        type: "command.outcome",
+        commandId: command.commandId,
+        outcome: "rejected",
+        error: directoryError(error),
+      });
     }
   }
 

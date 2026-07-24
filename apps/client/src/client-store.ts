@@ -16,6 +16,12 @@ export interface WorkspaceFact {
   kind?: "checkout" | "worktree";
   managed?: boolean;
 }
+export interface DirectoryFact {
+  token: string;
+  name: string;
+  displayPath: string;
+  hasChildren: boolean;
+}
 export interface SessionFact {
   sessionId: string;
   name: string;
@@ -90,6 +96,10 @@ export type CommandResult =
   | { kind: "rejected"; reason: string }
   | { kind: "uncertain"; reason: string };
 export type SessionCreateResult = CommandResult & { session?: SessionFact };
+export type ProjectAddResult = CommandResult & {
+  project?: ProjectFact;
+  workspace?: WorkspaceFact;
+};
 export type ReconciledCommandResult =
   | { kind: "accepted" }
   | { kind: "rejected"; reason: string }
@@ -129,6 +139,12 @@ export interface ClientAdapters {
     readSession(sessionId: string): Promise<SessionProjection>;
     restoreSession?(session: SessionFact): Promise<void>;
     listProjectWorktrees?(projectId: string): Promise<ProjectWorktreeCatalog>;
+    browseDirectories?(parentToken?: string): Promise<DirectoryFact[]>;
+    addProject?(command: {
+      commandId: string;
+      selectionToken: string;
+      projectName: string;
+    }): Promise<ProjectAddResult>;
     createSession?(command: {
       commandId: string;
       worktree?: { kind: "new" } | { kind: "existing"; path: string };
@@ -181,6 +197,11 @@ export interface ClientState {
   isSessionCurrent: boolean;
   authority: AuthorityState;
   newSession?: NewSessionState;
+  browseDirectories(parentToken?: string): Promise<DirectoryFact[]>;
+  addProject(
+    selectionToken: string,
+    projectName: string,
+  ): Promise<ProjectAddResult>;
   loadDiscovery(): Promise<void>;
   openSession(sessionId: string, history?: "push" | "replace" | "none"): Promise<void>;
   openNewSession(scope?: NewSessionScope): Promise<void>;
@@ -247,6 +268,49 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       });
       adapters.routing.replace("/new");
       if (scope.projectId) await get().setNewSessionScope(scope);
+    },
+    async browseDirectories(parentToken) {
+      if (
+        !adapters.host.browseDirectories ||
+        get().authority.status !== "current"
+      ) {
+        throw new Error("Host directory browsing is unavailable");
+      }
+      return adapters.host.browseDirectories(parentToken);
+    },
+    async addProject(selectionToken, projectName) {
+      if (!adapters.host.addProject || get().authority.status !== "current") {
+        return {
+          kind: "rejected",
+          reason: "Host Project creation is unavailable",
+        };
+      }
+      const result = await adapters.host.addProject({
+        commandId: commandId(),
+        selectionToken,
+        projectName,
+      });
+      if (
+        result.kind === "accepted" &&
+        result.project &&
+        result.workspace
+      ) {
+        set(state => ({
+          projects: [
+            ...state.projects.filter(
+              item => item.projectId !== result.project!.projectId,
+            ),
+            result.project!,
+          ],
+          workspaces: [
+            ...state.workspaces.filter(
+              item => item.workspaceId !== result.workspace!.workspaceId,
+            ),
+            result.workspace!,
+          ],
+        }));
+      }
+      return result;
     },
     async setNewSessionScope(scope) {
       const current = get().newSession;

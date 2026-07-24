@@ -15,6 +15,7 @@ import { ClientHeader } from "./ClientHeader.js";
 import { InteractionControl } from "./InteractionControl.js";
 import { SessionDrawer, useSessionDrawer } from "./SessionDrawer.js";
 import { SessionTimeline } from "./SessionTimeline.js";
+import { RemoteDirectoryPicker } from "./RemoteDirectoryPicker.js";
 import {
   MAX_RUN_INPUT_IMAGES,
   runInputImageSchema,
@@ -140,6 +141,7 @@ function describeProgress(progress: NewSessionProgress): NewSessionDescription {
 }
 
 function NewSessionView({ store, newSession }: { store: ClientStore; newSession: NewSessionState }) {
+  const [addingProject, setAddingProject] = useState(false);
   const editable = newSession.progress.phase === "editing";
   const description = describeProgress(newSession.progress);
   const submit = () => void store.getState().submitNewSession();
@@ -157,6 +159,19 @@ function NewSessionView({ store, newSession }: { store: ClientStore; newSession:
     ? worktreeCatalog?.worktrees.find(item => item.path === existingWorktreePath)
     : worktreeCatalog?.projectCheckout;
   const images = newSession.images ?? [];
+  if (addingProject) {
+    return <RemoteDirectoryPicker
+      store={store}
+      onCancel={() => setAddingProject(false)}
+      onCreated={(project, workspace) => {
+        void store.getState().setNewSessionScope({
+          projectId: project.projectId,
+          workspaceId: workspace.workspaceId,
+        });
+        setAddingProject(false);
+      }}
+    />;
+  }
   return <section className="new-session" aria-label="New Session">
     <div className="new-session-center"><div className="new-session-glyph" aria-hidden="true">›_</div><h2>What should we work on?</h2>
     <div className="scope-controls">
@@ -198,6 +213,14 @@ function NewSessionView({ store, newSession }: { store: ClientStore; newSession:
                     : "Runs in the Project's configured checkout."}
         </small>
       </label>
+      <button
+        className="add-project"
+        type="button"
+        disabled={!editable}
+        onClick={() => setAddingProject(true)}
+      >
+        Add Project…
+      </button>
     </div>
     <label className="new-composer"><span className="sr-only">First prompt</span>
       <textarea autoFocus aria-label="First prompt" placeholder="Ask Pidex to do anything" value={newSession.draft} disabled={!editable}

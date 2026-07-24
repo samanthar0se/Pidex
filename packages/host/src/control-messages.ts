@@ -23,6 +23,19 @@ export type SessionWorktreeSelection =
   | { kind: "new" }
   | { kind: "existing"; path: string };
 
+export interface DirectoryBrowseMessage {
+  type: "directory.browse";
+  requestId: string;
+  parentToken?: string | null;
+}
+
+export interface ProjectAddMessage {
+  type: "project.add-from-directory";
+  commandId: string;
+  selectionToken: string;
+  projectName: string;
+}
+
 export interface SessionForkMessage {
   type: "session.fork";
   commandId: string;
@@ -162,6 +175,29 @@ export function isSessionCreateMessage(
     (value.worktree === undefined ||
       value.worktree.kind === "local" ||
       (typeof value.projectId === "string" && value.workspaceId == null))
+  );
+}
+
+export function isDirectoryBrowseMessage(
+  value: unknown,
+): value is DirectoryBrowseMessage {
+  return (
+    isObject(value) &&
+    value.type === "directory.browse" &&
+    typeof value.requestId === "string" &&
+    isOptionalNullableString(value.parentToken)
+  );
+}
+
+export function isProjectAddMessage(value: unknown): value is ProjectAddMessage {
+  return (
+    isObject(value) &&
+    value.type === "project.add-from-directory" &&
+    typeof value.commandId === "string" &&
+    typeof value.selectionToken === "string" &&
+    typeof value.projectName === "string" &&
+    value.projectName.trim().length > 0 &&
+    value.projectName.length <= MAX_SESSION_NAME_LENGTH
   );
 }
 

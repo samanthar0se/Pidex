@@ -585,6 +585,77 @@ export class AuthorityStore {
     return typeof row?.path === "string" ? row.path : undefined;
   }
 
+  createProjectFromDirectory(
+    name: string,
+    path: string,
+    now: number,
+  ): { project: ProjectSummary; workspace: WorkspaceSummary; cursor: string } {
+    const trimmedName = name.trim();
+    if (!trimmedName) throw new Error("project-name-required");
+    const duplicate = this.#db
+      .prepare(
+        `SELECT 1
+         FROM projects p
+         LEFT JOIN workspaces w ON w.project_id = p.project_id
+         WHERE p.path = ? OR w.path = ?
+         LIMIT 1`,
+      )
+      .get(path, path);
+    if (duplicate) throw new Error("directory-already-added");
+
+    const project: ProjectSummary = {
+      projectId: `project_${randomUUID()}`,
+      name: trimmedName,
+      path,
+    };
+    const workspace: WorkspaceSummary = {
+      workspaceId: `workspace_${randomUUID()}`,
+      projectId: project.projectId,
+      name: trimmedName,
+      path,
+      kind: "checkout",
+      managed: false,
+    };
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db
+        .prepare(
+          "INSERT INTO projects (project_id, name, path) VALUES (?, ?, ?)",
+        )
+        .run(project.projectId, project.name, path);
+      this.#db
+        .prepare(
+          `INSERT INTO workspaces
+             (workspace_id, project_id, name, path, kind, managed)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          workspace.workspaceId,
+          workspace.projectId,
+          workspace.name,
+          path,
+          "checkout",
+          0,
+        );
+      this.#db
+        .prepare(
+          `UPDATE host SET sequence = sequence + 1, committed_at = ?
+           WHERE singleton = 1`,
+        )
+        .run(now);
+      const cursor = this.recordSynchronizationChange({
+        type: "project.created",
+        project,
+        workspace,
+      });
+      this.#db.exec("COMMIT");
+      return { project, workspace, cursor };
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   createSession(
     projectId: string | null,
     workspaceId: string | null,

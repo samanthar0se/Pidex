@@ -14,6 +14,8 @@ export const protocolCapabilities = [
   { id: "scope.host", version: 1 },
   { id: "scope.session", version: 1 },
   { id: "session.create", version: 1 },
+  { id: "directory.browse", version: 1 },
+  { id: "project.add-from-directory", version: 1 },
   { id: "session.rename", version: 1 },
   { id: "session.archive", version: 1 },
   { id: "session.restore", version: 1 },
@@ -305,6 +307,12 @@ const synchronizationBarrierSchema = z.object({
 
 export const hostChangeSchema = z.discriminatedUnion("type", [
   z.object({
+    type: z.literal("project.created"),
+    project: projectSummarySchema,
+    workspace: workspaceSummarySchema,
+    session: z.never().optional(),
+  }),
+  z.object({
     type: z.literal("session.read-state-changed"),
     sessionId: z.string(),
     readState: sessionReadStateSchema,
@@ -450,6 +458,18 @@ export const serverMessageSchema = z.discriminatedUnion("type", [
     runId: z.string().optional(),
     effect: z.enum(["advanced", "no-op"]).optional(),
     readState: sessionReadStateSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("directory.browse-result"),
+    requestId: z.string(),
+    parentToken: z.string().nullable(),
+    entries: z.array(z.object({
+      token: z.string(),
+      name: z.string(),
+      displayPath: z.string(),
+      hasChildren: z.boolean(),
+    })),
+    error: z.string().optional(),
   }),
   z.object({
     type: z.literal("run.completed"),
