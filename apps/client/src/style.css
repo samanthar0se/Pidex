@@ -203,7 +203,7 @@ header { min-height: 52px; display: flex; align-items: center; gap: 8px; padding
 .composer-dock { position: absolute; z-index: 3; right: 0; bottom: 0; left: 0; display: grid; gap: 7px; padding: 46px max(24px, calc((100% - 736px) / 2)) 16px; background: linear-gradient(transparent, var(--surface) 38%); }
 .composer-card { overflow: hidden; border: 1px solid #3a3a3a; border-radius: 18px; background: var(--composer); box-shadow: 0 12px 34px #0006; transition: border-color .15s ease; }
 .composer-card:focus-within { border-color: #565656; }
-.composer-card > textarea { width: 100%; min-height: 58px; max-height: 180px; display: block; padding: 15px 14px 5px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.45; }
+.composer-card > textarea { width: 100%; min-height: 58px; max-height: 180px; display: block; padding: 15px 14px 5px; overflow-y: auto; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); line-height: 1.45; scrollbar-width: thin; scrollbar-color: #4a4a4a transparent; }
 .composer-card > textarea::placeholder { color: #777; }
 .composer-toolbar { min-height: 43px; display: flex; align-items: center; gap: 6px; padding: 4px 8px 8px 13px; }
 .composer-status { color: #a5a6a8; font-size: 11px; }
@@ -212,6 +212,10 @@ header { min-height: 52px; display: flex; align-items: center; gap: 8px; padding
 .composer-primary:hover:not(:disabled), .new-submit:hover:not(:disabled) { background: #fff; }
 .composer-primary:disabled, .new-submit:disabled { background: #777; color: #333; opacity: .6; }
 .composer-primary.stop { border-radius: 50%; background: #efefef; }
+/* Pending keeps the primary action's shape and weight so acknowledgement reads
+   as the same control working, not as a disabled one. */
+.composer-primary[aria-busy=true]:disabled { background: #efefef; color: #171717; opacity: 1; }
+.composer-pending { animation: spin .8s linear infinite; }
 .image-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 9px 13px 2px; }
 .image-attachment { position: relative; flex: 0 0 auto; width: 76px; height: 76px; }
 .image-attachment img { width: 100%; height: 100%; object-fit: cover; border: 1px solid var(--line-strong); border-radius: 9px; background: #181818; }
@@ -248,7 +252,7 @@ header { min-height: 52px; display: flex; align-items: center; gap: 8px; padding
 .location-detail { grid-column: 1 / -1; min-height: 2.4em; overflow-wrap: anywhere; white-space: normal; color: var(--muted); font-size: 10px; }
 .new-composer { display: block; overflow: hidden; border: 1px solid #3b3b3b; border-radius: 18px; background: var(--composer); box-shadow: 0 12px 36px #0005; }
 .new-composer:focus-within { border-color: #565656; }
-.new-composer textarea { width: 100%; min-height: 105px; display: block; padding: 15px 14px 5px; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); }
+.new-composer textarea { width: 100%; min-height: 105px; max-height: 320px; display: block; padding: 15px 14px 5px; overflow-y: auto; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); scrollbar-width: thin; scrollbar-color: #4a4a4a transparent; }
 .new-composer textarea::placeholder { color: #777; }
 .new-composer-toolbar { min-height: 43px; display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px 13px; color: #a5a6a8; font-size: 11px; }
 .new-composer-toolbar .new-submit { margin-left: auto; }
@@ -300,6 +304,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .shell aside, .work-chevron, .work-panel, .work-summary, .tool-detail-chevron, .response-actions { transition: none; }
   .timeline-turn, .timeline-entry, .activity-row { animation: none; }
   .text-shimmer { color: var(--muted); background: none; animation: none; }
+  /* The busy control still reads as pending through its icon and disabled state. */
+  .composer-pending { animation: none; }
   /* The rail, icon, and label still identify working without motion. */
   .session-link[data-state=working]::before { animation: none; }
   .session-link[data-state=working] .session-state-icon svg { animation: none; }
