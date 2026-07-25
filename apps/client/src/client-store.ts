@@ -666,6 +666,11 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         // presents every revision the projection carries.
         presentedRevisions: { ...state.presentedRevisions, [sessionId]: projection.session.timelineRevision },
         drafts: { ...state.drafts, [sessionId]: draft }, isSessionCurrent: true,
+        // Receipts are read in place, above the Composer they were issued from,
+        // so a Session switch retires the settled ones. Uncertain commands are
+        // not settled and must survive to reconcile (FX-TRUST-04).
+        commandOutcomes: state.commandOutcomes.filter(command => command.phase === "uncertain"),
+        composerCommand: state.composerCommand?.phase === "uncertain" ? state.composerCommand : undefined,
       }));
       adapters.host.watchSession?.(sessionId, change => {
         if (get().selectedSessionId !== sessionId) return;
@@ -687,6 +692,12 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
           return {
             sessions: { ...state.sessions, [sessionId]: { ...session, timelineRevision: change.revision } },
             timelines: { ...state.timelines, [sessionId]: entries },
+            // An accepted command waits only for its projection, and this is the
+            // authoritative revision arriving. Retiring the receipt keeps the
+            // Composer surface to steering and unresolved outcomes (FX-COMP-04);
+            // rejected and uncertain receipts stay until the reader acts.
+            commandOutcomes: retireProjectedCommands(state.commandOutcomes),
+            ...(state.composerCommand?.phase === "accepted-awaiting-projection" && { composerCommand: undefined }),
             // A declined entry leaves the Host revision authoritative while the
             // View keeps presenting the revision it actually rendered.
             ...(merged && { presentedRevisions: { ...state.presentedRevisions, [sessionId]: change.revision } }),
@@ -1005,6 +1016,12 @@ function commandFailureReason(error: unknown): string {
 function byId(items: SessionFact[]) { return Object.fromEntries(items.map(item => [item.sessionId, item])); }
 function omit(items: Readonly<Record<string, SessionFact>>, id: string) {
   const next = { ...items }; delete next[id]; return next;
+}
+
+/** Drops receipts whose only remaining wait — the authoritative projection — is over. */
+function retireProjectedCommands(outcomes: readonly ComposerCommand[]): readonly ComposerCommand[] {
+  const retained = outcomes.filter(command => command.phase !== "accepted-awaiting-projection");
+  return retained.length === outcomes.length ? outcomes : retained;
 }
 
 function pendingCommand(commandId: string, target: ComposerCommandTarget): ComposerCommand {
