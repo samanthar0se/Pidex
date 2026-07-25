@@ -39,7 +39,7 @@ export function App({ clientStore = productionStore }: { clientStore?: ClientSto
       <ClientHeader store={store} drawer={drawer}/>
       {newSession && <NewSessionView store={store} newSession={newSession}/>}
       {!newSession && <>
-        {session ? <SessionTimeline entries={timeline} olderCursor={state.olderCursors[session.sessionId]} paging={state.paging}
+        {session ? <SessionTimeline sessionId={session.sessionId} entries={timeline} olderCursor={state.olderCursors[session.sessionId]} paging={state.paging}
           executingRunIds={new Set((state.runs[session.sessionId] ?? []).filter(run => run.state === "executing").map(run => run.runId))}
           loadOlder={() => store.getState().loadOlder()} presentTail={() => store.getState().presentTail()}/>
           : <section className="timeline" aria-label="Session Timeline"><div className="empty"><h2>Choose a Session</h2><p>Resume a Chat or open a Project.</p></div></section>}

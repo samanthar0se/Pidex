@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Session Status Presentation Study</title>
+  <style>
+    :root {
+      --radius-sm: 7px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body,
+    body[data-theme="dark"] {
+      color-scheme: dark;
+      --surface-background: #101214;
+      --surface-foreground: #f4f6f8;
+      --surface-elevated: #191c20;
+      --surface-muted: #23272c;
+      --surface-subtle: #343a42;
+      --surface-faint: #20242a;
+      --surface-muted-foreground: #9ca5b0;
+      --interactive-border: #3b424c;
+      --interactive-hover: #282d34;
+      --interactive-selection: #12355d;
+      --interactive-focus: #5aaeff;
+      --primary: #5aaeff;
+      --status-info: #61b4ff;
+      --status-info-background: #162b3f;
+      --status-info-border: #356c99;
+      --status-info-muted: #294b68;
+      --status-success: #55d49b;
+      --status-success-background: #17372b;
+      --status-success-border: #307a5a;
+      --status-blocked: #ff6b6b;
+      --status-blocked-background: #3a1c20;
+      --status-blocked-border: #8f3d45;
+      --page-glow: rgba(90, 174, 255, 0.12);
+      --control-background: rgba(25, 28, 32, 0.94);
+      --shadow: 0 18px 55px rgba(0, 0, 0, 0.35);
+    }
+
+    body[data-theme="light"] {
+      color-scheme: light;
+      --surface-background: #f7f8fa;
+      --surface-foreground: #17191c;
+      --surface-elevated: #ffffff;
+      --surface-muted: #eef0f3;
+      --surface-subtle: #d7dce2;
+      --surface-faint: #edf0f4;
+      --surface-muted-foreground: #66707c;
+      --interactive-border: #cbd2da;
+      --interactive-hover: #e8edf3;
+      --interactive-selection: #dcecff;
+      --interactive-focus: #0969da;
+      --primary: #0969da;
+      --status-info: #0969da;
+      --status-info-background: #e7f2ff;
+      --status-info-border: #86baf0;
+      --status-info-muted: #b8d7f5;
+      --status-success: #147d55;
+      --status-success-background: #e6f6ee;
+      --status-success-border: #7fc5a5;
+      --status-blocked: #c62828;
+      --status-blocked-background: #fdeaea;
+      --status-blocked-border: #e59a9a;
+      --page-glow: rgba(9, 105, 218, 0.08);
+      --control-background: rgba(255, 255, 255, 0.94);
+      --shadow: 0 18px 55px rgba(23, 25, 28, 0.14);
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 10% 0%, var(--page-glow), transparent 32rem),
+        var(--surface-background);
+      color: var(--surface-foreground);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    button { font: inherit; color: inherit; }
+    button:focus-visible { outline: 2px solid var(--interactive-focus); outline-offset: 2px; }
+
+    .page {
+      width: min(1450px, 100%);
+      margin: 0 auto;
+      padding: 26px clamp(14px, 3vw, 42px) 56px;
+    }
+
+    .masthead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow, .proposal-kicker, .section-label, .mini-label {
+      color: var(--surface-muted-foreground);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 4px 0 7px;
+      max-width: 880px;
+      font-size: clamp(27px, 4vw, 48px);
+      font-weight: 660;
+      letter-spacing: -0.045em;
+      line-height: 1.02;
+    }
+
+    .masthead p {
+      max-width: 800px;
+      margin: 0;
+      color: var(--surface-muted-foreground);
+    }
+
+    .theme-toggle, .state-control {
+      border: 1px solid var(--interactive-border);
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .theme-toggle {
+      min-height: 36px;
+      padding: 0 13px;
+      border-radius: 999px;
+    }
+
+    .theme-toggle:hover, .state-control:hover { background: var(--interactive-hover); }
+
+    .control-deck {
+      position: sticky;
+      top: 10px;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px;
+      margin-bottom: 18px;
+      border: 1px solid var(--interactive-border);
+      border-radius: var(--radius-md);
+      background: var(--control-background);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+    }
+
+    .state-controls { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .state-control {
+      min-height: 34px;
+      padding: 0 13px;
+      border-color: transparent;
+      border-radius: 8px;
+      color: var(--surface-muted-foreground);
+    }
+
+    .state-control[aria-pressed="true"] {
+      border-color: var(--interactive-border);
+      color: var(--surface-foreground);
+      background: var(--interactive-selection);
+    }
+
+    .legend { color: var(--surface-muted-foreground); font-size: 12px; }
+    .legend strong { color: var(--surface-foreground); font-weight: 650; }
+
+    .proposal-list { display: grid; gap: 18px; }
+
+    .proposal {
+      overflow: hidden;
+      border: 1px solid var(--interactive-border);
+      border-radius: var(--radius-lg);
+      background: var(--surface-elevated);
+      box-shadow: var(--shadow);
+    }
+
+    .proposal-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(240px, 0.65fr);
+      gap: 24px;
+      align-items: start;
+      padding: 17px 20px;
+      border-bottom: 1px solid var(--interactive-border);
+    }
+
+    .proposal-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .proposal h2 { margin: 2px 0 3px; font-size: 20px; letter-spacing: -0.02em; }
+    .proposal-header p { margin: 0; color: var(--surface-muted-foreground); }
+
+    .recommendation {
+      display: inline-flex;
+      align-items: center;
+      min-height: 21px;
+      padding: 0 8px;
+      border: 1px solid var(--status-success-border);
+      border-radius: 999px;
+      color: var(--status-success);
+      background: var(--status-success-background);
+      font-size: 10px;
+      font-weight: 750;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .tradeoff {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 3px 10px;
+      margin: 0;
+      font-size: 12px;
+    }
+
+    .tradeoff dt { color: var(--surface-muted-foreground); }
+    .tradeoff dd { margin: 0; }
+
+    .mock-app {
+      display: grid;
+      grid-template-columns: minmax(290px, 340px) minmax(0, 1fr);
+      min-height: 330px;
+      background: var(--surface-background);
+    }
+
+    .sidebar {
+      padding: 14px 11px;
+      border-right: 1px solid var(--interactive-border);
+      background: var(--surface-muted);
+    }
+
+    .project-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 7px 9px; }
+    .project-name { font-size: 12px; font-weight: 700; }
+    .project-meta { color: var(--surface-muted-foreground); font-size: 11px; }
+    .session-list { display: grid; gap: 2px; }
+
+    .session-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      min-height: 46px;
+      padding: 6px 7px;
+      border-radius: var(--radius-sm);
+    }
+
+    .session-row.active { background: var(--interactive-selection); }
+    .session-row .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .session-row.active .title { font-weight: 650; }
+    .session-row .meta { color: var(--surface-muted-foreground); font-size: 10px; }
+    .session-copy { min-width: 0; }
+    .session-icon-slot { display: grid; width: 18px; height: 18px; place-items: center; }
+
+    .unchanged-workspace {
+      display: grid;
+      min-width: 0;
+      place-items: center;
+      padding: 24px;
+      background:
+        linear-gradient(var(--surface-faint) 1px, transparent 1px),
+        var(--surface-background);
+      background-size: 100% 64px;
+    }
+
+    .scope-note {
+      max-width: 360px;
+      padding: 12px 15px;
+      border: 1px dashed var(--interactive-border);
+      border-radius: var(--radius-md);
+      color: var(--surface-muted-foreground);
+      text-align: center;
+      font-size: 12px;
+    }
+
+    .scope-note strong { display: block; margin-bottom: 3px; color: var(--surface-foreground); }
+
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--status-info); }
+    .dot.working { background: var(--primary); animation: busy-pulse 1.2s ease-in-out infinite; }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--status-info-muted);
+      border-top-color: var(--status-info);
+      border-radius: 50%;
+      animation: spin 0.85s linear infinite;
+    }
+
+    .check-icon, .error-icon {
+      display: grid;
+      width: 15px;
+      height: 15px;
+      place-items: center;
+      border: 1px solid currentColor;
+      border-radius: 50%;
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .check-icon { color: var(--status-success); background: var(--status-success-background); }
+    .error-icon { color: var(--status-blocked); background: var(--status-blocked-background); }
+
+    .compact-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 19px;
+      padding: 0 6px;
+      border-radius: 999px;
+      font-size: 9px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .state-working { color: var(--status-info); background: var(--status-info-background); }
+    .state-ready { color: var(--status-success); background: var(--status-success-background); }
+    .state-blocked { color: var(--status-blocked); background: var(--status-blocked-background); }
+
+    .state-rail::before {
+      content: "";
+      position: absolute;
+      inset: 5px auto 5px 0;
+      width: 3px;
+      border-radius: 999px;
+      background: transparent;
+    }
+
+    .state-rail.working::before { background: var(--status-info); animation: rail-breathe 1.4s ease-in-out infinite; }
+    .state-rail.ready::before { background: var(--status-success); }
+    .state-rail.blocked::before { background: var(--status-blocked); }
+
+    .proposal-notes {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      border-top: 1px solid var(--interactive-border);
+      background: var(--interactive-border);
+    }
+
+    .note { padding: 12px 16px; background: var(--surface-elevated); }
+    .note strong { display: block; margin-bottom: 2px; font-size: 11px; }
+    .note span { color: var(--surface-muted-foreground); font-size: 11px; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes busy-pulse { 0%, 100% { opacity: 0.22; } 50% { opacity: 1; } }
+    @keyframes rail-breathe { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+    }
+
+    @media (max-width: 850px) {
+      .masthead, .proposal-header { grid-template-columns: 1fr; }
+      .mock-app { grid-template-columns: minmax(250px, 300px) minmax(0, 1fr); }
+      .proposal-notes { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 620px) {
+      .page { padding-left: 8px; padding-right: 8px; }
+      .mock-app { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--interactive-border); }
+      .session-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .unchanged-workspace { min-height: 180px; }
+      .legend { width: 100%; }
+      .proposal-header { padding: 15px; }
+    }
+  </style>
+</head>
+<body data-theme="dark">
+  <main class="page">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">Session-state design study</div>
+        <h1>Make motion mean working. Make stillness mean &ldquo;your turn.&rdquo;</h1>
+        <p>The same four session states are projected through the desktop sidebar only. The adjacent workspace remains deliberately unchanged.</p>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" type="button">Use light theme</button>
+    </header>
+
+    <section class="control-deck" aria-label="Mockup controls">
+      <div class="state-controls" role="group" aria-label="Session state">
+        <button class="state-control" type="button" data-state-control="working" aria-pressed="true">Working</button>
+        <button class="state-control" type="button" data-state-control="ready" aria-pressed="false">Ready for review</button>
+        <button class="state-control" type="button" data-state-control="blocked" aria-pressed="false">Blocked</button>
+        <button class="state-control" type="button" data-state-control="idle" aria-pressed="false">Idle</button>
+      </div>
+      <div class="legend"><strong>Working</strong> uses motion. <strong>Attention</strong> uses a stable shape, label, and stronger contrast.</div>
+    </section>
+
+    <div class="proposal-list">
+      <article class="proposal" data-proposal="current">
+        <header class="proposal-header">
+          <div>
+            <div class="proposal-kicker">Baseline</div>
+            <div class="proposal-title-row"><h2>Current desktop behavior</h2></div>
+            <p>Working and unseen completion share one tiny circular marker in the same leading slot, while blocked work also collapses into the unread treatment.</p>
+          </div>
+          <dl class="tradeoff">
+            <dt>Density</dt><dd>Excellent</dd>
+            <dt>State recognition</dt><dd>Weak without watching the animation</dd>
+            <dt>Attention type</dt><dd>Completion and errors look the same</dd>
+          </dl>
+        </header>
+        <div class="mock-app">
+          <aside class="sidebar">
+            <div class="project-head"><span class="project-name">Sample workspace</span><span class="project-meta">default</span></div>
+            <div class="session-list">
+              <div class="session-row active">
+                <span class="session-icon-slot" data-current-icon></span>
+                <span class="session-copy"><span class="title">Improve session status</span><br><span class="meta">now &middot; default</span></span>
+              </div>
+              <div class="session-row"><span></span><span class="session-copy"><span class="title">Refine responsive layout</span><br><span class="meta">18m &middot; feature/mobile</span></span></div>
+              <div class="session-row"><span></span><span class="session-copy"><span class="title">Review reconnect behavior</span><br><span class="meta">1h &middot; default</span></span></div>
+            </div>
+          </aside>
+          <section class="unchanged-workspace">
+            <div class="scope-note"><strong>Workspace unchanged</strong>This iteration changes only session rows in the sidebar.</div>
+          </section>
+        </div>
+      </article>
+
+      <article class="proposal" data-proposal="rail">
+        <header class="proposal-header">
+          <div>
+            <div class="proposal-kicker">Proposal A</div>
+            <div class="proposal-title-row"><h2>State rail + explicit labels</h2><span class="recommendation">Recommended direction</span></div>
+            <p>Preserves list density while changing shape, motion, color, and copy together inside the session row. No chat or composer changes.</p>
+          </div>
+          <dl class="tradeoff">
+            <dt>Density</dt><dd>High</dd>
+            <dt>State recognition</dt><dd>Strong at a glance</dd>
+            <dt>Implementation</dt><dd>Small, local presentation change</dd>
+          </dl>
+        </header>
+        <div class="mock-app">
+          <aside class="sidebar">
+            <div class="project-head"><span class="project-name">Sample workspace</span><span class="project-meta">default</span></div>
+            <div class="session-list">
+              <div class="session-row active state-rail" data-state-row>
+                <span class="session-icon-slot" data-state-icon></span>
+                <span class="session-copy"><span class="title">Improve session status</span><br><span class="meta" data-row-detail></span></span>
+                <span class="compact-state" data-state-pill></span>
+              </div>
+              <div class="session-row state-rail ready"><span class="session-icon-slot"><span class="check-icon">&#10003;</span></span><span class="session-copy"><span class="title">Refine responsive layout</span><br><span class="meta">Finished 18m ago</span></span><span class="compact-state state-ready">Review</span></div>
+              <div class="session-row"><span></span><span class="session-copy"><span class="title">Review reconnect behavior</span><br><span class="meta">1h &middot; default</span></span></div>
+            </div>
+          </aside>
+          <section class="unchanged-workspace">
+            <div class="scope-note"><strong>Workspace unchanged</strong>All status emphasis stays in the sidebar.</div>
+          </section>
+        </div>
+        <footer class="proposal-notes">
+          <div class="note"><strong>Working</strong><span>Animated rail + spinner + &ldquo;Working&rdquo;; current activity replaces the timestamp.</span></div>
+          <div class="note"><strong>Ready</strong><span>Static success rail + check + &ldquo;Review&rdquo;; persists until the session is viewed.</span></div>
+          <div class="note"><strong>Blocked</strong><span>Red rail + outlined exclamation + &ldquo;Blocked&rdquo;; never reuses the completion mark.</span></div>
+        </footer>
+      </article>
+    </div>
+  </main>
+
+  <script>
+    const stateCopy = {
+      working: {
+        short: 'Working',
+        row: 'Reading activity-renderer.tsx',
+      },
+      ready: {
+        short: 'Review',
+        row: 'Finished just now',
+      },
+      blocked: {
+        short: 'Blocked',
+        row: 'Permission required',
+      },
+      idle: {
+        short: '',
+        row: '2m \u00b7 default',
+      },
+    };
+
+    function iconMarkup(state) {
+      if (state === 'working') return '<span class="spinner" aria-hidden="true"></span>';
+      if (state === 'ready') return '<span class="check-icon" aria-hidden="true">&#10003;</span>';
+      if (state === 'blocked') return '<span class="error-icon" aria-hidden="true">!</span>';
+      return '';
+    }
+
+    function setClasses(element, base, state) {
+      if (!element) return;
+      element.className = `${base} ${state}`;
+    }
+
+    function renderCurrent(state) {
+      const proposal = document.querySelector('[data-proposal="current"]');
+      const icon = proposal.querySelector('[data-current-icon]');
+      if (state === 'working') {
+        icon.innerHTML = '<span class="dot working" aria-label="Session active"></span>';
+      } else if (state === 'ready' || state === 'blocked') {
+        icon.innerHTML = '<span class="dot" aria-label="Unread updates"></span>';
+      } else {
+        icon.innerHTML = '';
+      }
+    }
+
+    function renderSharedProposal(proposal, state) {
+      const copy = stateCopy[state];
+      const row = proposal.querySelector('[data-state-row]');
+      setClasses(row, 'session-row active state-rail', state);
+      proposal.querySelector('[data-state-icon]').innerHTML = state === 'idle' ? '' : iconMarkup(state);
+      proposal.querySelector('[data-row-detail]').textContent = copy.row;
+
+      const pill = proposal.querySelector('[data-state-pill]');
+      if (pill) {
+        pill.textContent = copy.short;
+        pill.hidden = state === 'idle';
+        pill.className = `compact-state state-${state}`;
+      }
+    }
+
+    function renderRail(state) {
+      const proposal = document.querySelector('[data-proposal="rail"]');
+      renderSharedProposal(proposal, state);
+    }
+
+    function renderState(state) {
+      document.querySelectorAll('[data-state-control]').forEach((control) => {
+        control.setAttribute('aria-pressed', String(control.dataset.stateControl === state));
+      });
+      renderCurrent(state);
+      renderRail(state);
+    }
+
+    document.querySelectorAll('[data-state-control]').forEach((control) => {
+      control.addEventListener('click', () => renderState(control.dataset.stateControl));
+    });
+
+    const themeToggle = document.querySelector('#theme-toggle');
+    themeToggle.addEventListener('click', () => {
+      const next = document.body.dataset.theme === 'light' ? 'dark' : 'light';
+      document.body.dataset.theme = next;
+      themeToggle.textContent = next === 'dark' ? 'Use light theme' : 'Use dark theme';
+    });
+
+    renderState('working');
+  </script>
+</body>
+</html>

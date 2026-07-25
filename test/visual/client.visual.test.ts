@@ -10,6 +10,56 @@ test("desktop workbench retains the accepted quiet shell", async ({ page }) => {
   await expect(page.locator(".shell")).toHaveScreenshot("desktop-workbench.png", { animations: "disabled" });
 });
 
+test("discovery rows separate working, blocked, review, and idle state", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto("/visual-test.html");
+  const row = (name: string) => page.locator(`.session-link[aria-label^="${name}"]`);
+
+  await expect(row("Reconnect receipt race")).toHaveAttribute("data-state", "working");
+  await expect(row("Reconnect receipt race")).toHaveAttribute("aria-label", "Reconnect receipt race, Working, Unread");
+  await expect(row("Reconnect receipt race").locator(".session-detail"))
+    .toHaveText("exec_command: command receipts · reconnect continuity");
+
+  await expect(row("Release pipeline review")).toHaveAttribute("data-state", "blocked");
+  await expect(row("Release pipeline review").locator(".session-state-label")).toHaveText("Blocked");
+  await expect(row("Release pipeline review").locator(".session-detail")).toHaveText("Choose the deployment target");
+
+  await expect(row("Index corruption diagnosis")).toHaveAttribute("data-state", "review");
+  await expect(row("Index corruption diagnosis").locator(".session-state-label")).toHaveText("Review");
+  await expect(row("Index corruption diagnosis").locator(".session-detail")).toHaveText("Finished 18m ago");
+
+  // Idle is the absence of exceptional state: no rail, no icon, no label.
+  await expect(row("PWA cache boundaries")).toHaveAttribute("data-state", "idle");
+  await expect(row("PWA cache boundaries").locator(".session-state-label")).toHaveCount(0);
+  await expect(row("PWA cache boundaries").locator(".session-state-icon svg")).toHaveCount(0);
+  await expect(row("PWA cache boundaries").locator(".session-detail")).toHaveText("1h");
+});
+
+// Under a minute the recency token is `now`, which an `ago` suffix would mangle.
+test("a review row just finished reads as prose rather than a bare token", async ({ page }) => {
+  await page.goto("/visual-test.html");
+  const row = page.locator(`.session-link[aria-label^="Index corruption diagnosis"]`);
+  await expect(row.locator(".session-detail")).toHaveText("Finished 18m ago");
+
+  await page.evaluate(() => {
+    const store = window.__pidexVisualStore!;
+    const sessions = store.getState().sessions;
+    store.setState({
+      sessions: { ...sessions, corruption: { ...sessions.corruption!, activity: { at: Date.now() } } },
+    });
+  });
+
+  await expect(row.locator(".session-detail")).toHaveText("Finished just now");
+});
+
+test("reduced motion keeps the working row identifiable without animation", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/visual-test.html");
+  const working = page.locator('.session-link[data-state="working"]');
+  await expect(working.locator(".session-state-icon svg")).toHaveCSS("animation-name", "none");
+  await expect(working.locator(".session-state-label")).toHaveText("Working");
+});
+
 test("desktop New Session maps scope and prompt onto the Codex home composition", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/visual-test.html?scenario=new-session");

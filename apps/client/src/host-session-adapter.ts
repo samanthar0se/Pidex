@@ -62,6 +62,7 @@ async function readCatalog(): Promise<DiscoveryProjection> {
         workspaces: message.snapshot.workspaces,
         sessions: message.snapshot.sessions,
         archivedSessions: message.snapshot.archivedSessions,
+        cursor: message.barrier.cursor,
       });
     }
   });
@@ -100,6 +101,7 @@ function readSession(sessionId: string): Promise<SessionProjection> {
           olderCursor: message.snapshot.timelineWindow.olderCursor,
           runs: message.snapshot.runs ?? [],
           interactions: message.snapshot.interactions ?? [],
+          cursor: message.barrier.cursor,
         });
       } else if (message.type === "timeline.change" && message.sessionId === sessionId) {
         listeners.get(sessionId)?.forEach(listener => listener(message));
@@ -294,6 +296,23 @@ function updateRun(sessionId: string, runId: string, change: Partial<RunFact>) {
 export const hostSessionAdapter: ClientAdapters["host"] = {
   watchConnection(listener) {
     return controlConnection.subscribeStatus(listener);
+  },
+  watchDiscovery(listener) {
+    return controlConnection.subscribe(message => {
+      if (message.type !== "host.change-set") return;
+      for (const change of message.changes ?? []) {
+        if (change.type === "session.attention-changed") {
+          listener({
+            sessionId: change.sessionId,
+            attention: change.attention,
+            activity: change.activity,
+            cursor: message.cursor,
+          });
+        } else if (change.type === "session.read-state-changed") {
+          listener({ sessionId: change.sessionId, readState: change.readState });
+        }
+      }
+    });
   },
   readCatalog,
   readSession,

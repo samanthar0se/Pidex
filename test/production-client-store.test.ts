@@ -7,6 +7,9 @@ import {
   selectCurrentTimeline,
   selectDraft,
 } from "../apps/client/src/client-store.js";
+import { encodeCursor } from "../packages/protocol/src/cursor.js";
+
+const cursorAt = (sequence: number) => encodeCursor("host-1", "epoch-1", sequence);
 
 test("FX-COMP-01/06: New Session creates durable scope before accepting its initial Run", async () => {
   const commands: unknown[] = [];
@@ -51,6 +54,42 @@ test("FX-COMP-01/06: New Session creates durable scope before accepting its init
   assert.equal(store.getState().selectedSessionId, "session_created");
   assert.equal(store.getState().isSessionCurrent, true);
   assert.equal(drafts.get("new-session"), "keep this exact prompt");
+});
+
+test("a created Session joins discovery immediately rather than waiting for the next catalog load", async () => {
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "Fresh Session", metadataRevision: 1, timelineRevision: 0 },
+          timeline: [],
+        };
+      },
+      async createSession() {
+        return { kind: "accepted", session: {
+          sessionId: "session_fresh", name: "Fresh Session",
+          metadataRevision: 1, timelineRevision: 0,
+        } };
+      },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+    commandIds: () => "command_create",
+  });
+
+  await store.getState().openNewSession();
+  await store.getState().submitNewSession(true);
+
+  // Discovery renders from the order, so membership in `sessions` alone would
+  // leave the row invisible until a reload rebuilt the catalog.
+  assert.deepEqual(store.getState().sessionOrder, ["session_fresh"]);
+  assert.deepEqual(
+    selectDiscoveryGroups(store.getState()).map(group => ({
+      id: group.id,
+      sessions: group.sessions.map(session => session.sessionId),
+    })),
+    [{ id: "chats", sessions: ["session_fresh"] }],
+  );
 });
 
 test("FX-COMP-02/03 FX-STATE-03/05 FX-RESP-05/06: Composer commands retain the exact observed Run context", async () => {
@@ -457,6 +496,181 @@ test("the Client resumes a routed Session from current Host facts and a local dr
   assert.equal(selectCurrentSession(store.getState())?.metadataRevision, 7);
 });
 
+test("FX-DISC-04A/04B FX-STATE-01/02: live attention summaries update discovery without touching read status", async () => {
+  let publish: ((change: {
+    sessionId: string;
+    attention: "quiet" | "working" | "needs-response";
+    activity?: { detail?: string; at?: number };
+  }) => void) | undefined;
+  const store = createClientStore({
+    host: {
+      async readCatalog() {
+        return {
+          projects: [{ projectId: "project-a", name: "Alpha" }],
+          workspaces: [],
+          sessions: [session("one", "Reconnect receipt race", "project-a", "quiet", "unread")],
+          archivedSessions: [],
+        };
+      },
+      watchDiscovery(listener) {
+        publish = listener;
+        return () => { publish = undefined; };
+      },
+      async readSession() { throw new Error("not used"); },
+      async restoreSession() { throw new Error("not used"); },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  await store.getState().loadDiscovery();
+  const stop = store.getState().watchDiscovery();
+  assert.ok(publish);
+
+  publish({ sessionId: "one", attention: "working", activity: { detail: "Reading activity-renderer.tsx" } });
+  assert.equal(store.getState().sessions.one?.attention, "working");
+  assert.equal(store.getState().sessions.one?.activity?.detail, "Reading activity-renderer.tsx");
+  // Read status is an independent channel and never moves with attention.
+  assert.equal(store.getState().sessions.one?.readState?.readStatus, "unread");
+
+  publish({ sessionId: "one", attention: "quiet", activity: { at: 1_700_000_000_000 } });
+  assert.equal(store.getState().sessions.one?.attention, "quiet");
+  assert.equal(store.getState().sessions.one?.activity?.detail, undefined);
+  assert.equal(store.getState().sessions.one?.activity?.at, 1_700_000_000_000);
+
+  // An unknown Session is ignored rather than materialized into discovery.
+  publish({ sessionId: "absent", attention: "working" });
+  assert.equal(store.getState().sessions.absent, undefined);
+
+  stop();
+  assert.equal(publish, undefined);
+});
+
+test("live read-state changes reach discovery, and a presented tail clears the row before the Host answers", async () => {
+  let publish: ((change: any) => void) | undefined;
+  let releaseMarkRead: (() => void) | undefined;
+  const marked: Array<[string, number]> = [];
+  const store = createClientStore({
+    host: {
+      async readCatalog() {
+        return {
+          projects: [{ projectId: "project-a", name: "Alpha" }],
+          workspaces: [],
+          sessions: [session("one", "Index corruption diagnosis", "project-a", "quiet", "read")],
+          archivedSessions: [],
+        };
+      },
+      watchDiscovery(listener) { publish = listener; return () => { publish = undefined; }; },
+      async readSession(sessionId) {
+        return { session: { sessionId, name: "Index corruption diagnosis", metadataRevision: 1, timelineRevision: 6 }, timeline: [] };
+      },
+      async markRead(sessionId, revision) {
+        marked.push([sessionId, revision]);
+        await new Promise<void>(resolve => { releaseMarkRead = resolve; });
+      },
+      async restoreSession() { throw new Error("not used"); },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  await store.getState().loadDiscovery();
+  const stop = store.getState().watchDiscovery();
+  assert.ok(publish);
+
+  // A run finishing makes an already-read Session unread: the green Review row.
+  publish({ sessionId: "one", readState: { readStatus: "unread", readStateRevision: 2, readThroughTimelineRevision: 1 } });
+  assert.equal(store.getState().sessions.one?.readState?.readStatus, "unread");
+  // Read status is an independent channel and never moves the attention summary.
+  assert.equal(store.getState().sessions.one?.attention, "quiet");
+
+  // A late broadcast from before that change cannot resurrect the stale status.
+  publish({ sessionId: "one", readState: { readStatus: "read", readStateRevision: 1, readThroughTimelineRevision: 1 } });
+  assert.equal(store.getState().sessions.one?.readState?.readStatus, "unread");
+
+  // An unknown Session is ignored rather than materialized into discovery.
+  publish({ sessionId: "absent", readState: { readStatus: "unread", readStateRevision: 3, readThroughTimelineRevision: 1 } });
+  assert.equal(store.getState().sessions.absent, undefined);
+
+  await store.getState().openSession("one");
+  const presented = store.getState().presentTail();
+  // The row clears on presentation, while the Host command is still in flight.
+  assert.deepEqual(marked, [["one", 6]]);
+  assert.equal(store.getState().sessions.one?.readState?.readStatus, "read");
+  assert.equal(store.getState().sessions.one?.readState?.readThroughTimelineRevision, 6);
+
+  // An unread broadcast that predates the presented revision cannot undo it.
+  publish({ sessionId: "one", readState: { readStatus: "unread", readStateRevision: 4, readThroughTimelineRevision: 1 } });
+  assert.equal(store.getState().sessions.one?.readState?.readStatus, "read");
+
+  releaseMarkRead?.();
+  await presented;
+  // Once the command settles, genuinely newer unread facts apply again.
+  publish({ sessionId: "one", readState: { readStatus: "unread", readStateRevision: 5, readThroughTimelineRevision: 6 } });
+  assert.equal(store.getState().sessions.one?.readState?.readStatus, "unread");
+
+  stop();
+});
+
+test("attention summaries order by the cursor of the durable state they derive from", async () => {
+  let publish: ((change: any) => void) | undefined;
+  let releaseProjection: (() => void) | undefined;
+  const store = createClientStore({
+    host: {
+      async readCatalog() {
+        return {
+          projects: [{ projectId: "project-a", name: "Alpha" }],
+          workspaces: [],
+          sessions: [session("one", "Reconnect receipt race", "project-a", "quiet", "read")],
+          archivedSessions: [],
+          cursor: cursorAt(10),
+        };
+      },
+      watchDiscovery(listener) { publish = listener; return () => { publish = undefined; }; },
+      async readSession(sessionId) {
+        // The projection is captured at sequence 11, then delayed so live
+        // changes can land before it is applied.
+        await new Promise<void>(resolve => { releaseProjection = resolve; });
+        return {
+          session: { sessionId, name: "Reconnect receipt race", projectId: "project-a", metadataRevision: 2, timelineRevision: 6, attention: "quiet" as const, activity: { at: 1 } },
+          timeline: [],
+          cursor: cursorAt(11),
+        };
+      },
+      async restoreSession() { throw new Error("not used"); },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  await store.getState().loadDiscovery();
+  const stop = store.getState().watchDiscovery();
+  assert.ok(publish);
+
+  publish({ sessionId: "one", attention: "working", activity: { detail: "Executing" }, cursor: cursorAt(14) });
+  assert.equal(store.getState().sessions.one?.attention, "working");
+
+  // A summary derived from older durable state cannot undo the newer one.
+  publish({ sessionId: "one", attention: "quiet", activity: { at: 2 }, cursor: cursorAt(12) });
+  assert.equal(store.getState().sessions.one?.attention, "working");
+
+  // Nor can a projection captured before it, even though it resolves after.
+  const opened = store.getState().openSession("one");
+  releaseProjection?.();
+  await opened;
+  assert.equal(store.getState().sessions.one?.attention, "working");
+  assert.equal(store.getState().sessions.one?.activity?.detail, "Executing");
+  // Identity and timeline facts still come from the projection.
+  assert.equal(store.getState().sessions.one?.timelineRevision, 6);
+  assert.equal(store.getState().sessions.one?.metadataRevision, 2);
+
+  // Newer durable state applies normally.
+  publish({ sessionId: "one", attention: "quiet", activity: { at: 3 }, cursor: cursorAt(20) });
+  assert.equal(store.getState().sessions.one?.attention, "quiet");
+
+  stop();
+});
+
 test("FX-STATE-01 FX-DISC-05 FX-DISC-06: expansion is local and Restore uses the exact archived revision", async () => {
   const writes: string[][] = [];
   const restores: Array<[string, number]> = [];
@@ -526,6 +740,36 @@ test("FX-TL-04/05 FX-STATE-02/04: live facts reconcile by identity and older pag
   assert.deepEqual(selectCurrentTimeline(store.getState()).map(entry => entry.entryId), ["prompt", "work", "answer", "correction"]);
   await store.getState().presentTail();
   assert.deepEqual(readThrough, [7]);
+});
+
+test("FX-STATE-02: read-through claims only the revisions the View actually presented", async () => {
+  let publish: ((change: any) => void) | undefined;
+  const readThrough: number[] = [];
+  const store = createClientStore({
+    host: {
+      async readSession(sessionId) {
+        return {
+          session: { sessionId, name: "Work", metadataRevision: 1, timelineRevision: 4 },
+          timeline: [{ entryId: "answer", runId: "run", order: 1, kind: "response", text: "done", revision: 1, finalized: true }],
+        };
+      },
+      watchSession(_sessionId, listener) { publish = listener; return () => { publish = undefined; }; },
+      async markRead(_sessionId, revision) { readThrough.push(revision); },
+    },
+    drafts: { async read() { return ""; }, async write() {} },
+    routing: { replace() {} },
+  });
+
+  await store.getState().openSession("session");
+  // The Host revises a finalized entry the View keeps, so the Host revision
+  // advances past the presented one and read-through must not follow it.
+  publish?.({ baseRevision: 4, revision: 5, entry: { entryId: "answer", runId: "run", order: 1, kind: "response", text: "rewritten", revision: 2, finalized: true } });
+  assert.deepEqual(selectCurrentTimeline(store.getState()).map(entry => entry.text), ["done"]);
+  assert.equal(store.getState().sessions.session?.timelineRevision, 5);
+
+  await store.getState().presentTail();
+  assert.deepEqual(readThrough, [4]);
+  assert.equal(store.getState().sessions.session?.readState?.readThroughTimelineRevision, 4);
 });
 
 test("paging from a previously selected Session cannot leave the current Session loading or failed", async () => {

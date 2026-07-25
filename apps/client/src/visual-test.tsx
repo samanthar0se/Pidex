@@ -3,12 +3,19 @@ import { App } from "./App.js";
 import { createClientStore, type InteractionFact, type SessionFact, type TimelineFact } from "./client-store.js";
 import "./style.css";
 
+/**
+ * Fixture recency is offset to the middle of its rendered bucket so relative
+ * copy stays stable for the duration of a visual run.
+ */
+const minutesAgo = (minutes: number) => Date.now() - Math.round((minutes + 0.5) * 60_000);
+
+// Covers all four discovery row states: working, blocked, review, and idle.
 const sessions: SessionFact[] = [
-  { sessionId: "reconnect", name: "Reconnect receipt race", projectId: "Pidex", metadataRevision: 3, timelineRevision: 12, attention: "working", readState: { readStatus: "unread", readStateRevision: 2, readThroughTimelineRevision: 7 } },
-  { sessionId: "release", name: "Release pipeline review", projectId: "Pidex", metadataRevision: 2, timelineRevision: 9, attention: "needs-response", readState: { readStatus: "unread", readStateRevision: 1, readThroughTimelineRevision: 4 } },
-  { sessionId: "corruption", name: "Index corruption diagnosis", projectId: "Pidex", metadataRevision: 1, timelineRevision: 5, attention: "quiet" },
-  { sessionId: "cache", name: "PWA cache boundaries", projectId: "Pidex", metadataRevision: 1, timelineRevision: 3, attention: "quiet" },
-  { sessionId: "api", name: "Explore API response shape", metadataRevision: 1, timelineRevision: 2, attention: "quiet" },
+  { sessionId: "reconnect", name: "Reconnect receipt race", projectId: "Pidex", metadataRevision: 3, timelineRevision: 12, attention: "working", activity: { detail: "exec_command: command receipts · reconnect continuity" }, readState: { readStatus: "unread", readStateRevision: 2, readThroughTimelineRevision: 7 } },
+  { sessionId: "release", name: "Release pipeline review", projectId: "Pidex", metadataRevision: 2, timelineRevision: 9, attention: "needs-response", activity: { detail: "Choose the deployment target" }, readState: { readStatus: "unread", readStateRevision: 1, readThroughTimelineRevision: 4 } },
+  { sessionId: "corruption", name: "Index corruption diagnosis", projectId: "Pidex", metadataRevision: 1, timelineRevision: 5, attention: "quiet", activity: { at: minutesAgo(18) }, readState: { readStatus: "unread", readStateRevision: 1, readThroughTimelineRevision: 2 } },
+  { sessionId: "cache", name: "PWA cache boundaries", projectId: "Pidex", metadataRevision: 1, timelineRevision: 3, attention: "quiet", activity: { at: minutesAgo(64) } },
+  { sessionId: "api", name: "Explore API response shape", metadataRevision: 1, timelineRevision: 2, attention: "quiet", activity: { at: minutesAgo(1500) } },
 ];
 
 const timeline: TimelineFact[] = [

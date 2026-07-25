@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   captureVisibleTimelineAnchor,
+  createTailPresentation,
   easeOutCubic,
   initialTailPosition,
   restoreVisibleTimelineAnchor,
@@ -12,6 +13,7 @@ import {
   tailPositionFromVisibility,
   timelineFollowThresholdPx,
 } from "../apps/client/src/timeline-viewport.js";
+import { holdsSettlingRun } from "../apps/client/src/SessionDrawer.js";
 import { getTimelineEntryPresentation } from "../apps/client/src/timeline-entry-presentation.js";
 import {
   getActivityDetail,
@@ -64,6 +66,70 @@ test("tail following starts unobserved and uses a narrow near-tail threshold", (
   scrollTimelineToTail(viewport, true);
   assert.equal(viewport.scrollTop, 300);
 });
+
+test("FX-STATE-02: arriving Timeline content is presented, not read", () => {
+  const timers = createTestTimers();
+  const presented: number[] = [];
+  const presentation = createTailPresentation(() => presented.push(timers.now), timers, 500);
+
+  // A streaming Run advances the tail many times a second: each arrival
+  // restarts the dwell, so none of them claims to have been read.
+  for (let index = 0; index < 16; index++) {
+    presentation.observe({ tailVisible: true, documentVisible: true });
+    timers.advance(60);
+  }
+  assert.deepEqual(presented, []);
+
+  // Once the tail stops changing under a present reader, one claim is made.
+  timers.advance(500);
+  assert.deepEqual(presented, [1_460]);
+
+  // A reader who leaves as the Run settles never presents its tail, and a
+  // hidden document is not a presentation at all.
+  presentation.observe({ tailVisible: true, documentVisible: true });
+  timers.advance(300);
+  presentation.cancel();
+  timers.advance(1_000);
+  presentation.observe({ tailVisible: true, documentVisible: false });
+  timers.advance(1_000);
+  presentation.observe({ tailVisible: false, documentVisible: true });
+  timers.advance(1_000);
+  assert.deepEqual(presented, [1_460]);
+});
+
+test("FX-DISC-04A: a settling Run holds `working` rather than flashing Review at its reader", () => {
+  // The attention summary lands before the unread milestone, so the row holds
+  // `working` across the whole settlement rather than only its final state.
+  assert.equal(holdsSettlingRun("working", "review"), true);
+  assert.equal(holdsSettlingRun("working", "idle"), true);
+  // Blocking is never delayed, and a row that was not working is exact.
+  assert.equal(holdsSettlingRun("working", "blocked"), false);
+  assert.equal(holdsSettlingRun("idle", "review"), false);
+  assert.equal(holdsSettlingRun("review", "idle"), false);
+  assert.equal(holdsSettlingRun("working", "working"), false);
+});
+
+function createTestTimers() {
+  const scheduled = new Map<number, { at: number; callback: () => void }>();
+  let handle = 0;
+  const timers = {
+    now: 0,
+    schedule(callback: () => void, delay: number) {
+      scheduled.set(++handle, { at: timers.now + delay, callback });
+      return handle;
+    },
+    cancel(item: number) { scheduled.delete(item); },
+    advance(ms: number) {
+      timers.now += ms;
+      for (const [item, { at, callback }] of [...scheduled]) {
+        if (at > timers.now) continue;
+        scheduled.delete(item);
+        callback();
+      }
+    },
+  };
+  return timers;
+}
 
 test("historical Interactions remain ordinary non-interactive Timeline facts", () => {
   assert.deepEqual(getTimelineEntryPresentation("interaction"), {

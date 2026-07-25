@@ -12,6 +12,7 @@ import {
 } from "./timeline-turn-presentation.js";
 import {
   captureVisibleTimelineAnchor,
+  createTailPresentation,
   initialTailPosition,
   restoreVisibleTimelineAnchor,
   scrollTimelineToTail,
@@ -23,6 +24,7 @@ import {
 } from "./timeline-viewport.js";
 
 interface Props {
+  sessionId?: string;
   entries: readonly TimelineFact[];
   olderCursor?: string | null;
   paging: "idle" | "loading" | "error";
@@ -32,7 +34,7 @@ interface Props {
 }
 
 /** Pidex retains identity/order authority; assistant-ui is presentation only. */
-export function SessionTimeline({ entries, olderCursor, paging, executingRunIds, loadOlder, presentTail }: Props) {
+export function SessionTimeline({ sessionId, entries, olderCursor, paging, executingRunIds, loadOlder, presentTail }: Props) {
   const viewport = useRef<HTMLElement>(null);
   const older = useRef<HTMLDivElement>(null);
   const tail = useRef<HTMLDivElement>(null);
@@ -58,19 +60,30 @@ export function SessionTimeline({ entries, olderCursor, paging, executingRunIds,
     return () => observer.disconnect();
   }, [olderCursor, paging]);
 
+  // Read status follows presentation, so a changed tail restarts the dwell and
+  // a Session switch, a hidden document, or an unmount abandons it outright.
   useEffect(() => {
     if (!tail.current) return;
+    const presentation = createTailPresentation(() => void presentTail());
+    const documentVisible = () => document.visibilityState === "visible";
+    let tailVisible = false;
+    const observe = () => presentation.observe({ tailVisible, documentVisible: documentVisible() });
     const observer = new IntersectionObserver(items => {
-      const visible = items.some(item => item.isIntersecting);
+      tailVisible = items.some(item => item.isIntersecting);
       const element = viewport.current;
-      setTailPosition(visible || !element
-        ? tailPositionFromVisibility(visible)
+      setTailPosition(tailVisible || !element
+        ? tailPositionFromVisibility(tailVisible)
         : tailPositionFromDistance(timelineDistanceFromTail(element)));
-      if (visible) void presentTail();
+      observe();
     }, { root: viewport.current, threshold: 1 });
     observer.observe(tail.current);
-    return () => observer.disconnect();
-  }, [entries.at(-1)?.entryId, entries.at(-1)?.revision]);
+    document.addEventListener("visibilitychange", observe);
+    return () => {
+      document.removeEventListener("visibilitychange", observe);
+      presentation.cancel();
+      observer.disconnect();
+    };
+  }, [sessionId, entries.at(-1)?.entryId, entries.at(-1)?.revision]);
 
   useEffect(() => {
     if (shouldFollowTimelineTail(tailPosition)) tail.current?.scrollIntoView({ block: "end" });

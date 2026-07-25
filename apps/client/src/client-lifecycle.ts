@@ -15,6 +15,7 @@ export function useClientLifecycle(store: ClientStore) {
   useEffect(() => {
     void store.getState().loadDiscovery();
     applyPath(store, location.pathname);
+    return store.getState().watchDiscovery();
   }, [store]);
 
   useEffect(() => {

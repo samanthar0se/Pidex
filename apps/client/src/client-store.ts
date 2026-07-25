@@ -4,6 +4,7 @@ import {
   runInputImagesSchema,
   type RunInputImage,
 } from "../../../packages/protocol/src/input-image.js";
+import { cursorPrecedes } from "../../../packages/protocol/src/cursor.js";
 import { randomUuid } from "./client-identifier.js";
 
 export type SessionAttention = "quiet" | "working" | "needs-response";
@@ -22,6 +23,11 @@ export interface DirectoryFact {
   displayPath: string;
   hasChildren: boolean;
 }
+export interface SessionReadState {
+  readStatus: "read" | "unread";
+  readStateRevision: number;
+  readThroughTimelineRevision: number;
+}
 export interface SessionFact {
   sessionId: string;
   name: string;
@@ -29,8 +35,31 @@ export interface SessionFact {
   metadataRevision: number;
   timelineRevision: number;
   attention?: SessionAttention;
-  readState?: { readStatus: "read" | "unread"; readStateRevision: number; readThroughTimelineRevision: number };
+  activity?: SessionActivity;
+  readState?: SessionReadState;
 }
+/** Discovery metadata backing the attention summary's row detail line. */
+export interface SessionActivity { detail?: string; at?: number }
+export interface SessionAttentionChange {
+  sessionId: string;
+  attention: SessionAttention;
+  activity?: SessionActivity;
+  /**
+   * Cursor of the durable state this summary was derived from. The summary is a
+   * pure function of that state, so the sequence orders it even though deriving
+   * it advances no sequence of its own.
+   */
+  cursor?: string;
+}
+export interface SessionReadStateChange {
+  sessionId: string;
+  readState: SessionReadState;
+}
+/**
+ * Discovery carries two independent Host channels on one subscription. They are
+ * distinguished structurally so neither payload needs a redundant discriminator.
+ */
+export type SessionDiscoveryChange = SessionAttentionChange | SessionReadStateChange;
 export type TimelineKind = "assistant" | "interaction" | "lifecycle" | "outcome" | "prompt" | "response" | "tool";
 export interface TimelineFact {
   entryId: string;
@@ -58,7 +87,15 @@ export interface InteractionFact {
 export type InteractionResolution =
   | { kind: "dismiss" }
   | { kind: "respond"; value: string | boolean };
-export interface SessionProjection { session: SessionFact; timeline: TimelineFact[]; runs?: RunFact[]; interactions?: InteractionFact[]; olderCursor?: string | null; }
+export interface SessionProjection {
+  session: SessionFact;
+  timeline: TimelineFact[];
+  runs?: RunFact[];
+  interactions?: InteractionFact[];
+  olderCursor?: string | null;
+  /** Synchronization cursor this projection was taken at, when the Host named one. */
+  cursor?: string;
+}
 export interface TimelineChange { baseRevision: number; revision: number; entry: TimelineFact }
 export interface TimelinePage { entries: TimelineFact[]; olderCursor: string | null }
 export interface DiscoveryProjection {
@@ -66,6 +103,8 @@ export interface DiscoveryProjection {
   workspaces?: WorkspaceFact[];
   sessions: SessionFact[];
   archivedSessions: SessionFact[];
+  /** Synchronization cursor this projection was taken at, when the Host named one. */
+  cursor?: string;
 }
 export interface DiscoveryGroup { id: string; name: string; sessions: SessionFact[]; }
 
@@ -154,6 +193,7 @@ export interface ClientAdapters {
     stopRun?(command: { commandId: string; sessionId: string; runId: string; workerGeneration: string; observedState: "executing"; observedTimelineRevision: number }): Promise<CommandResult>;
     actOnHeldRun?(command: { commandId: string; runId: string; action: "release" | "cancel" }): Promise<CommandResult>;
     resolveInteraction?(command: { type: "interaction.resolve"; commandId: string; interactionId: string; workerGeneration: number; observedRevision: number; dismiss: boolean; value?: string | boolean }): Promise<CommandResult>;
+    watchDiscovery?(listener: (change: SessionDiscoveryChange) => void): () => void;
     watchSession?(sessionId: string, listener: (change: TimelineChange) => void): () => void;
     watchRuns?(sessionId: string, listener: (runs: RunFact[]) => void): () => void;
     watchInteractions?(sessionId: string, listener: (interactions: InteractionFact[]) => void): () => void;
@@ -188,6 +228,12 @@ export interface ClientState {
   interactions: Readonly<Record<string, readonly InteractionFact[]>>;
   interactionIntents: Readonly<Record<string, { commandId: string; phase: ComposerCommand["phase"]; reason?: string }>>;
   olderCursors: Readonly<Record<string, string | null>>;
+  /**
+   * The Timeline revision each Session has actually rendered, by Session. A
+   * Host revision the View declined to merge is never presented, so read
+   * status advances from this rather than from the Session's Host revision.
+   */
+  presentedRevisions: Readonly<Record<string, number>>;
   paging: "idle" | "loading" | "error";
   drafts: Readonly<Record<string, string>>;
   draftImages: Readonly<Record<string, readonly RunInputImage[]>>;
@@ -203,6 +249,12 @@ export interface ClientState {
     projectName: string,
   ): Promise<ProjectAddResult>;
   loadDiscovery(): Promise<void>;
+  /** Applies a Host-derived Session attention summary to the discovery catalog. */
+  sessionAttentionChanged(change: SessionAttentionChange): void;
+  /** Applies a Host-derived read status to the discovery catalog. */
+  sessionReadStateChanged(change: SessionReadStateChange): void;
+  /** Subscribes discovery to Host attention and read-state changes. Returns an unsubscribe. */
+  watchDiscovery(): () => void;
   openSession(sessionId: string, history?: "push" | "replace" | "none"): Promise<void>;
   openNewSession(scope?: NewSessionScope): Promise<void>;
   setNewSessionScope(scope: NewSessionScope): Promise<void>;
@@ -232,11 +284,70 @@ export interface ClientState {
 
 export type ClientStore = StoreApi<ClientState>;
 
+/** Revises one Session across both discovery catalogs, leaving unknown ids alone. */
+function reviseCatalogs(
+  state: ClientState,
+  sessionId: string,
+  revise: (session: SessionFact) => SessionFact,
+): Pick<ClientState, "sessions" | "archivedSessions"> {
+  const apply = (catalog: Readonly<Record<string, SessionFact>>) => {
+    const session = catalog[sessionId];
+    if (!session) return catalog;
+    const revised = revise(session);
+    return revised === session ? catalog : { ...catalog, [sessionId]: revised };
+  };
+  return { sessions: apply(state.sessions), archivedSessions: apply(state.archivedSessions) };
+}
+
+/**
+ * Session-scope projections are read asynchronously, so live discovery changes
+ * can land while one is in flight. Identity and timeline facts come from the
+ * projection, but the two discovery channels keep whichever fact is newer.
+ */
+function mergeProjectedSession(
+  held: SessionFact | undefined,
+  projection: SessionProjection,
+  sessionId: string,
+  attentionIsStale: (sessionId: string, cursor: string | undefined) => boolean,
+  readStateIsStale: (sessionId: string, current: SessionReadState | undefined, next: SessionReadState) => boolean,
+): SessionFact {
+  const projected = projection.session;
+  if (!held) return projected;
+
+  const keepAttention = attentionIsStale(sessionId, projection.cursor);
+  const keepReadState = projected.readState !== undefined &&
+    readStateIsStale(sessionId, held.readState, projected.readState);
+  return {
+    ...projected,
+    ...(keepAttention && { attention: held.attention, activity: held.activity }),
+    ...(keepReadState && { readState: held.readState }),
+  };
+}
+
 export function createClientStore(adapters: ClientAdapters): ClientStore {
   const commandId = adapters.commandIds ?? randomUuid;
+  /** Timeline revision each in-flight mark-read command claims, by Session. */
+  const pendingReadMarks = new Map<string, number>();
+  /** Cursor the held attention summary was derived at, by Session. */
+  const attentionBasis = new Map<string, string>();
+
+  /** True when `cursor` names durable state older than the held summary's. */
+  const attentionIsStale = (sessionId: string, cursor: string | undefined) => {
+    const basis = attentionBasis.get(sessionId);
+    return cursor !== undefined && basis !== undefined && cursorPrecedes(cursor, basis);
+  };
+
+  /** True when `readState` is superseded, or predates an in-flight mark-read. */
+  const readStateIsStale = (sessionId: string, current: SessionReadState | undefined, next: SessionReadState) => {
+    if (current && next.readStateRevision < current.readStateRevision) return true;
+    const markedThrough = pendingReadMarks.get(sessionId);
+    return markedThrough !== undefined &&
+      next.readStatus === "unread" &&
+      next.readThroughTimelineRevision < markedThrough;
+  };
   const store = createStore<ClientState>((set, get) => ({
     projects: [], workspaces: [], sessions: {}, sessionOrder: [], archivedSessions: {}, archivedOrder: [],
-    timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, paging: "idle", drafts: {}, draftImages: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
+    timelines: {}, runs: {}, interactions: {}, interactionIntents: {}, commandOutcomes: [], olderCursors: {}, presentedRevisions: {}, paging: "idle", drafts: {}, draftImages: {}, expandedProjectIds: [], searchQuery: "", discoveryMode: "available",
     isSessionCurrent: false,
     authority: { status: "current", lastSynchronizedAt: null },
     async loadDiscovery() {
@@ -246,6 +357,14 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
           adapters.host.readCatalog(),
           adapters.preferences?.readExpandedProjects() ?? Promise.resolve([]),
         ]);
+        // The catalog is authoritative for every Session it names, so it
+        // rebases attention wholesale rather than deferring to held summaries.
+        if (catalog.cursor !== undefined) {
+          attentionBasis.clear();
+          for (const session of [...catalog.sessions, ...catalog.archivedSessions]) {
+            attentionBasis.set(session.sessionId, catalog.cursor);
+          }
+        }
         set({
           ...discoveryStateFrom(catalog),
           expandedProjectIds: expanded,
@@ -253,6 +372,22 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       } catch (error) {
         set(state => ({ authority: offlineAuthority(state.authority, error) }));
       }
+    },
+    sessionAttentionChanged({ sessionId, attention, activity, cursor }) {
+      // A summary derived from state older than the held one arrived late.
+      if (attentionIsStale(sessionId, cursor)) return;
+      if (cursor !== undefined) attentionBasis.set(sessionId, cursor);
+      set(state => reviseCatalogs(state, sessionId, session => ({ ...session, attention, activity })));
+    },
+    sessionReadStateChanged({ sessionId, readState }) {
+      set(state => reviseCatalogs(state, sessionId, session =>
+        readStateIsStale(sessionId, session.readState, readState) ? session : { ...session, readState }));
+    },
+    watchDiscovery() {
+      return adapters.host.watchDiscovery?.(change => {
+        if ("readState" in change) get().sessionReadStateChanged(change);
+        else get().sessionAttentionChanged(change);
+      }) ?? (() => {});
     },
     async openNewSession(scope = {}) {
       const draft = await adapters.drafts.read("new-session");
@@ -472,6 +607,11 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const durable = { ...initial, progress: { phase: "session-created" as const, sessionId } };
       set(state => ({
         sessions: { ...state.sessions, [sessionId]: created.session! },
+        // Discovery renders from the order, so a created Session stays invisible
+        // until the next catalog load unless it joins the order here too.
+        sessionOrder: state.sessionOrder.includes(sessionId)
+          ? state.sessionOrder
+          : [...state.sessionOrder, sessionId],
         newSession: durable,
       }));
       if (createEmpty) {
@@ -513,12 +653,18 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
         return;
       }
       if (get().selectedSessionId !== sessionId) return;
+      if (projection.cursor !== undefined && !attentionIsStale(sessionId, projection.cursor)) {
+        attentionBasis.set(sessionId, projection.cursor);
+      }
       set(state => ({
-        sessions: { ...state.sessions, [sessionId]: projection.session },
+        sessions: { ...state.sessions, [sessionId]: mergeProjectedSession(state.sessions[sessionId], projection, sessionId, attentionIsStale, readStateIsStale) },
         timelines: { ...state.timelines, [sessionId]: projection.timeline },
         runs: { ...state.runs, [sessionId]: projection.runs ?? [] },
         interactions: { ...state.interactions, [sessionId]: activeInteractions(projection.interactions ?? []) },
         olderCursors: { ...state.olderCursors, [sessionId]: projection.olderCursor ?? null },
+        // The projected window is the authoritative tail, so opening a Session
+        // presents every revision the projection carries.
+        presentedRevisions: { ...state.presentedRevisions, [sessionId]: projection.session.timelineRevision },
         drafts: { ...state.drafts, [sessionId]: draft }, isSessionCurrent: true,
       }));
       adapters.host.watchSession?.(sessionId, change => {
@@ -528,17 +674,22 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
           if (!session || change.baseRevision !== session.timelineRevision || change.revision <= session.timelineRevision) return state;
           const entries = [...(state.timelines[sessionId] ?? [])];
           const index = entries.findIndex(entry => entry.entryId === change.entry.entryId);
+          let merged = true;
           if (index < 0) entries.push(change.entry);
           else {
             const current = entries[index]!;
             const currentEntryRevision = current.revision ?? 1;
             const incomingEntryRevision = change.entry.revision ?? 1;
-            if (!current.finalized && incomingEntryRevision > currentEntryRevision) entries[index] = change.entry;
+            merged = !current.finalized && incomingEntryRevision > currentEntryRevision;
+            if (merged) entries[index] = change.entry;
           }
           entries.sort(compareTimelineEntries);
           return {
             sessions: { ...state.sessions, [sessionId]: { ...session, timelineRevision: change.revision } },
             timelines: { ...state.timelines, [sessionId]: entries },
+            // A declined entry leaves the Host revision authoritative while the
+            // View keeps presenting the revision it actually rendered.
+            ...(merged && { presentedRevisions: { ...state.presentedRevisions, [sessionId]: change.revision } }),
           };
         });
       });
@@ -722,8 +873,22 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
     async presentTail() {
       const state = get();
       const sessionId = state.selectedSessionId;
-      const revision = sessionId ? state.sessions[sessionId]?.timelineRevision : undefined;
-      if (sessionId && revision && state.isSessionCurrent) await adapters.host.markRead?.(sessionId, revision);
+      // Read status follows what the View rendered, never a Host revision the
+      // View has not presented (FX-STATE-02).
+      const revision = sessionId ? state.presentedRevisions[sessionId] : undefined;
+      if (!sessionId || !revision || !state.isSessionCurrent || !adapters.host.markRead) return;
+      // The user is looking at the tail, so the row clears now rather than after
+      // the Host round-trip. The revision is left to the Host, which owns it;
+      // this projects status only, and the authoritative broadcast supersedes it.
+      set(current => reviseCatalogs(current, sessionId, session => session.readState?.readStatus === "read"
+        ? session
+        : { ...session, readState: { readStatus: "read", readStateRevision: session.readState?.readStateRevision ?? 1, readThroughTimelineRevision: revision } }));
+      pendingReadMarks.set(sessionId, revision);
+      try {
+        await adapters.host.markRead(sessionId, revision);
+      } finally {
+        if (pendingReadMarks.get(sessionId) === revision) pendingReadMarks.delete(sessionId);
+      }
     },
     authorityChanged(authority) {
       const previous = get().authority;

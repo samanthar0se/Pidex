@@ -24,6 +24,55 @@ export function shouldShowJumpToLatest(position: TimelineTailPosition): boolean 
   return position === "detached";
 }
 
+/**
+ * Quiet presentation a visible tail must hold before its revision counts as
+ * read. Arriving content is not read content: a streaming Run advances the
+ * Timeline revision many times a second, and a Run that settles as the reader
+ * leaves must keep its unread milestone (FX-STATE-02).
+ */
+export const tailPresentationDwellMs = 500;
+
+export interface TailPresentation {
+  /** Re-arms the dwell for the currently presented tail. */
+  observe(observation: { tailVisible: boolean; documentVisible: boolean }): void;
+  /** Abandons any pending presentation, leaving read status untouched. */
+  cancel(): void;
+}
+
+/**
+ * Schedules the read-through claim for a visibly presented Timeline tail. Each
+ * observation restarts the dwell, so only a tail that stops changing while the
+ * reader is present is ever presented to the Host.
+ */
+export function createTailPresentation(
+  present: () => void,
+  timers: {
+    schedule(callback: () => void, delay: number): number;
+    cancel(handle: number): void;
+  } = {
+    schedule: (callback, delay) => window.setTimeout(callback, delay),
+    cancel: handle => window.clearTimeout(handle),
+  },
+  dwellMs: number = tailPresentationDwellMs,
+): TailPresentation {
+  let pending: number | undefined;
+  const cancel = () => {
+    if (pending !== undefined) timers.cancel(pending);
+    pending = undefined;
+  };
+  return {
+    cancel,
+    observe({ tailVisible, documentVisible }) {
+      cancel();
+      if (!tailVisible || !documentVisible) return;
+      pending = timers.schedule(() => {
+        pending = undefined;
+        present();
+      }, dwellMs);
+    },
+  };
+}
+
 export interface VisibleTimelineAnchor {
   element: HTMLElement;
   top: number;
