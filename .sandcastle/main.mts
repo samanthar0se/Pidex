@@ -80,7 +80,7 @@ const createDockerSandbox = (dependencyScope: string) => {
 
 // Maximum number of plan→execute→merge cycles before stopping.
 // Raise this if your backlog is large; lower it for a quick smoke-test run.
-const MAX_ITERATIONS = 50;
+const MAX_ITERATIONS = 10;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
 // npm install ensures the sandbox always has fresh dependencies.
@@ -113,7 +113,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // One iteration is enough: the planner just needs to read and reason,
     // not write code. (Structured output requires maxIterations: 1.)
     maxIterations: 1,
-    agent: sandcastle.pi(AGENT_MODEL, { thinking: "high" }),
+    agent: sandcastle.pi(AGENT_MODEL, { thinking: "medium" }),
     promptFile: "./.sandcastle/plan-prompt.md",
     // Extract and validate the <plan> JSON into a typed object. Throws
     // StructuredOutputError if the tag is missing, the JSON is malformed, or
@@ -246,7 +246,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     sandbox: createDockerSandbox("merger"),
     name: "merger",
     maxIterations: 1,
-    agent: sandcastle.pi(AGENT_MODEL, { thinking: "high" }),
+    agent: sandcastle.pi(AGENT_MODEL, { thinking: "medium" }),
     promptFile: "./.sandcastle/merge-prompt.md",
     promptArgs: {
       // A markdown list of branch names, one per line.
