@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { useStore } from "zustand";
 import { store as productionStore } from "./client-instance.js";
@@ -66,6 +66,7 @@ function Composer({ store, sessionId, draft }: { store: ClientStore; sessionId: 
     }
   }, [interactions, interactionIndex, draft, images.length]);
   const interaction = interactionIndex === null ? undefined : interactions[interactionIndex];
+  useAutoGrow(composer, draft, interaction === undefined);
   const hasInput = Boolean(draft.trim()) || images.length > 0;
   const action = executing ? (hasInput ? "Steer Run" : "Stop Run") : "Start Run";
   const submit = () => void store.getState().submitComposer();
@@ -105,6 +106,24 @@ function Composer({ store, sessionId, draft }: { store: ClientStore; sessionId: 
   </footer>;
 }
 
+/**
+ * Grows a Composer with its Draft so a long prompt stays readable instead of
+ * scrolling inside a fixed box. CSS caps the height, and measuring in layout
+ * keeps the growth inside the same frame as the keystroke (FX-QUAL-02).
+ */
+function useAutoGrow(
+  element: React.RefObject<HTMLTextAreaElement | null>,
+  value: string,
+  mounted = true,
+): void {
+  useLayoutEffect(() => {
+    const textarea = element.current;
+    if (!textarea || !mounted) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [element, value, mounted]);
+}
+
 interface NewSessionDescription {
   reason?: string;
   uncertain?: boolean;
@@ -142,7 +161,9 @@ function describeProgress(progress: NewSessionProgress): NewSessionDescription {
 
 function NewSessionView({ store, newSession }: { store: ClientStore; newSession: NewSessionState }) {
   const [addingProject, setAddingProject] = useState(false);
+  const firstPrompt = useRef<HTMLTextAreaElement>(null);
   const editable = newSession.progress.phase === "editing";
+  useAutoGrow(firstPrompt, newSession.draft, !addingProject);
   const description = describeProgress(newSession.progress);
   const submit = () => void store.getState().submitNewSession();
   const projects = store.getState().projects;
@@ -223,7 +244,7 @@ function NewSessionView({ store, newSession }: { store: ClientStore; newSession:
       </button>
     </div>
     <label className="new-composer"><span className="sr-only">First prompt</span>
-      <textarea autoFocus aria-label="First prompt" placeholder="Ask Pidex to do anything" value={newSession.draft} disabled={!editable}
+      <textarea ref={firstPrompt} autoFocus aria-label="First prompt" placeholder="Ask Pidex to do anything" value={newSession.draft} disabled={!editable}
         onChange={event => void store.getState().setNewSessionDraft(event.target.value)}
         onPaste={event => pasteImages(event, images.length, pasted => store.getState().addNewSessionImages(pasted))}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}/>
