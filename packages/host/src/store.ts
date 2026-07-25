@@ -28,6 +28,8 @@ import {
   type InteractionTerminalCause,
   type ProjectSummary,
   type RunRecord,
+  type SessionActivity,
+  type SessionAttention,
   type SessionReadState,
   type SessionSummary,
   type TerminalRun,
@@ -36,6 +38,7 @@ import {
   type TimelineWindow,
   type WorkspaceSummary,
 } from "../../protocol/src/status.js";
+import { decodeCursor, encodeCursor, type DecodedCursor } from "../../protocol/src/cursor.js";
 import { pendingDurabilityCoverage } from "./durability.js";
 import { initializeAuthoritySchema } from "./authority-schema.js";
 import { RunArtifactStore } from "./run-artifacts.js";
@@ -133,10 +136,12 @@ const storedReadStateBasisSchema = z.object({
   readStateRevision: z.number().int().positive(),
   latestUnreadMilestoneTimelineRevision: z.number().int().nonnegative().nullable(),
 });
-const sessionRowSchema = sessionSummarySchema.omit({ readState: true }).extend({
-  availability: sessionAvailabilitySchema,
-  ...storedReadStateBasisSchema.shape,
-});
+const sessionRowSchema = sessionSummarySchema
+  .omit({ readState: true, attention: true, activity: true })
+  .extend({
+    availability: sessionAvailabilitySchema,
+    ...storedReadStateBasisSchema.shape,
+  });
 const markReadSessionStateSchema = storedReadStateBasisSchema.extend({
   timelineRevision: z.number().int().positive(),
 });
@@ -268,6 +273,97 @@ const SESSION_RECORD_PROJECTION = `
   parent_session_id AS parentSessionId,
   fork_point_entry_id AS forkPointEntryId
 `;
+
+/**
+ * Per-Session aggregates behind the Session attention summary. Every column is
+ * an exact Run, Interaction, or Timeline fact; the summary itself is derived in
+ * {@link attentionFromBasis} so precedence stays in one place.
+ */
+const SESSION_ATTENTION_PROJECTION = `
+  s.session_id AS sessionId,
+  (SELECT i.payload_json FROM interactions i
+    WHERE i.session_id = s.session_id AND i.state = 'open'
+    ORDER BY i.created_at, i.interaction_id LIMIT 1) AS openInteractionPayload,
+  (SELECT i.created_at FROM interactions i
+    WHERE i.session_id = s.session_id AND i.state = 'open'
+    ORDER BY i.created_at, i.interaction_id LIMIT 1) AS openInteractionAt,
+  (SELECT COUNT(*) FROM runs r
+    WHERE r.session_id = s.session_id AND r.state = 'held') AS heldRuns,
+  (SELECT COUNT(*) FROM runs r
+    WHERE r.session_id = s.session_id
+      AND r.state IN ('queued', 'executing', 'cancelling')) AS progressingRuns,
+  (SELECT t.text FROM timeline_entries t
+    WHERE t.session_id = s.session_id
+    ORDER BY t.entry_order DESC LIMIT 1) AS latestEntryText,
+  (SELECT MAX(r.completed_at) FROM runs r
+    WHERE r.session_id = s.session_id) AS lastCompletedAt,
+  s.created_at AS createdAt
+`;
+
+const sessionAttentionRowSchema = z.object({
+  sessionId: z.string(),
+  openInteractionPayload: z.string().nullable(),
+  openInteractionAt: z.number().nullable(),
+  heldRuns: z.number(),
+  progressingRuns: z.number(),
+  latestEntryText: z.string().nullable(),
+  lastCompletedAt: z.number().nullable(),
+  createdAt: z.number(),
+});
+
+type SessionAttentionRow = z.infer<typeof sessionAttentionRowSchema>;
+
+export interface SessionAttentionProjection {
+  attention: SessionAttention;
+  activity?: SessionActivity;
+}
+
+/** Longest discovery detail phrase the Host will project. */
+const ATTENTION_DETAIL_LIMIT = 80;
+
+function attentionDetail(text: string | null): string | undefined {
+  const firstLine = text?.split("\n", 1)[0]?.trim();
+  if (!firstLine) return undefined;
+  return firstLine.length > ATTENTION_DETAIL_LIMIT
+    ? `${firstLine.slice(0, ATTENTION_DETAIL_LIMIT - 1).trimEnd()}…`
+    : firstLine;
+}
+
+function openInteractionDetail(payload: string): string | undefined {
+  try {
+    const message: unknown = JSON.parse(payload)?.message;
+    return typeof message === "string" ? attentionDetail(message) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Derives the Session attention summary with precedence
+ * `needs response` over `working` over `quiet` (FX-STATE-01). Read status is
+ * derived separately and never participates here.
+ */
+function attentionFromBasis(row: SessionAttentionRow): SessionAttentionProjection {
+  const activity = (detail: string | undefined, at: number | null): SessionActivity | undefined =>
+    detail === undefined && at === null ? undefined : { ...(detail !== undefined && { detail }), ...(at !== null && { at }) };
+
+  if (row.openInteractionPayload !== null) {
+    return {
+      attention: "needs-response",
+      activity: activity(
+        openInteractionDetail(row.openInteractionPayload) ?? "Response required",
+        row.openInteractionAt,
+      ),
+    };
+  }
+  if (row.heldRuns > 0) {
+    return { attention: "needs-response", activity: { detail: "Held work awaiting release" } };
+  }
+  if (row.progressingRuns > 0) {
+    return { attention: "working", activity: activity(attentionDetail(row.latestEntryText), null) };
+  }
+  return { attention: "quiet", activity: activity(undefined, row.lastCompletedAt ?? row.createdAt) };
+}
 
 export type SubmitOutcome = z.infer<typeof submitOutcomeSchema>;
 
@@ -403,11 +499,6 @@ type CursorBasis =
       reason: "host-mismatch" | "epoch-mismatch" | "history-unavailable";
     };
 
-interface DecodedCursor {
-  hostId: string;
-  epoch: string;
-  sequence: number;
-}
 
 interface SynchronizationChange {
   cursor: string;
@@ -544,10 +635,20 @@ export class AuthorityStore {
          FROM sessions ORDER BY created_at`,
       )
       .all();
+    const attentionRows = this.#db
+      .prepare(`SELECT ${SESSION_ATTENTION_PROJECTION} FROM sessions s`)
+      .all();
+    const attentionBySession = new Map(
+      sessionAttentionRowSchema.array().parse(attentionRows)
+        .map(row => [row.sessionId, attentionFromBasis(row)] as const),
+    );
     const sessions: SessionSummary[] = [];
     const archivedSessions: SessionSummary[] = [];
     for (const row of sessionRowSchema.array().parse(sessionRows)) {
-      const session = sessionFromRow(row);
+      const session = {
+        ...sessionFromRow(row),
+        ...attentionBySession.get(row.sessionId),
+      };
       if (session.availability === "archived") {
         archivedSessions.push(session);
       } else {
@@ -561,6 +662,21 @@ export class AuthorityStore {
       sessions,
       archivedSessions,
     };
+  }
+
+  /**
+   * The current Session attention summary for one Session, or `undefined` when
+   * the Session is unknown. Derived on read from exact Run and Interaction
+   * facts, so it never needs its own durable revision.
+   */
+  sessionAttention(sessionId: string): SessionAttentionProjection | undefined {
+    const row = this.#db
+      .prepare(
+        `SELECT ${SESSION_ATTENTION_PROJECTION} FROM sessions s WHERE s.session_id = ?`,
+      )
+      .get(sessionId);
+    if (!row) return undefined;
+    return attentionFromBasis(sessionAttentionRowSchema.parse(row));
   }
 
   project(projectId: string): ProjectSummary | undefined {
@@ -680,6 +796,9 @@ export class AuthorityStore {
         metadataRevision: 1,
         timelineRevision: 1,
         readState: initialReadState(1),
+        // A Session with no Run or Interaction facts is quiet by derivation.
+        attention: "quiet",
+        activity: { at: now },
       };
       this.#db
         .prepare(
@@ -2630,7 +2749,12 @@ export class AuthorityStore {
          FROM sessions WHERE session_id = ?`,
       )
       .get(sessionId);
-    return sessionFromRow(sessionRowSchema.parse(row));
+    // Attention is derived, never stored, so every published summary picks it
+    // up here rather than at each command site.
+    return {
+      ...sessionFromRow(sessionRowSchema.parse(row)),
+      ...this.sessionAttention(sessionId),
+    };
   }
 
   checkpointAt(sessionId: string, entryId: string): string | undefined {
@@ -3085,44 +3209,6 @@ function blobObjectIdFromDigest(digest: string): string {
 
 function blobDigestFromObjectId(objectId: string): string {
   return objectId.slice(BLOB_OBJECT_ID_PREFIX.length);
-}
-
-function encodeCursor(hostId: string, epoch: string, sequence: number): string {
-  return `sync_${Buffer.from(JSON.stringify({ hostId, epoch, sequence })).toString("base64url")}`;
-}
-
-function decodeCursor(cursor: string): DecodedCursor | undefined {
-  if (!cursor.startsWith("sync_")) {
-    return undefined;
-  }
-
-  try {
-    const json = Buffer.from(cursor.slice(5), "base64url").toString();
-    const value: unknown = JSON.parse(json);
-    if (!value || typeof value !== "object") {
-      return undefined;
-    }
-
-    const record = value as Record<string, unknown>;
-    const sequence = record.sequence;
-    if (
-      typeof record.hostId !== "string" ||
-      typeof record.epoch !== "string" ||
-      typeof sequence !== "number" ||
-      !Number.isSafeInteger(sequence) ||
-      sequence < 1
-    ) {
-      return undefined;
-    }
-
-    return {
-      hostId: record.hostId,
-      epoch: record.epoch,
-      sequence,
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 function renameCommandDigest(command: RenameCommand): string {

@@ -404,6 +404,17 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         session.readState.readStateRevision,
       ] as const),
   );
+  /** Last projected attention summary per Session, serialized for de-duplication. */
+  const publishedAttentionBasis = new Map(
+    [...initialProjection.sessions, ...initialProjection.archivedSessions]
+      .map(session => [
+        session.sessionId,
+        JSON.stringify({
+          attention: session.attention,
+          ...(session.activity && { activity: session.activity }),
+        }),
+      ] as const),
+  );
   const admittedCapabilityBasisByClient = new Map<WebSocket, Set<string>>();
   const synchronizedClients = new Set<WebSocket>();
   const scopedSessionIdsByClient = new Map<WebSocket, Set<string>>();
@@ -1360,6 +1371,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
           client,
           invokingView: command.invokingView,
         });
+        publishSessionAttention(command.sessionId);
         if (outcome.run.state === "executing") {
           dispatchRun(outcome.run);
         }
@@ -1397,6 +1409,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         outcome: "accepted",
         runId: run.runId,
       });
+      publishSessionAttention(run.sessionId);
       if (run.state === "executing") {
         dispatchRun(run);
       }
@@ -1846,6 +1859,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
     for (const socket of admittedClients) {
       sendServerMessage(socket, message);
     }
+    publishSessionAttention(sessionId);
   }
 
   function publishPresentationEffect(
@@ -2062,6 +2076,8 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(socket, message);
       }
     }
+    // Keeps the discovery activity phrase current while a Run progresses.
+    publishSessionAttention(sessionId);
   }
 
   function publishRunExecution(
@@ -2084,6 +2100,7 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(socket, message);
       }
     }
+    publishSessionAttention(sessionId);
   }
 
   function publishInteraction(interaction: Interaction): void {
@@ -2092,6 +2109,31 @@ export async function startHost(options: HostOptions): Promise<StartedHost> {
         sendServerMessage(socket, { type: "interaction.change", interaction });
       }
     }
+    publishSessionAttention(interaction.sessionId);
+  }
+
+  /**
+   * Discovery is unscoped, so the Session attention summary broadcasts to every
+   * admitted Client rather than only Clients scoped to the Session. The summary
+   * is derived, not durable, so this de-duplicates on the projected value.
+   */
+  function publishSessionAttention(sessionId: string): void {
+    const projected = store.sessionAttention(sessionId);
+    if (!projected) return;
+    const basis = JSON.stringify(projected);
+    if (publishedAttentionBasis.get(sessionId) === basis) return;
+    publishedAttentionBasis.set(sessionId, basis);
+    const message: ServerMessage = {
+      type: "host.change-set",
+      cursor: status().synchronization.cursor,
+      changes: [{
+        type: "session.attention-changed",
+        sessionId,
+        attention: projected.attention,
+        ...(projected.activity && { activity: projected.activity }),
+      }],
+    };
+    for (const socket of admittedClients) sendServerMessage(socket, message);
   }
 
   function publishCanonicalReadState(sessionId: string): void {

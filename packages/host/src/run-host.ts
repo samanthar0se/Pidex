@@ -31,6 +31,10 @@ export async function runHost(runtime: HostRuntime, defaultPort = 7443): Promise
     : undefined;
   const adapters = adaptersFor("deterministic");
   if (runtime === "pi") {
+    // The deterministic adapter set freezes the clock so evidence runs stay
+    // reproducible. A real runtime must stamp real wall-clock time, or every
+    // Session recency the Client derives is measured against a fixed instant.
+    adapters.clock = { now: () => Date.now() };
     adapters.pi = new RealPiAdapter({
       cwd: resolve(process.env.PIDEX_WORKSPACE ?? process.cwd()),
       sessionsDirectory: resolve(dataDir, "pi-sessions"),

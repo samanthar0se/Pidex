@@ -158,6 +158,24 @@ export const sessionReadStateSchema = z.strictObject({
 });
 export type SessionReadState = z.infer<typeof sessionReadStateSchema>;
 
+/**
+ * The Session attention summary: a discovery-only cue derived from exact
+ * Session, Run, and Interaction facts. Read status is independent.
+ */
+export const sessionAttentionSchema = z.enum(["quiet", "working", "needs-response"]);
+export type SessionAttention = z.infer<typeof sessionAttentionSchema>;
+
+/**
+ * Discovery metadata supporting the attention summary. `detail` is a concise
+ * current-activity phrase, blocking reason, or completion note; `at` is the
+ * Host clock reading of the fact that produced the summary.
+ */
+export const sessionActivitySchema = z.strictObject({
+  detail: z.string().min(1).optional(),
+  at: z.number().int().nonnegative().optional(),
+});
+export type SessionActivity = z.infer<typeof sessionActivitySchema>;
+
 export const sessionSummarySchema = z.object({
   sessionId: z.string(),
   name: z.string(),
@@ -170,6 +188,8 @@ export const sessionSummarySchema = z.object({
   metadataRevision: z.number(),
   timelineRevision: z.number(),
   readState: sessionReadStateSchema,
+  attention: sessionAttentionSchema.optional(),
+  activity: sessionActivitySchema.optional(),
   parentSessionId: z.string().nullable().optional(),
   forkPointEntryId: z.string().nullable().optional(),
 });
@@ -316,6 +336,13 @@ export const hostChangeSchema = z.discriminatedUnion("type", [
     type: z.literal("session.read-state-changed"),
     sessionId: z.string(),
     readState: sessionReadStateSchema,
+    session: z.never().optional(),
+  }),
+  z.object({
+    type: z.literal("session.attention-changed"),
+    sessionId: z.string(),
+    attention: sessionAttentionSchema,
+    activity: sessionActivitySchema.optional(),
     session: z.never().optional(),
   }),
   z.object({

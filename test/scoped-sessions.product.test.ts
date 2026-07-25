@@ -100,6 +100,9 @@ test("scoped empty Sessions reject atomically, publish typed changes, and surviv
         readStatus: "read",
         readStateRevision: 1,
       },
+      // A Session with no Run or Interaction facts is quiet on creation.
+      attention: "quiet",
+      activity: { at: createdSession.activity?.at },
     });
     first.socket.close();
     await host.close();

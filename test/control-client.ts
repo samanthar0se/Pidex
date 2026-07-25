@@ -11,7 +11,21 @@ export function controlWebSocketUrl(origin: string): string {
   return `${origin.replace(/^http/, "ws")}/control`;
 }
 
-export function nextControlMessage(socket: WebSocket): Promise<ServerMessage> {
+/**
+ * The Session attention summary is an ancillary discovery cue the Host may
+ * broadcast at any point, so ordinary sequencing assertions skip it the way a
+ * real Client does. Use {@link nextAttentionChange} to observe it directly.
+ */
+function isAttentionOnly(message: ServerMessage): boolean {
+  return message.type === "host.change-set"
+    && message.changes.length > 0
+    && message.changes.every(change => change.type === "session.attention-changed");
+}
+
+export function nextControlMessage(
+  socket: WebSocket,
+  options: { includeAttention?: boolean } = {},
+): Promise<ServerMessage> {
   let state = states.get(socket);
   if (!state) {
     state = { queued: [], waiting: [] };
@@ -25,8 +39,40 @@ export function nextControlMessage(socket: WebSocket): Promise<ServerMessage> {
     });
     socket.on("error", error => state?.waiting.splice(0).forEach(item => item.reject(error)));
   }
-  const message = state.queued.shift();
-  return message ? Promise.resolve(message) : new Promise((resolve, reject) => state?.waiting.push({ resolve, reject }));
+  if (options.includeAttention) {
+    const queued = state.queued.shift();
+    return queued
+      ? Promise.resolve(queued)
+      : new Promise((resolve, reject) => state?.waiting.push({ resolve, reject }));
+  }
+  while (state.queued.length > 0) {
+    const queued = state.queued.shift()!;
+    if (!isAttentionOnly(queued)) return Promise.resolve(queued);
+  }
+  return new Promise((resolve, reject) => {
+    const await_ = () => {
+      state?.waiting.push({
+        resolve: message => isAttentionOnly(message) ? await_() : resolve(message),
+        reject,
+      });
+    };
+    await_();
+  });
+}
+
+/** Reads the next Session attention summary broadcast. */
+export async function nextAttentionChange(socket: WebSocket): Promise<{
+  sessionId: string;
+  attention: "quiet" | "working" | "needs-response";
+  activity?: { detail?: string; at?: number };
+}> {
+  for (;;) {
+    const message = await nextControlMessage(socket, { includeAttention: true });
+    if (!isAttentionOnly(message) || message.type !== "host.change-set") continue;
+    const change = message.changes[0];
+    if (change?.type !== "session.attention-changed") continue;
+    return { sessionId: change.sessionId, attention: change.attention, activity: change.activity };
+  }
 }
 
 const states = new WeakMap<WebSocket, {
