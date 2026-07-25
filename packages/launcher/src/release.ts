@@ -13,7 +13,7 @@ import { join, relative, resolve, sep } from "node:path";
 
 const RELEASE_ID_PATTERN = /^[A-Za-z0-9._@-]+$/;
 const SHA256_PATTERN = /^[a-fA-F0-9]{64}$/;
-const RELEASE_ROOT = "/release";
+const RELEASE_ROOT = resolve(sep, "release");
 
 export interface ReleaseManifest {
   schemaVersion: 1;

@@ -318,7 +318,8 @@ function isSafeRelativePath(path: string): boolean {
   if (path.split(/[\\/]/).includes("..")) {
     return false;
   }
-  return resolve("/x", path).startsWith(`/x${sep}`);
+  const validationRoot = resolve(sep, "release");
+  return resolve(validationRoot, path).startsWith(`${validationRoot}${sep}`);
 }
 
 function validateReleaseId(id: string): string {

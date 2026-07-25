@@ -41,7 +41,9 @@ const PUBLICATION_CUTS: PublicationStep[] = [
   "writers-closed",
   "published",
   "validated-after-publication",
-  "parent-directory-flushed",
+  process.platform === "win32"
+    ? "parent-directory-flush-unsupported"
+    : "parent-directory-flushed",
 ];
 const NAMESPACE_IMAGES: NamespaceImage[] = ["old", "new"];
 
@@ -129,7 +131,6 @@ async function observeRealPublicationCut(
   try {
     const adapter = createDeterministicPublicationAdapter({
       failAt: cut,
-      platform: "portable",
     });
     const target = join(root, operation);
     const request = createPublicationRequest(operation, target);

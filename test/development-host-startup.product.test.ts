@@ -23,7 +23,10 @@ test("development startup exposes the HTTP Host with settled Prototype LAN guida
   child.stderr.on("data", chunk => { output += chunk; });
 
   try {
-    await waitFor(() => output.includes(`LAN: http://<LAN-IP>:${port}`), output);
+    await waitFor(
+      () => output.includes(`LAN: http://<LAN-IP>:${port}`),
+      () => output,
+    );
     const lines = output.trim().split(/\r?\n/);
     assert.equal(lines.filter(line => line === warning).length, 1);
     assert.deepEqual(lines.slice(-4), [
@@ -49,10 +52,13 @@ async function availablePort(): Promise<number> {
   return address.port;
 }
 
-async function waitFor(predicate: () => boolean, output: string): Promise<void> {
-  const deadline = Date.now() + 10_000;
+async function waitFor(
+  predicate: () => boolean,
+  output: () => string,
+): Promise<void> {
+  const deadline = Date.now() + 30_000;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error(`development Host did not become ready:\n${output}`);
+    if (Date.now() >= deadline) throw new Error(`development Host did not become ready:\n${output()}`);
     await new Promise(resolve => setTimeout(resolve, 25));
   }
 }

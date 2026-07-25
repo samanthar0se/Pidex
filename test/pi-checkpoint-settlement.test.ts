@@ -75,7 +75,7 @@ test("every checkpoint publication cut withholds identity while retaining any pu
   const cuts: PublicationStep[] = [
     "stage-created", "materialized", "validated-before-publication",
     "regular-files-flushed", "writers-closed", "published",
-    "validated-after-publication", "parent-directory-flushed",
+    "validated-after-publication", parentDirectoryPublicationStep(),
   ];
   for (const cut of cuts) {
     const root = await mkdtemp(join(tmpdir(), `pidex-checkpoint-${cut}-`));
@@ -92,7 +92,7 @@ test("every checkpoint publication cut withholds identity while retaining any pu
       }), /Injected publication failure/);
       // Publication may have crossed rename, but no opaque identity was returned
       // and the bytes are retained for conservative reconciliation.
-      if (cut === "published" || cut === "validated-after-publication" || cut === "parent-directory-flushed") {
+      if (cut === "published" || cut === "validated-after-publication" || cut === parentDirectoryPublicationStep()) {
         assert.equal(existsSync(join(root, "chunks")), true);
       }
     } finally {
@@ -100,6 +100,12 @@ test("every checkpoint publication cut withholds identity while retaining any pu
     }
   }
 });
+
+function parentDirectoryPublicationStep(): PublicationStep {
+  return process.platform === "win32"
+    ? "parent-directory-flush-unsupported"
+    : "parent-directory-flushed";
+}
 
 test("an uncertain Host transaction preserves the prior checkpoint and never replays accepted work", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pidex-checkpoint-uncertain-"));

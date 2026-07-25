@@ -98,7 +98,7 @@ test("an equivalent retry flushes the parent directory after an uncertain rename
     );
 
     assert.equal(result.outcome, "already-published");
-    assert.ok(retrySteps.includes("parent-directory-flushed"));
+    assert.ok(retrySteps.includes(parentDirectoryPublicationStep()));
   }));
 
 test("immutable collision preserves candidate evidence without overwriting authority", () =>
@@ -181,7 +181,7 @@ test(
 
 test("validated trees flush regular files and rebuildable files replace atomically", () =>
   withFixture(root => {
-    const tree = join(root, "generation");
+    const tree = join(root, "sealed-generation");
     publishValidatedTree({
       target: tree,
       materialize(stage) {
@@ -226,3 +226,9 @@ test("Windows records unsupported directory flush honestly", () =>
     assert.ok(steps.includes("parent-directory-flush-unsupported"));
     assert.equal(steps.includes("parent-directory-flushed"), false);
   }));
+
+function parentDirectoryPublicationStep(): PublicationStep {
+  return process.platform === "win32"
+    ? "parent-directory-flush-unsupported"
+    : "parent-directory-flushed";
+}
