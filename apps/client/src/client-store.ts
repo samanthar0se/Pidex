@@ -740,6 +740,10 @@ export function createClientStore(adapters: ClientAdapters): ClientStore {
       const sessionId = state.selectedSessionId;
       const session = sessionId ? state.sessions[sessionId] : undefined;
       if (!sessionId || !session || !state.isSessionCurrent) return;
+      // A command already in flight owns the Composer. `Enter` reaches here even
+      // while the primary action is busy, and a second submission would be a
+      // semantically new command, not a retry (FX-COMP-06).
+      if (state.composerCommand?.phase === "pending") return;
       const executing = state.runs[sessionId]?.find(run => run.state === "executing" && run.workerGeneration);
       const text = state.drafts[sessionId] ?? "";
       const images = [...(state.draftImages[sessionId] ?? [])];

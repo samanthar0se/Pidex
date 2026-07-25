@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, LoaderCircle, Square } from "lucide-react";
 import { useStore } from "zustand";
 import { store as productionStore } from "./client-instance.js";
 import type { ClientStore } from "./client-store.js";
@@ -69,6 +69,9 @@ function Composer({ store, sessionId, draft }: { store: ClientStore; sessionId: 
   useAutoGrow(composer, draft, interaction === undefined);
   const hasInput = Boolean(draft.trim()) || images.length > 0;
   const action = executing ? (hasInput ? "Steer Run" : "Stop Run") : "Start Run";
+  // FX-QUAL-02: the command is acknowledged in place while the Host answers, so
+  // the primary action never looks unresponsive across the round trip.
+  const pending = state.composerCommand?.phase === "pending";
   const submit = () => void store.getState().submitComposer();
   return <footer className="composer-dock">
     {interactions.length > 0 && !interaction && <button className="interaction-cue" onClick={() => setInteractionIndex(0)}>
@@ -90,14 +93,16 @@ function Composer({ store, sessionId, draft }: { store: ClientStore; sessionId: 
       onNext={() => setInteractionIndex((interactionIndex! + 1) % interactions.length)}
       onResolve={(interactionId, resolution) => void store.getState().resolveInteraction(interactionId, resolution)}
       onStop={runId => void store.getState().stopRun(runId)}
-    /> : <div className="composer-card" data-running={Boolean(executing)}>
+    /> : <div className="composer-card" data-running={Boolean(executing)} data-pending={pending || undefined}>
       <ImageAttachments images={images} onRemove={index => store.getState().removeDraftImage(index)}/>
       <textarea ref={composer} aria-label="Composer" value={draft} onChange={event => void store.getState().setDraft(event.target.value)} placeholder="Ask Pidex to do anything"
         onPaste={event => pasteImages(event, images.length, pasted => store.getState().addDraftImages(pasted))}
         onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); submit(); } }}/>
       <div className="composer-toolbar"><span className="composer-status">Host default · Auto</span>
         <span className="composer-spacer"/>
-        <button className={`composer-primary ${executing && !hasInput ? "stop" : ""}`} disabled={state.authority.status !== "current" || !state.isSessionCurrent || (!executing && !hasInput)} aria-label={executing && !hasInput ? `Stop Run ${executing.runId}` : action} onClick={submit}>{executing && !hasInput ? <Square size={12} fill="currentColor"/> : <ArrowUp size={17}/>}</button>
+        <button className={`composer-primary ${executing && !hasInput ? "stop" : ""}`} aria-busy={pending} disabled={pending || state.authority.status !== "current" || !state.isSessionCurrent || (!executing && !hasInput)} aria-label={pending ? `${action}, sending` : executing && !hasInput ? `Stop Run ${executing.runId}` : action} onClick={submit}>
+          {pending ? <LoaderCircle className="composer-pending" size={16}/> : executing && !hasInput ? <Square size={12} fill="currentColor"/> : <ArrowUp size={17}/>}
+        </button>
       </div>
     </div>}
     {state.commandOutcomes.map(outcome => <p key={outcome.commandId} className={`command-outcome ${outcome.phase}`} role="status">
